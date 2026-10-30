@@ -1,0 +1,9 @@
+# Lightweight cloud development and scripted-fixture dependencies.
+# Candidate direct pins, not a complete Linux wheel/hash lock.
+PyYAML==6.0.3
+pytest==9.1.1
+
+# Optional native framework imports/fixtures are installed explicitly with
+# scripts/setup_cloud.sh --with-native, using the project's [native] extra:
+# autogen-agentchat==0.2.40, docker==7.2.0.
+# No SWE-bench, ProgramBench data, pandas, pyarrow, images or provider credentials.
