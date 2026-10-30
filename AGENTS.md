@@ -41,7 +41,12 @@ results, logs, model responses, ledgers, checkpoints, and credentials outside
 this repository except for the specifically authorized administrative metadata
 above. Do not copy historical run directories or Git histories into it. Location
 indexes are pointers only: cloud access and contents migration are separately
-unverified. Do not automatically follow them into credentials or private benchmark
+recorded. The named budget originals now have verified private Drive copies;
+they are not part of this checkout or automatically materialized in a cloud task.
+Their original ledgers contain model response text. An authorized accounting
+step must keep that text out of candidate prompts and use only the accounting
+and ancestry fields required for the budget check. Do not automatically follow
+other locators into credentials or private benchmark
 data. Keep task text, answers and scoring assets out of these metadata files.
 
 Run `python3 scripts/check_repository.py` before committing. This check catches

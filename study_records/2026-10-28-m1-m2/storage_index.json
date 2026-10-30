@@ -50,16 +50,27 @@
     },
     {
       "cloud_directly_accessible": false,
-      "content_migration_complete": false,
+      "content_migration_complete": true,
       "contents_in_repository": false,
       "local_absolute_path": "/Users/skylake/Work/Projects/paper/output/audit/2026-10-28-formal-experiment/native-x86-v1/budget-snapshot-pre-strong-v2.json",
       "local_exists_on_2026_10_30": true,
       "logical_id": "budget.opening-snapshot.pre-strong-v2",
+      "migration_scope": "Exact copy of this named file is available in verified private Drive; the local path itself is not cloud-addressable, and no file body is in this repository.",
       "recorded_sha256": "abcb7dc5d644c9ed3b261f60677acd8edf645313a99c45f5db40404bd32f8d2d",
       "recorded_sha256_matches_current": true,
       "role": "private_cumulative_budget_opening_evidence",
       "sha256": "abcb7dc5d644c9ed3b261f60677acd8edf645313a99c45f5db40404bd32f8d2d",
-      "storage_kind": "file"
+      "storage_kind": "file",
+      "verified_private_drive_copy": {
+        "bytes": 1039,
+        "contains_model_response_text": false,
+        "drive_file_id": "1A7PVkIHONo3ZrlIMQmqQti9CXdLv3k3y",
+        "drive_url": "https://drive.google.com/file/d/1A7PVkIHONo3ZrlIMQmqQti9CXdLv3k3y/view?usp=drivesdk",
+        "private_owner_only": true,
+        "remote_readback_sha256_verified": true,
+        "sha256": "abcb7dc5d644c9ed3b261f60677acd8edf645313a99c45f5db40404bd32f8d2d",
+        "verified_on": "2026-10-30"
+      }
     },
     {
       "cloud_directly_accessible": false,
@@ -108,41 +119,74 @@
     {
       "budget_lineage": "r1_to_r5_cumulative",
       "cloud_directly_accessible": false,
-      "content_migration_complete": false,
+      "content_migration_complete": true,
       "contents_in_repository": false,
       "inspection": "manifest_ancestry_metadata_only",
       "local_absolute_path": "/Users/skylake/Work/Projects/paper/output/live/dualbench-v2-dev-20261027-payg-r1/manifest.json",
       "local_exists_on_2026_10_30": true,
       "logical_id": "private-run.r1.manifest",
+      "migration_scope": "Exact copy of this named file is available in verified private Drive; the local path itself is not cloud-addressable, and no file body is in this repository.",
       "role": "batch_contract_and_ancestry_metadata",
       "sha256": "29ae86715a93723130edfdc314b2b5f02c2bc82400556956108da3f70eb46332",
-      "storage_kind": "file"
+      "storage_kind": "file",
+      "verified_private_drive_copy": {
+        "bytes": 25851,
+        "contains_model_response_text": false,
+        "drive_file_id": "1ln1yDpOg58zUvCki11X98CkAORNWIcO-",
+        "drive_url": "https://drive.google.com/file/d/1ln1yDpOg58zUvCki11X98CkAORNWIcO-/view?usp=drivesdk",
+        "private_owner_only": true,
+        "remote_readback_sha256_verified": true,
+        "sha256": "29ae86715a93723130edfdc314b2b5f02c2bc82400556956108da3f70eb46332",
+        "verified_on": "2026-10-30"
+      }
     },
     {
       "budget_lineage": "r1_to_r5_cumulative",
       "cloud_directly_accessible": false,
-      "content_migration_complete": false,
+      "content_migration_complete": true,
       "contents_in_repository": false,
       "inspection": "existence_and_streaming_hash_only",
       "local_absolute_path": "/Users/skylake/Work/Projects/paper/output/live/dualbench-v2-dev-20261027-payg-r1/provider-receipt.json",
       "local_exists_on_2026_10_30": true,
       "logical_id": "private-run.r1.provider-receipt",
+      "migration_scope": "Exact copy of this named file is available in verified private Drive; the local path itself is not cloud-addressable, and no file body is in this repository.",
       "role": "historical_interface_receipt_not_current_readiness",
       "sha256": "17fcd8f6feac2ea8899a4350a3d64b2d132747b9d5cd561dccd79f21e3df65e9",
-      "storage_kind": "file"
+      "storage_kind": "file",
+      "verified_private_drive_copy": {
+        "bytes": 1135,
+        "contains_model_response_text": false,
+        "drive_file_id": "140aWUvHJGbNhwUOzDOZ_qU2iLRXgqufe",
+        "drive_url": "https://drive.google.com/file/d/140aWUvHJGbNhwUOzDOZ_qU2iLRXgqufe/view?usp=drivesdk",
+        "private_owner_only": true,
+        "remote_readback_sha256_verified": true,
+        "sha256": "17fcd8f6feac2ea8899a4350a3d64b2d132747b9d5cd561dccd79f21e3df65e9",
+        "verified_on": "2026-10-30"
+      }
     },
     {
       "budget_lineage": "r1_to_r5_cumulative",
       "cloud_directly_accessible": false,
-      "content_migration_complete": false,
+      "content_migration_complete": true,
       "contents_in_repository": false,
       "inspection": "existence_and_streaming_hash_only",
       "local_absolute_path": "/Users/skylake/Work/Projects/paper/output/live/dualbench-v2-dev-20261027-payg-r1/requests.jsonl",
       "local_exists_on_2026_10_30": true,
       "logical_id": "private-run.r1.requests",
+      "migration_scope": "Exact copy of this named file is available in verified private Drive; the local path itself is not cloud-addressable, and no file body is in this repository.",
       "role": "private_budget_ancestor_ledger_contains_sensitive_run_content",
       "sha256": "ad4ca6c384cc156899e0f0545003db8a8c5d37858008035fe09bf4a1c19b83f0",
-      "storage_kind": "file"
+      "storage_kind": "file",
+      "verified_private_drive_copy": {
+        "bytes": 1673,
+        "contains_model_response_text": true,
+        "drive_file_id": "1DOrWw-dNLAOVz7gepZunSJSArUg2_mVx",
+        "drive_url": "https://drive.google.com/file/d/1DOrWw-dNLAOVz7gepZunSJSArUg2_mVx/view?usp=drivesdk",
+        "private_owner_only": true,
+        "remote_readback_sha256_verified": true,
+        "sha256": "ad4ca6c384cc156899e0f0545003db8a8c5d37858008035fe09bf4a1c19b83f0",
+        "verified_on": "2026-10-30"
+      }
     },
     {
       "cloud_directly_accessible": false,
@@ -158,41 +202,74 @@
     {
       "budget_lineage": "r1_to_r5_cumulative",
       "cloud_directly_accessible": false,
-      "content_migration_complete": false,
+      "content_migration_complete": true,
       "contents_in_repository": false,
       "inspection": "manifest_ancestry_metadata_only",
       "local_absolute_path": "/Users/skylake/Work/Projects/paper/output/live/dualbench-v2-dev-20261027-payg-r2/manifest.json",
       "local_exists_on_2026_10_30": true,
       "logical_id": "private-run.r2.manifest",
+      "migration_scope": "Exact copy of this named file is available in verified private Drive; the local path itself is not cloud-addressable, and no file body is in this repository.",
       "role": "batch_contract_and_ancestry_metadata",
       "sha256": "a5ee6ac7d3ca4782d3a45a3281a09adc428d7ae97dbcbb28998b264618aa3289",
-      "storage_kind": "file"
+      "storage_kind": "file",
+      "verified_private_drive_copy": {
+        "bytes": 26689,
+        "contains_model_response_text": false,
+        "drive_file_id": "1LUKAeCVbQbsh3WtDzKHgsHjlf5PccN3R",
+        "drive_url": "https://drive.google.com/file/d/1LUKAeCVbQbsh3WtDzKHgsHjlf5PccN3R/view?usp=drivesdk",
+        "private_owner_only": true,
+        "remote_readback_sha256_verified": true,
+        "sha256": "a5ee6ac7d3ca4782d3a45a3281a09adc428d7ae97dbcbb28998b264618aa3289",
+        "verified_on": "2026-10-30"
+      }
     },
     {
       "budget_lineage": "r1_to_r5_cumulative",
       "cloud_directly_accessible": false,
-      "content_migration_complete": false,
+      "content_migration_complete": true,
       "contents_in_repository": false,
       "inspection": "existence_and_streaming_hash_only",
       "local_absolute_path": "/Users/skylake/Work/Projects/paper/output/live/dualbench-v2-dev-20261027-payg-r2/provider-receipt.json",
       "local_exists_on_2026_10_30": true,
       "logical_id": "private-run.r2.provider-receipt",
+      "migration_scope": "Exact copy of this named file is available in verified private Drive; the local path itself is not cloud-addressable, and no file body is in this repository.",
       "role": "historical_interface_receipt_not_current_readiness",
       "sha256": "3365aa4b893bd43c4b3f843151e0b88bb5182581dbe60f8e5e8a7780e9d3cbba",
-      "storage_kind": "file"
+      "storage_kind": "file",
+      "verified_private_drive_copy": {
+        "bytes": 1580,
+        "contains_model_response_text": false,
+        "drive_file_id": "12kC1W5W_kVGJM7jWTijBoltVWJYzm7DU",
+        "drive_url": "https://drive.google.com/file/d/12kC1W5W_kVGJM7jWTijBoltVWJYzm7DU/view?usp=drivesdk",
+        "private_owner_only": true,
+        "remote_readback_sha256_verified": true,
+        "sha256": "3365aa4b893bd43c4b3f843151e0b88bb5182581dbe60f8e5e8a7780e9d3cbba",
+        "verified_on": "2026-10-30"
+      }
     },
     {
       "budget_lineage": "r1_to_r5_cumulative",
       "cloud_directly_accessible": false,
-      "content_migration_complete": false,
+      "content_migration_complete": true,
       "contents_in_repository": false,
       "inspection": "existence_and_streaming_hash_only",
       "local_absolute_path": "/Users/skylake/Work/Projects/paper/output/live/dualbench-v2-dev-20261027-payg-r2/requests.jsonl",
       "local_exists_on_2026_10_30": true,
       "logical_id": "private-run.r2.requests",
+      "migration_scope": "Exact copy of this named file is available in verified private Drive; the local path itself is not cloud-addressable, and no file body is in this repository.",
       "role": "private_budget_ancestor_ledger_contains_sensitive_run_content",
       "sha256": "1860965067ddfc3437dff7f3f104c09b504c1b91c4ab90db523a8136910f264e",
-      "storage_kind": "file"
+      "storage_kind": "file",
+      "verified_private_drive_copy": {
+        "bytes": 102915,
+        "contains_model_response_text": true,
+        "drive_file_id": "1J35ZWggoDrxZrz5b0CahHt32e0LDbaBm",
+        "drive_url": "https://drive.google.com/file/d/1J35ZWggoDrxZrz5b0CahHt32e0LDbaBm/view?usp=drivesdk",
+        "private_owner_only": true,
+        "remote_readback_sha256_verified": true,
+        "sha256": "1860965067ddfc3437dff7f3f104c09b504c1b91c4ab90db523a8136910f264e",
+        "verified_on": "2026-10-30"
+      }
     },
     {
       "cloud_directly_accessible": false,
@@ -208,41 +285,74 @@
     {
       "budget_lineage": "r1_to_r5_cumulative",
       "cloud_directly_accessible": false,
-      "content_migration_complete": false,
+      "content_migration_complete": true,
       "contents_in_repository": false,
       "inspection": "manifest_ancestry_metadata_only",
       "local_absolute_path": "/Users/skylake/Work/Projects/paper/output/live/dualbench-v2-dev-20261027-payg-r3/manifest.json",
       "local_exists_on_2026_10_30": true,
       "logical_id": "private-run.r3.manifest",
+      "migration_scope": "Exact copy of this named file is available in verified private Drive; the local path itself is not cloud-addressable, and no file body is in this repository.",
       "role": "batch_contract_and_ancestry_metadata",
       "sha256": "13ef3ab4f6427ff090e2aadf72a53b50f8932527034285edbc360a7b203f3c72",
-      "storage_kind": "file"
+      "storage_kind": "file",
+      "verified_private_drive_copy": {
+        "bytes": 28085,
+        "contains_model_response_text": false,
+        "drive_file_id": "1KSU0P82r5FL1oRGqschLG6IyJrTK06vA",
+        "drive_url": "https://drive.google.com/file/d/1KSU0P82r5FL1oRGqschLG6IyJrTK06vA/view?usp=drivesdk",
+        "private_owner_only": true,
+        "remote_readback_sha256_verified": true,
+        "sha256": "13ef3ab4f6427ff090e2aadf72a53b50f8932527034285edbc360a7b203f3c72",
+        "verified_on": "2026-10-30"
+      }
     },
     {
       "budget_lineage": "r1_to_r5_cumulative",
       "cloud_directly_accessible": false,
-      "content_migration_complete": false,
+      "content_migration_complete": true,
       "contents_in_repository": false,
       "inspection": "existence_and_streaming_hash_only",
       "local_absolute_path": "/Users/skylake/Work/Projects/paper/output/live/dualbench-v2-dev-20261027-payg-r3/provider-receipt.json",
       "local_exists_on_2026_10_30": true,
       "logical_id": "private-run.r3.provider-receipt",
+      "migration_scope": "Exact copy of this named file is available in verified private Drive; the local path itself is not cloud-addressable, and no file body is in this repository.",
       "role": "historical_interface_receipt_not_current_readiness",
       "sha256": "3365aa4b893bd43c4b3f843151e0b88bb5182581dbe60f8e5e8a7780e9d3cbba",
-      "storage_kind": "file"
+      "storage_kind": "file",
+      "verified_private_drive_copy": {
+        "bytes": 1580,
+        "contains_model_response_text": false,
+        "drive_file_id": "1f1BmIZwCqCFG_vOfIlR4NHneHAgxZsbZ",
+        "drive_url": "https://drive.google.com/file/d/1f1BmIZwCqCFG_vOfIlR4NHneHAgxZsbZ/view?usp=drivesdk",
+        "private_owner_only": true,
+        "remote_readback_sha256_verified": true,
+        "sha256": "3365aa4b893bd43c4b3f843151e0b88bb5182581dbe60f8e5e8a7780e9d3cbba",
+        "verified_on": "2026-10-30"
+      }
     },
     {
       "budget_lineage": "r1_to_r5_cumulative",
       "cloud_directly_accessible": false,
-      "content_migration_complete": false,
+      "content_migration_complete": true,
       "contents_in_repository": false,
       "inspection": "existence_and_streaming_hash_only",
       "local_absolute_path": "/Users/skylake/Work/Projects/paper/output/live/dualbench-v2-dev-20261027-payg-r3/requests.jsonl",
       "local_exists_on_2026_10_30": true,
       "logical_id": "private-run.r3.requests",
+      "migration_scope": "Exact copy of this named file is available in verified private Drive; the local path itself is not cloud-addressable, and no file body is in this repository.",
       "role": "private_budget_ancestor_ledger_contains_sensitive_run_content",
       "sha256": "8e67b0597ada1da13767cb21c603fefad8aae36e791314af64c17577c8223033",
-      "storage_kind": "file"
+      "storage_kind": "file",
+      "verified_private_drive_copy": {
+        "bytes": 57982,
+        "contains_model_response_text": true,
+        "drive_file_id": "1_WTgb8Tuq6xD0oIiynbF-F2xZss1mCn_",
+        "drive_url": "https://drive.google.com/file/d/1_WTgb8Tuq6xD0oIiynbF-F2xZss1mCn_/view?usp=drivesdk",
+        "private_owner_only": true,
+        "remote_readback_sha256_verified": true,
+        "sha256": "8e67b0597ada1da13767cb21c603fefad8aae36e791314af64c17577c8223033",
+        "verified_on": "2026-10-30"
+      }
     },
     {
       "cloud_directly_accessible": false,
@@ -258,41 +368,74 @@
     {
       "budget_lineage": "r1_to_r5_cumulative",
       "cloud_directly_accessible": false,
-      "content_migration_complete": false,
+      "content_migration_complete": true,
       "contents_in_repository": false,
       "inspection": "manifest_ancestry_metadata_only",
       "local_absolute_path": "/Users/skylake/Work/Projects/paper/output/live/dualbench-v2-m1-20261027-payg-r4/manifest.json",
       "local_exists_on_2026_10_30": true,
       "logical_id": "private-run.r4.manifest",
+      "migration_scope": "Exact copy of this named file is available in verified private Drive; the local path itself is not cloud-addressable, and no file body is in this repository.",
       "role": "batch_contract_and_ancestry_metadata",
       "sha256": "cd6c76ac45b530191ef1f7ad6ef0d3d1dbc47bdaaefa406373e12c50b49e9f57",
-      "storage_kind": "file"
+      "storage_kind": "file",
+      "verified_private_drive_copy": {
+        "bytes": 29007,
+        "contains_model_response_text": false,
+        "drive_file_id": "1Et_5aj5WaxSgCsxCgol77MhhDDIgeh0O",
+        "drive_url": "https://drive.google.com/file/d/1Et_5aj5WaxSgCsxCgol77MhhDDIgeh0O/view?usp=drivesdk",
+        "private_owner_only": true,
+        "remote_readback_sha256_verified": true,
+        "sha256": "cd6c76ac45b530191ef1f7ad6ef0d3d1dbc47bdaaefa406373e12c50b49e9f57",
+        "verified_on": "2026-10-30"
+      }
     },
     {
       "budget_lineage": "r1_to_r5_cumulative",
       "cloud_directly_accessible": false,
-      "content_migration_complete": false,
+      "content_migration_complete": true,
       "contents_in_repository": false,
       "inspection": "existence_and_streaming_hash_only",
       "local_absolute_path": "/Users/skylake/Work/Projects/paper/output/live/dualbench-v2-m1-20261027-payg-r4/provider-receipt.json",
       "local_exists_on_2026_10_30": true,
       "logical_id": "private-run.r4.provider-receipt",
+      "migration_scope": "Exact copy of this named file is available in verified private Drive; the local path itself is not cloud-addressable, and no file body is in this repository.",
       "role": "historical_interface_receipt_not_current_readiness",
       "sha256": "7eedf1741bdff12d7bb50163e50ab8e503754b1c9951be7168b31ffeeb1e9e0b",
-      "storage_kind": "file"
+      "storage_kind": "file",
+      "verified_private_drive_copy": {
+        "bytes": 1930,
+        "contains_model_response_text": false,
+        "drive_file_id": "1S6mFAxnXukMpD7xcsqZjO_0dngtP_y7q",
+        "drive_url": "https://drive.google.com/file/d/1S6mFAxnXukMpD7xcsqZjO_0dngtP_y7q/view?usp=drivesdk",
+        "private_owner_only": true,
+        "remote_readback_sha256_verified": true,
+        "sha256": "7eedf1741bdff12d7bb50163e50ab8e503754b1c9951be7168b31ffeeb1e9e0b",
+        "verified_on": "2026-10-30"
+      }
     },
     {
       "budget_lineage": "r1_to_r5_cumulative",
       "cloud_directly_accessible": false,
-      "content_migration_complete": false,
+      "content_migration_complete": true,
       "contents_in_repository": false,
       "inspection": "existence_and_streaming_hash_only",
       "local_absolute_path": "/Users/skylake/Work/Projects/paper/output/live/dualbench-v2-m1-20261027-payg-r4/requests.jsonl",
       "local_exists_on_2026_10_30": true,
       "logical_id": "private-run.r4.requests",
+      "migration_scope": "Exact copy of this named file is available in verified private Drive; the local path itself is not cloud-addressable, and no file body is in this repository.",
       "role": "private_budget_ancestor_ledger_contains_sensitive_run_content",
       "sha256": "339f2075fbebeefadca61b9a3d8e79e4933c481fec493891120eaa44beb89644",
-      "storage_kind": "file"
+      "storage_kind": "file",
+      "verified_private_drive_copy": {
+        "bytes": 129059,
+        "contains_model_response_text": true,
+        "drive_file_id": "1hJ1ajay7wcEWiUaZbVyNRnbRzlDWJOb8",
+        "drive_url": "https://drive.google.com/file/d/1hJ1ajay7wcEWiUaZbVyNRnbRzlDWJOb8/view?usp=drivesdk",
+        "private_owner_only": true,
+        "remote_readback_sha256_verified": true,
+        "sha256": "339f2075fbebeefadca61b9a3d8e79e4933c481fec493891120eaa44beb89644",
+        "verified_on": "2026-10-30"
+      }
     },
     {
       "cloud_directly_accessible": false,
@@ -308,41 +451,74 @@
     {
       "budget_lineage": "r1_to_r5_cumulative",
       "cloud_directly_accessible": false,
-      "content_migration_complete": false,
+      "content_migration_complete": true,
       "contents_in_repository": false,
       "inspection": "manifest_ancestry_metadata_only",
       "local_absolute_path": "/Users/skylake/Work/Projects/paper/output/live/dualbench-v2-m1-20261028-payg-r5/manifest.json",
       "local_exists_on_2026_10_30": true,
       "logical_id": "private-run.r5.manifest",
+      "migration_scope": "Exact copy of this named file is available in verified private Drive; the local path itself is not cloud-addressable, and no file body is in this repository.",
       "role": "batch_contract_and_ancestry_metadata",
       "sha256": "caf7489bc3311d26ce42da3e88adc77855ca0d96d78a46f7e4f2cd5546efc5d7",
-      "storage_kind": "file"
+      "storage_kind": "file",
+      "verified_private_drive_copy": {
+        "bytes": 48891,
+        "contains_model_response_text": false,
+        "drive_file_id": "1vuxn6wkNunxM3ldh-y9PZDYbBsG-CsL_",
+        "drive_url": "https://drive.google.com/file/d/1vuxn6wkNunxM3ldh-y9PZDYbBsG-CsL_/view?usp=drivesdk",
+        "private_owner_only": true,
+        "remote_readback_sha256_verified": true,
+        "sha256": "caf7489bc3311d26ce42da3e88adc77855ca0d96d78a46f7e4f2cd5546efc5d7",
+        "verified_on": "2026-10-30"
+      }
     },
     {
       "budget_lineage": "r1_to_r5_cumulative",
       "cloud_directly_accessible": false,
-      "content_migration_complete": false,
+      "content_migration_complete": true,
       "contents_in_repository": false,
       "inspection": "existence_and_streaming_hash_only",
       "local_absolute_path": "/Users/skylake/Work/Projects/paper/output/live/dualbench-v2-m1-20261028-payg-r5/provider-receipt.json",
       "local_exists_on_2026_10_30": true,
       "logical_id": "private-run.r5.provider-receipt",
+      "migration_scope": "Exact copy of this named file is available in verified private Drive; the local path itself is not cloud-addressable, and no file body is in this repository.",
       "role": "historical_interface_receipt_not_current_readiness",
       "sha256": "a92cdc9726e08eb1743f0ecac63adef02024d409dce6966cb6f6119c6f78aa5a",
-      "storage_kind": "file"
+      "storage_kind": "file",
+      "verified_private_drive_copy": {
+        "bytes": 1951,
+        "contains_model_response_text": false,
+        "drive_file_id": "1KpV4w5UBusALRyAkcq04dAib7BGisByO",
+        "drive_url": "https://drive.google.com/file/d/1KpV4w5UBusALRyAkcq04dAib7BGisByO/view?usp=drivesdk",
+        "private_owner_only": true,
+        "remote_readback_sha256_verified": true,
+        "sha256": "a92cdc9726e08eb1743f0ecac63adef02024d409dce6966cb6f6119c6f78aa5a",
+        "verified_on": "2026-10-30"
+      }
     },
     {
       "budget_lineage": "r1_to_r5_cumulative",
       "cloud_directly_accessible": false,
-      "content_migration_complete": false,
+      "content_migration_complete": true,
       "contents_in_repository": false,
       "inspection": "existence_and_streaming_hash_only",
       "local_absolute_path": "/Users/skylake/Work/Projects/paper/output/live/dualbench-v2-m1-20261028-payg-r5/requests.jsonl",
       "local_exists_on_2026_10_30": true,
       "logical_id": "private-run.r5.requests",
+      "migration_scope": "Exact copy of this named file is available in verified private Drive; the local path itself is not cloud-addressable, and no file body is in this repository.",
       "role": "private_budget_ancestor_ledger_contains_sensitive_run_content",
       "sha256": "477ad8545ff1d16df45a429c004f7f6c777aaeed1ec5a57ffa0eb560b7cdfa2b",
-      "storage_kind": "file"
+      "storage_kind": "file",
+      "verified_private_drive_copy": {
+        "bytes": 443310,
+        "contains_model_response_text": true,
+        "drive_file_id": "1ezZoP14jm_fF6pqsrS9byDa6XFvhFXyp",
+        "drive_url": "https://drive.google.com/file/d/1ezZoP14jm_fF6pqsrS9byDa6XFvhFXyp/view?usp=drivesdk",
+        "private_owner_only": true,
+        "remote_readback_sha256_verified": true,
+        "sha256": "477ad8545ff1d16df45a429c004f7f6c777aaeed1ec5a57ffa0eb560b7cdfa2b",
+        "verified_on": "2026-10-30"
+      }
     },
     {
       "cloud_directly_accessible": false,
@@ -664,11 +840,11 @@
     }
   ],
   "migration_limits": [
-    "Absolute Mac paths are not reachable by a cloud agent merely because this index is uploaded.",
-    "No actual run/private storage has been migrated by publishing metadata.",
-    "Budget opening evidence remains private and needs explicit verified provisioning before any real dispatch.",
+    "Sixteen named budget evidence originals now have exact private Drive copies, verified by raw download and SHA-256; other historical run/private data is not fully migrated.",
+    "The Mac absolute paths remain local locators. A specific cloud execution task must materialize the authorized Drive originals and verify hashes before binding its private opening budget.",
     "Directory hashes are null; an index-file hash is not a recursive archive-integrity check.",
-    "Historical artifact existence is not current execution permission or benchmark readiness."
+    "The eight historical delivery locators remain distinct from the new verified budget-originals delivery; do not infer r1-r5 ledger availability from older source archives.",
+    "Historical artifact availability is not permission to replay unknown requests, reset budgets or start formal collection."
   ],
   "observed_on": "2026-10-30",
   "publication_scope": "User-requested location and provenance metadata in the private research repository; this does not upload or grant access to the target contents.",
@@ -685,5 +861,311 @@
   },
   "remote_locator_scope": "Ordinary private Drive folder locators extracted only from local historical delivery metadata. No signed URL, upload session, OAuth token, password or access-granting query retained. No current access/permissions or r1-r5 ledger availability verified.",
   "schema": "alo-historical-private-storage-index-v1",
-  "scope": "Locations and local metadata only. No artifact, ledger contents, credentials, model text, grader data or access-bearing URL copied."
+  "scope": "Locations and local metadata only. No artifact, ledger contents, credentials, model text, grader data or access-bearing URL copied.",
+  "verified_private_budget_originals": {
+    "access_scope": "Current connected Drive account can read the files; no anonymous access or cross-account permission was granted.",
+    "all_originals_downloaded_and_sha256_verified": true,
+    "batch_folders": [
+      {
+        "id": "14XMMwGWbiBF1eOhn9rGEn55EmexH1sZD",
+        "name": "r1",
+        "parent_id": "1tnfwZz6rlGjnYahX5Vac0r9N1s5oqxGk",
+        "success": true,
+        "title": "r1",
+        "url": "https://drive.google.com/drive/folders/14XMMwGWbiBF1eOhn9rGEn55EmexH1sZD"
+      },
+      {
+        "id": "1cmYx5attbvdWd4_dlHvnt54A6vqfdYcS",
+        "name": "r2",
+        "parent_id": "1tnfwZz6rlGjnYahX5Vac0r9N1s5oqxGk",
+        "success": true,
+        "title": "r2",
+        "url": "https://drive.google.com/drive/folders/1cmYx5attbvdWd4_dlHvnt54A6vqfdYcS"
+      },
+      {
+        "id": "1aHHaReYzCFDEDDR1qcw4pWqHWAko22qT",
+        "name": "r3",
+        "parent_id": "1tnfwZz6rlGjnYahX5Vac0r9N1s5oqxGk",
+        "success": true,
+        "title": "r3",
+        "url": "https://drive.google.com/drive/folders/1aHHaReYzCFDEDDR1qcw4pWqHWAko22qT"
+      },
+      {
+        "id": "1rRnjeTqfsGLc8yAfx-hJ-rJ9FTGoDINL",
+        "name": "r4",
+        "parent_id": "1tnfwZz6rlGjnYahX5Vac0r9N1s5oqxGk",
+        "success": true,
+        "title": "r4",
+        "url": "https://drive.google.com/drive/folders/1rRnjeTqfsGLc8yAfx-hJ-rJ9FTGoDINL"
+      },
+      {
+        "id": "1lfsErb1ehQAr5LKbvu7kuzd5ovelBeF5",
+        "name": "r5",
+        "parent_id": "1tnfwZz6rlGjnYahX5Vac0r9N1s5oqxGk",
+        "success": true,
+        "title": "r5",
+        "url": "https://drive.google.com/drive/folders/1lfsErb1ehQAr5LKbvu7kuzd5ovelBeF5"
+      }
+    ],
+    "delivery_date": "2026-10-30",
+    "files": [
+      {
+        "bytes": 25851,
+        "contains_model_response_text": false,
+        "drive_file_id": "1ln1yDpOg58zUvCki11X98CkAORNWIcO-",
+        "drive_url": "https://drive.google.com/file/d/1ln1yDpOg58zUvCki11X98CkAORNWIcO-/view?usp=drivesdk",
+        "logical_id": "r1.batch_manifest",
+        "mime_type": "application/json",
+        "original_bytes_preserved": true,
+        "parent_folder_id": "14XMMwGWbiBF1eOhn9rGEn55EmexH1sZD",
+        "private_owner_only": true,
+        "relative_path": "r1/manifest.json",
+        "remote_readback_sha256_verified": true,
+        "sha256": "29ae86715a93723130edfdc314b2b5f02c2bc82400556956108da3f70eb46332"
+      },
+      {
+        "bytes": 1135,
+        "contains_model_response_text": false,
+        "drive_file_id": "140aWUvHJGbNhwUOzDOZ_qU2iLRXgqufe",
+        "drive_url": "https://drive.google.com/file/d/140aWUvHJGbNhwUOzDOZ_qU2iLRXgqufe/view?usp=drivesdk",
+        "logical_id": "r1.provider_receipt",
+        "mime_type": "application/json",
+        "original_bytes_preserved": true,
+        "parent_folder_id": "14XMMwGWbiBF1eOhn9rGEn55EmexH1sZD",
+        "private_owner_only": true,
+        "relative_path": "r1/provider-receipt.json",
+        "remote_readback_sha256_verified": true,
+        "sha256": "17fcd8f6feac2ea8899a4350a3d64b2d132747b9d5cd561dccd79f21e3df65e9"
+      },
+      {
+        "bytes": 26689,
+        "contains_model_response_text": false,
+        "drive_file_id": "1LUKAeCVbQbsh3WtDzKHgsHjlf5PccN3R",
+        "drive_url": "https://drive.google.com/file/d/1LUKAeCVbQbsh3WtDzKHgsHjlf5PccN3R/view?usp=drivesdk",
+        "logical_id": "r2.batch_manifest",
+        "mime_type": "application/json",
+        "original_bytes_preserved": true,
+        "parent_folder_id": "1cmYx5attbvdWd4_dlHvnt54A6vqfdYcS",
+        "private_owner_only": true,
+        "relative_path": "r2/manifest.json",
+        "remote_readback_sha256_verified": true,
+        "sha256": "a5ee6ac7d3ca4782d3a45a3281a09adc428d7ae97dbcbb28998b264618aa3289"
+      },
+      {
+        "bytes": 1580,
+        "contains_model_response_text": false,
+        "drive_file_id": "12kC1W5W_kVGJM7jWTijBoltVWJYzm7DU",
+        "drive_url": "https://drive.google.com/file/d/12kC1W5W_kVGJM7jWTijBoltVWJYzm7DU/view?usp=drivesdk",
+        "logical_id": "r2.provider_receipt",
+        "mime_type": "application/json",
+        "original_bytes_preserved": true,
+        "parent_folder_id": "1cmYx5attbvdWd4_dlHvnt54A6vqfdYcS",
+        "private_owner_only": true,
+        "relative_path": "r2/provider-receipt.json",
+        "remote_readback_sha256_verified": true,
+        "sha256": "3365aa4b893bd43c4b3f843151e0b88bb5182581dbe60f8e5e8a7780e9d3cbba"
+      },
+      {
+        "bytes": 28085,
+        "contains_model_response_text": false,
+        "drive_file_id": "1KSU0P82r5FL1oRGqschLG6IyJrTK06vA",
+        "drive_url": "https://drive.google.com/file/d/1KSU0P82r5FL1oRGqschLG6IyJrTK06vA/view?usp=drivesdk",
+        "logical_id": "r3.batch_manifest",
+        "mime_type": "application/json",
+        "original_bytes_preserved": true,
+        "parent_folder_id": "1aHHaReYzCFDEDDR1qcw4pWqHWAko22qT",
+        "private_owner_only": true,
+        "relative_path": "r3/manifest.json",
+        "remote_readback_sha256_verified": true,
+        "sha256": "13ef3ab4f6427ff090e2aadf72a53b50f8932527034285edbc360a7b203f3c72"
+      },
+      {
+        "bytes": 1580,
+        "contains_model_response_text": false,
+        "drive_file_id": "1f1BmIZwCqCFG_vOfIlR4NHneHAgxZsbZ",
+        "drive_url": "https://drive.google.com/file/d/1f1BmIZwCqCFG_vOfIlR4NHneHAgxZsbZ/view?usp=drivesdk",
+        "logical_id": "r3.provider_receipt",
+        "mime_type": "application/json",
+        "original_bytes_preserved": true,
+        "parent_folder_id": "1aHHaReYzCFDEDDR1qcw4pWqHWAko22qT",
+        "private_owner_only": true,
+        "relative_path": "r3/provider-receipt.json",
+        "remote_readback_sha256_verified": true,
+        "sha256": "3365aa4b893bd43c4b3f843151e0b88bb5182581dbe60f8e5e8a7780e9d3cbba"
+      },
+      {
+        "bytes": 29007,
+        "contains_model_response_text": false,
+        "drive_file_id": "1Et_5aj5WaxSgCsxCgol77MhhDDIgeh0O",
+        "drive_url": "https://drive.google.com/file/d/1Et_5aj5WaxSgCsxCgol77MhhDDIgeh0O/view?usp=drivesdk",
+        "logical_id": "r4.batch_manifest",
+        "mime_type": "application/json",
+        "original_bytes_preserved": true,
+        "parent_folder_id": "1rRnjeTqfsGLc8yAfx-hJ-rJ9FTGoDINL",
+        "private_owner_only": true,
+        "relative_path": "r4/manifest.json",
+        "remote_readback_sha256_verified": true,
+        "sha256": "cd6c76ac45b530191ef1f7ad6ef0d3d1dbc47bdaaefa406373e12c50b49e9f57"
+      },
+      {
+        "bytes": 1930,
+        "contains_model_response_text": false,
+        "drive_file_id": "1S6mFAxnXukMpD7xcsqZjO_0dngtP_y7q",
+        "drive_url": "https://drive.google.com/file/d/1S6mFAxnXukMpD7xcsqZjO_0dngtP_y7q/view?usp=drivesdk",
+        "logical_id": "r4.provider_receipt",
+        "mime_type": "application/json",
+        "original_bytes_preserved": true,
+        "parent_folder_id": "1rRnjeTqfsGLc8yAfx-hJ-rJ9FTGoDINL",
+        "private_owner_only": true,
+        "relative_path": "r4/provider-receipt.json",
+        "remote_readback_sha256_verified": true,
+        "sha256": "7eedf1741bdff12d7bb50163e50ab8e503754b1c9951be7168b31ffeeb1e9e0b"
+      },
+      {
+        "bytes": 48891,
+        "contains_model_response_text": false,
+        "drive_file_id": "1vuxn6wkNunxM3ldh-y9PZDYbBsG-CsL_",
+        "drive_url": "https://drive.google.com/file/d/1vuxn6wkNunxM3ldh-y9PZDYbBsG-CsL_/view?usp=drivesdk",
+        "logical_id": "r5.batch_manifest",
+        "mime_type": "application/json",
+        "original_bytes_preserved": true,
+        "parent_folder_id": "1lfsErb1ehQAr5LKbvu7kuzd5ovelBeF5",
+        "private_owner_only": true,
+        "relative_path": "r5/manifest.json",
+        "remote_readback_sha256_verified": true,
+        "sha256": "caf7489bc3311d26ce42da3e88adc77855ca0d96d78a46f7e4f2cd5546efc5d7"
+      },
+      {
+        "bytes": 1951,
+        "contains_model_response_text": false,
+        "drive_file_id": "1KpV4w5UBusALRyAkcq04dAib7BGisByO",
+        "drive_url": "https://drive.google.com/file/d/1KpV4w5UBusALRyAkcq04dAib7BGisByO/view?usp=drivesdk",
+        "logical_id": "r5.provider_receipt",
+        "mime_type": "application/json",
+        "original_bytes_preserved": true,
+        "parent_folder_id": "1lfsErb1ehQAr5LKbvu7kuzd5ovelBeF5",
+        "private_owner_only": true,
+        "relative_path": "r5/provider-receipt.json",
+        "remote_readback_sha256_verified": true,
+        "sha256": "a92cdc9726e08eb1743f0ecac63adef02024d409dce6966cb6f6119c6f78aa5a"
+      },
+      {
+        "bytes": 1039,
+        "contains_model_response_text": false,
+        "drive_file_id": "1A7PVkIHONo3ZrlIMQmqQti9CXdLv3k3y",
+        "drive_url": "https://drive.google.com/file/d/1A7PVkIHONo3ZrlIMQmqQti9CXdLv3k3y/view?usp=drivesdk",
+        "logical_id": "pre-strong-v2.cumulative_budget_snapshot",
+        "mime_type": "application/json",
+        "original_bytes_preserved": true,
+        "parent_folder_id": "1tnfwZz6rlGjnYahX5Vac0r9N1s5oqxGk",
+        "private_owner_only": true,
+        "relative_path": "budget-snapshot-pre-strong-v2.json",
+        "remote_readback_sha256_verified": true,
+        "sha256": "abcb7dc5d644c9ed3b261f60677acd8edf645313a99c45f5db40404bd32f8d2d"
+      },
+      {
+        "bytes": 1673,
+        "contains_model_response_text": true,
+        "drive_file_id": "1DOrWw-dNLAOVz7gepZunSJSArUg2_mVx",
+        "drive_url": "https://drive.google.com/file/d/1DOrWw-dNLAOVz7gepZunSJSArUg2_mVx/view?usp=drivesdk",
+        "logical_id": "r1.append_only_request_ledger",
+        "mime_type": "application/x-ndjson",
+        "original_bytes_preserved": true,
+        "parent_folder_id": "14XMMwGWbiBF1eOhn9rGEn55EmexH1sZD",
+        "private_owner_only": true,
+        "relative_path": "r1/requests.jsonl",
+        "remote_readback_sha256_verified": true,
+        "sha256": "ad4ca6c384cc156899e0f0545003db8a8c5d37858008035fe09bf4a1c19b83f0"
+      },
+      {
+        "bytes": 102915,
+        "contains_model_response_text": true,
+        "drive_file_id": "1J35ZWggoDrxZrz5b0CahHt32e0LDbaBm",
+        "drive_url": "https://drive.google.com/file/d/1J35ZWggoDrxZrz5b0CahHt32e0LDbaBm/view?usp=drivesdk",
+        "logical_id": "r2.append_only_request_ledger",
+        "mime_type": "application/x-ndjson",
+        "original_bytes_preserved": true,
+        "parent_folder_id": "1cmYx5attbvdWd4_dlHvnt54A6vqfdYcS",
+        "private_owner_only": true,
+        "relative_path": "r2/requests.jsonl",
+        "remote_readback_sha256_verified": true,
+        "sha256": "1860965067ddfc3437dff7f3f104c09b504c1b91c4ab90db523a8136910f264e"
+      },
+      {
+        "bytes": 57982,
+        "contains_model_response_text": true,
+        "drive_file_id": "1_WTgb8Tuq6xD0oIiynbF-F2xZss1mCn_",
+        "drive_url": "https://drive.google.com/file/d/1_WTgb8Tuq6xD0oIiynbF-F2xZss1mCn_/view?usp=drivesdk",
+        "logical_id": "r3.append_only_request_ledger",
+        "mime_type": "application/x-ndjson",
+        "original_bytes_preserved": true,
+        "parent_folder_id": "1aHHaReYzCFDEDDR1qcw4pWqHWAko22qT",
+        "private_owner_only": true,
+        "relative_path": "r3/requests.jsonl",
+        "remote_readback_sha256_verified": true,
+        "sha256": "8e67b0597ada1da13767cb21c603fefad8aae36e791314af64c17577c8223033"
+      },
+      {
+        "bytes": 129059,
+        "contains_model_response_text": true,
+        "drive_file_id": "1hJ1ajay7wcEWiUaZbVyNRnbRzlDWJOb8",
+        "drive_url": "https://drive.google.com/file/d/1hJ1ajay7wcEWiUaZbVyNRnbRzlDWJOb8/view?usp=drivesdk",
+        "logical_id": "r4.append_only_request_ledger",
+        "mime_type": "application/x-ndjson",
+        "original_bytes_preserved": true,
+        "parent_folder_id": "1rRnjeTqfsGLc8yAfx-hJ-rJ9FTGoDINL",
+        "private_owner_only": true,
+        "relative_path": "r4/requests.jsonl",
+        "remote_readback_sha256_verified": true,
+        "sha256": "339f2075fbebeefadca61b9a3d8e79e4933c481fec493891120eaa44beb89644"
+      },
+      {
+        "bytes": 443310,
+        "contains_model_response_text": true,
+        "drive_file_id": "1ezZoP14jm_fF6pqsrS9byDa6XFvhFXyp",
+        "drive_url": "https://drive.google.com/file/d/1ezZoP14jm_fF6pqsrS9byDa6XFvhFXyp/view?usp=drivesdk",
+        "logical_id": "r5.append_only_request_ledger",
+        "mime_type": "application/x-ndjson",
+        "original_bytes_preserved": true,
+        "parent_folder_id": "1lfsErb1ehQAr5LKbvu7kuzd5ovelBeF5",
+        "private_owner_only": true,
+        "relative_path": "r5/requests.jsonl",
+        "remote_readback_sha256_verified": true,
+        "sha256": "477ad8545ff1d16df45a429c004f7f6c777aaeed1ec5a57ffa0eb560b7cdfa2b"
+      }
+    ],
+    "folder_id": "1tnfwZz6rlGjnYahX5Vac0r9N1s5oqxGk",
+    "folder_parent_id": "1UGH9WuxbJU4QU4e61CfW516INBRvyfk_",
+    "folder_url": "https://drive.google.com/drive/folders/1tnfwZz6rlGjnYahX5Vac0r9N1s5oqxGk",
+    "ledger_original_upload_confirmation": "User explicitly chose complete originals in the verified private directory on 2026-10-30.",
+    "ledger_originals_contain_model_answers": true,
+    "no_credential_files_added": true,
+    "no_original_bytes_edited": true,
+    "original_bytes": 902677,
+    "original_contents_in_repository": false,
+    "original_file_count": 16,
+    "private_owner_only_verified": true,
+    "schema": "alo-private-budget-originals-drive-delivery-v1",
+    "scope": "Sixteen original budget evidence files only. Raw ledger files include model response fields; do not copy their contents into source repositories or public artifacts.",
+    "specific_cloud_task_materialization_verified": false,
+    "support_files": [
+      {
+        "id": "11YVA20lPl-Ps8FUtgvbeccf-iHdS3m8I",
+        "name": "README.md",
+        "url": "https://drive.google.com/file/d/11YVA20lPl-Ps8FUtgvbeccf-iHdS3m8I/view?usp=drivesdk"
+      },
+      {
+        "id": "1NFMfhltgC9nt5_l73ZyM17CGEtfkfPw8",
+        "name": "FILES.json",
+        "url": "https://drive.google.com/file/d/1NFMfhltgC9nt5_l73ZyM17CGEtfkfPw8/view?usp=drivesdk"
+      },
+      {
+        "id": "1OFTJMVtaV9NYCQbVZEWsrlsTGz_na0Z2",
+        "name": "SHA256SUMS",
+        "url": "https://drive.google.com/file/d/1OFTJMVtaV9NYCQbVZEWsrlsTGz_na0Z2/view?usp=drivesdk"
+      }
+    ],
+    "support_files_are_generated_metadata_not_originals": true,
+    "timezone": "Asia/Singapore"
+  }
 }

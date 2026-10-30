@@ -12,7 +12,7 @@
 | [selection_history.json](2026-10-28-m1-m2/selection_history.json) | 旧v2平台7次开发候选替换，以及后来原生平台回到原始清单后停止的行政状态 | 旧 `ready` 不是新平台接受；正式24题未在旧替换链中改动 |
 | [m2_candidate_orders.json](2026-10-28-m1-m2/m2_candidate_orders.json) | 两轨各两条派生学习顺序、首臂、源码规定的seed与probe身份 | 源码派生的待冻结计划，不冒充已经存在的M2冻结manifest |
 | [exposure_register.json](2026-10-28-m1-m2/exposure_register.json) | 已知真实暴露、保守排除、历史开发预留、485个唯一ID的本地记录筛查状态、仓库族重叠 | 原调查截止于10月28日，`not_found_in_scoped_records`不等于全球未暴露 |
-| [storage_index.json](2026-10-28-m1-m2/storage_index.json) | 41个本机位置及其文件哈希、8个历史Drive普通文件夹定位、预算祖先链和旧服务器停用指针 | 目标内容未随索引上传；本机路径不构成云端可访问地址，Drive当前权限和内容未重验 |
+| [storage_index.json](2026-10-28-m1-m2/storage_index.json) | 41个本机位置、8个历史Drive定位，以及新补传的16份预算原件私有Drive交付 | 原件不在代码仓库；新交付已回读校验，8个历史交付定位与其分别记录 |
 | [source_index.json](2026-10-28-m1-m2/source_index.json) | 投影的源记录位置／SHA、逻辑来源ID和本目录导出文件校验表 | 追溯行政来源；不内嵌源记录全文或私有资产 |
 
 ## 任务清单的准确含义
@@ -35,9 +35,15 @@ SWE的`short/medium/long`是历史行政标签，含义为评价侧参考patch�
 
 ## 历史私有存储如何定位
 
-`storage_index.json` 的 `entries` 给出本机绝对路径、角色、存在性和文件哈希。r1至r5的manifest和请求账本位置按稳定logical ID登记，并记录其父账本哈希关系。期初预算、unknown预留和完整祖先仍需从独立私有运行存储核对；此次没有复制其内容，也没有将新仓库的空账本当成期初零使用。
+**预算原件已补齐到[可访问的私有Drive目录](https://drive.google.com/drive/folders/1tnfwZz6rlGjnYahX5Vac0r9N1s5oqxGk)。** r1至r5各有`manifest.json`、`provider-receipt.json`、`requests.jsonl`，根目录另有`budget-snapshot-pre-strong-v2.json`，共16份原件、902677 bytes。所有原件均已从Drive下载回读，SHA-256与本机原件逐一一致。目录与原件当前仅有owner权限，没有公开或额外分享。
 
-`historical_remote_locators` 只提供历史Drive交付的普通folder ID与canonical URL，不包含预签名链接、上传会话或token；没有改变分享权限，也未验证当前是否仍可访问。这些历史交付位置不自动证明r1至r5预算账本已经存放其中。
+使用[FILES.json](https://drive.google.com/file/d/1NFMfhltgC9nt5_l73ZyM17CGEtfkfPw8/view?usp=drivesdk)取得逐文件ID、普通私有链接、大小及SHA；[SHA256SUMS](https://drive.google.com/file/d/1OFTJMVtaV9NYCQbVZEWsrlsTGz_na0Z2/view?usp=drivesdk)只覆盖这16份原件。这两份文件及Drive中的README为新生成的索引／说明，不冒充历史原件。
+
+用户已明确选择完整账本原件：5份`requests.jsonl`保留原有`text`／`raw_content`模型回答字段，不能删字段后仍称原件。它们仅存于已核验私有Drive目录，代码仓库只记录位置和校验元数据。预算核对不得把历史模型回答回灌新候选任务。
+
+`storage_index.json` 的 `verified_private_budget_originals` 是这次实际交付；对应16个本机条目的 `verified_private_drive_copy` 指向逐字节相同副本。`entries` 仍保留本机绝对路径、角色和来源哈希，r1至r5父账本关系没有改写。当前Drive连接可读取原件不等于它们已经进入某个GPT云执行任务的文件系统；控制器使用前仍需物化、验证并绑定期初预算。unknown预留和祖先使用继续保留，不将新仓库空账本当成零使用。
+
+`historical_remote_locators` 只提供8个旧交付普通folder ID与canonical URL，不包含预签名链接、上传会话或token；其历史标记与新预算交付分开。不要从旧`01-source.zip`或旧交付目录推断预算账本可用，使用上述已验证的新目录和逐文件索引。
 
 旧服务器的停止／清理状态引用10月28日最后记录，本次没有重新连接。旧授权已经撤回，旧控制只保留为历史证据，不能从本索引恢复远端实验。目录哈希为null，单个索引文件的哈希不代表整个目录已做归档完整性验证。
 

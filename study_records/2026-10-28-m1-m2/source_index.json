@@ -2,8 +2,8 @@
   "export_date": "2026-10-30",
   "exported_files": {
     "../README.md": {
-      "bytes": 5977,
-      "sha256": "533008669dd6ca50afb9884cb5b4b401b80e18ddccf6c419fc8103176f00ca88"
+      "bytes": 7233,
+      "sha256": "8b96bcdd4e55f9710199c49726d30e841968dae89eb68b72982bbff5d7f639f0"
     },
     "exposure_register.json": {
       "bytes": 180747,
@@ -18,8 +18,8 @@
       "sha256": "95f769a20e81c98371bcf956f4d2224b235e2456a72d020880daea8f592a9bba"
     },
     "storage_index.json": {
-      "bytes": 33603,
-      "sha256": "9158985b1ce75851bd88e19fe5c249bfae34f1d89cdc6e371af915cacc1dbaf4"
+      "bytes": 58974,
+      "sha256": "c4cd7fdd2811e5bed5c7330b23b2e366f11a66120e0e669fa2b63c9d3251bf01"
     },
     "task_catalog.json": {
       "bytes": 58955,
@@ -28,6 +28,16 @@
   },
   "formal_collection_ready": false,
   "integrity_scope": "Exported-file digests detect byte changes. Original source hashes do not imply source contents are shipped, globally unexposed tasks, remote availability or accepted formal realization.",
+  "private_budget_originals_delivery": {
+    "all_originals_downloaded_and_sha256_verified": true,
+    "folder_id": "1tnfwZz6rlGjnYahX5Vac0r9N1s5oqxGk",
+    "folder_url": "https://drive.google.com/drive/folders/1tnfwZz6rlGjnYahX5Vac0r9N1s5oqxGk",
+    "original_bytes": 902677,
+    "original_contents_in_repository": false,
+    "original_file_count": 16,
+    "specific_cloud_task_materialization_verified": false,
+    "verified_on": "2026-10-30"
+  },
   "provider_requests_in_export": 0,
   "schema": "alo-administrative-study-source-index-v1",
   "scope": "User-requested administrative projections and historical source/location metadata. No raw task, model, ledger, scoring or credential contents are included.",

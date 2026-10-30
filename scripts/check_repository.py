@@ -42,6 +42,7 @@ LOCATOR_METADATA_FILES = {
 FORBIDDEN_RECORD_KEYS = {
     "api_key", "access_token", "refresh_token", "password", "private_key", "authorization",
     "messages", "payload", "prompt_text", "model_output", "model_response", "response_body",
+    "text", "raw_content", "response_text", "reasoning_content",
     "source_rows", "source_rows_sha256", "patch", "test_patch", "gold_patch", "reference_patch",
     "test_content", "test_blob", "expected_output", "stdout", "stderr", "signed_url", "upload_url",
 }
