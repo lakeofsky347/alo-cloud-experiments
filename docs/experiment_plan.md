@@ -19,6 +19,8 @@ M 的候选身份为 `deepseek-flash`、`mimo-v2.6-flash`、`glm-5.3-flash`、`m
 
 SWE-bench Lite 用于仓库修复，ProgramBench 用于程序行为重建。两轨按各自原生评分分别报告，不合成跨基准总分。覆盖层为 SWE 评价侧参考 patch 新增与删除行数 ≤5、6–20、>20，以及 ProgramBench 固定上游 difficulty 的 easy、medium、hard；它们不是已经验证的任务跨度因果变量。
 
+模型 API 身份、数据集、运行库和测试资产的固定版本目标见[模型与题集版本清单](models_and_benchmarks.md)。其中 ProgramBench 源码 commit 与 HF 测试资产 revision 是不同对象，须分别绑定。
+
 | 阶段 | 每轨不同任务数 | 安排 |
 | --- | ---: | --- |
 | Strong 开发选型 | 3 | 每覆盖层 1 题，四候选同题，各一次 B0 |

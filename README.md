@@ -12,6 +12,10 @@
 4. 按[云环境准备说明](docs/cloud_environment.md)安装和验证；首次设置可使用
    [云端准备任务](docs/cloud_setup_prompt.md)。
 
+需要配置实验资源时，使用[模型与题集版本清单](docs/models_and_benchmarks.md)：
+其中分别列出四个模型的 API 身份、SWE 数据 revision、ProgramBench 源码与测试资产 revision，
+并明确实际接口、逐题镜像和评分依赖仍待冻结。
+
 ## 内容结构
 
 ```text
