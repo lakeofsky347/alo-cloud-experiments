@@ -7,7 +7,9 @@
 Prepare a reusable development environment for this repository.
 
 1. Read AGENTS.md, README.md, docs/experiment_plan.md,
-   docs/implementation_status.md, and docs/cloud_environment.md.
+   docs/implementation_status.md, docs/cloud_environment.md, and
+   study_records/README.md. Administrative candidate and exposure records are
+   available there; they are not a formally accepted execution manifest.
 2. Use Python 3.12. Run bash scripts/setup_cloud.sh and then the exact
    verification commands documented in docs/cloud_environment.md.
 3. Use only the declared package dependencies. Preserve the platform's

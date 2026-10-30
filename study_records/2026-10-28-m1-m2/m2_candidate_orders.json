@@ -1,0 +1,160 @@
+{
+  "formal_task_realization_frozen": false,
+  "freeze_manifest_supplied": false,
+  "freeze_requirement": "Rebind actual realized task IDs, source versions, model conditions and environment contracts before accepting an executable M2 freeze.",
+  "global_stage_order": [
+    "all_learning_streams",
+    "stateless_references_once_per_task_configuration",
+    "terminal_no_update_probes",
+    "independent_scoring_after_credentials_closed"
+  ],
+  "order_semantics": "Two predetermined permutations, not independent sampled cohorts. The second order is [L3,L1,L4,L2], not the reverse of the first.",
+  "predetermined_orders_per_track": 2,
+  "schema": "alo-administrative-m2-derived-orders-v1",
+  "scope": "Task IDs, proposed order permutations, source-defined seeds and first-arm assignments only; not a runtime manifest or accepted task realization.",
+  "selection_seed": "formal-20261028-preregistered-task-selection-v1",
+  "source_refs": [
+    "catalog_original",
+    "formal_study_generator_current",
+    "sample_count_lock",
+    "native_shutdown_state_v6"
+  ],
+  "state_boundary": "Persist transfers allowlisted statistics only; reset and cold-prior probes start from common prior. Each terminal probe is independent and must not update or write back learning state.",
+  "status": "derived_candidate_orders_not_frozen",
+  "tracks": [
+    {
+      "learning_task_ids": [
+        "sympy__sympy-18621",
+        "django__django-15851",
+        "scikit-learn__scikit-learn-11040",
+        "django__django-11019"
+      ],
+      "probe_task_ids": [
+        "django__django-13590",
+        "sympy__sympy-21055"
+      ],
+      "sequences": [
+        {
+          "first_arm": "persist",
+          "id": "order-1",
+          "learning_index_permutation": [
+            0,
+            1,
+            2,
+            3
+          ],
+          "probe_seeds": [
+            2026102900,
+            2026102901
+          ],
+          "seeds": [
+            2026102800,
+            2026102801,
+            2026102802,
+            2026102803
+          ],
+          "task_ids": [
+            "sympy__sympy-18621",
+            "django__django-15851",
+            "scikit-learn__scikit-learn-11040",
+            "django__django-11019"
+          ]
+        },
+        {
+          "first_arm": "reset",
+          "id": "order-2",
+          "learning_index_permutation": [
+            2,
+            0,
+            3,
+            1
+          ],
+          "probe_seeds": [
+            2026102910,
+            2026102911
+          ],
+          "seeds": [
+            2026102810,
+            2026102811,
+            2026102812,
+            2026102813
+          ],
+          "task_ids": [
+            "scikit-learn__scikit-learn-11040",
+            "sympy__sympy-18621",
+            "django__django-11019",
+            "django__django-15851"
+          ]
+        }
+      ],
+      "track": "SWE-bench_Lite"
+    },
+    {
+      "learning_task_ids": [
+        "arthursonzogni__json-tui.17a22b6",
+        "xorg62__tty-clock.f2f847c",
+        "o2sh__onefetch.e5958ce",
+        "johnkerl__miller.8d85b46"
+      ],
+      "probe_task_ids": [
+        "noborus__trdsql.d8c5ff6",
+        "ffmpeg__ffmpeg.360a402"
+      ],
+      "sequences": [
+        {
+          "first_arm": "persist",
+          "id": "order-1",
+          "learning_index_permutation": [
+            0,
+            1,
+            2,
+            3
+          ],
+          "probe_seeds": [
+            2026103000,
+            2026103001
+          ],
+          "seeds": [
+            2026102900,
+            2026102901,
+            2026102902,
+            2026102903
+          ],
+          "task_ids": [
+            "arthursonzogni__json-tui.17a22b6",
+            "xorg62__tty-clock.f2f847c",
+            "o2sh__onefetch.e5958ce",
+            "johnkerl__miller.8d85b46"
+          ]
+        },
+        {
+          "first_arm": "reset",
+          "id": "order-2",
+          "learning_index_permutation": [
+            2,
+            0,
+            3,
+            1
+          ],
+          "probe_seeds": [
+            2026103010,
+            2026103011
+          ],
+          "seeds": [
+            2026102910,
+            2026102911,
+            2026102912,
+            2026102913
+          ],
+          "task_ids": [
+            "o2sh__onefetch.e5958ce",
+            "arthursonzogni__json-tui.17a22b6",
+            "johnkerl__miller.8d85b46",
+            "xorg62__tty-clock.f2f847c"
+          ]
+        }
+      ],
+      "track": "ProgramBench"
+    }
+  ]
+}

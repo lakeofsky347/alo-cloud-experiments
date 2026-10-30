@@ -1,0 +1,319 @@
+{
+  "interpretation": "Keep original preselection, legacy QC substitutions and stopped native preparation separate. Do not flatten legacy replacements into a latest formally accepted 30-task cohort.",
+  "legacy_qc_v2": {
+    "formal_24_groups_unchanged_from_original": true,
+    "groups": {
+      "ProgramBench/development": [
+        {
+          "historical_qc_status": "ready",
+          "instance_id": "wfxr__code-minimap.0ddeea5",
+          "position": 0,
+          "stratum": "easy"
+        },
+        {
+          "historical_qc_status": "pending",
+          "instance_id": "byron__dua-cli.8570c15",
+          "original_instance_id": "nikoladucak__caps-log.2cf2d1e",
+          "position": 1,
+          "stratum": "medium"
+        },
+        {
+          "historical_qc_status": "pending",
+          "instance_id": "canop__broot.d6c798e",
+          "original_instance_id": "skeema__skeema.6a76243",
+          "position": 2,
+          "stratum": "hard"
+        }
+      ],
+      "ProgramBench/m1": [
+        {
+          "historical_qc_status": "needs_acceptance",
+          "instance_id": "kisielk__errcheck.dacab89",
+          "position": 0,
+          "stratum": "easy"
+        },
+        {
+          "historical_qc_status": "needs_acceptance",
+          "instance_id": "mgdm__htmlq.6e31bc8",
+          "position": 1,
+          "stratum": "easy"
+        },
+        {
+          "historical_qc_status": "needs_acceptance",
+          "instance_id": "esubaalew__run.0fb9dec",
+          "position": 2,
+          "stratum": "medium"
+        },
+        {
+          "historical_qc_status": "needs_acceptance",
+          "instance_id": "raviqqe__muffet.a882908",
+          "position": 3,
+          "stratum": "medium"
+        },
+        {
+          "historical_qc_status": "needs_acceptance",
+          "instance_id": "ariga__atlas.6d81150",
+          "position": 4,
+          "stratum": "hard"
+        },
+        {
+          "historical_qc_status": "needs_acceptance",
+          "instance_id": "unhappychoice__gittype.34b72d0",
+          "position": 5,
+          "stratum": "hard"
+        }
+      ],
+      "ProgramBench/m2_learning": [
+        {
+          "historical_qc_status": "needs_acceptance",
+          "instance_id": "arthursonzogni__json-tui.17a22b6",
+          "position": 0,
+          "stratum": "easy"
+        },
+        {
+          "historical_qc_status": "needs_acceptance",
+          "instance_id": "xorg62__tty-clock.f2f847c",
+          "position": 1,
+          "stratum": "easy"
+        },
+        {
+          "historical_qc_status": "needs_acceptance",
+          "instance_id": "o2sh__onefetch.e5958ce",
+          "position": 2,
+          "stratum": "medium"
+        },
+        {
+          "historical_qc_status": "needs_acceptance",
+          "instance_id": "johnkerl__miller.8d85b46",
+          "position": 3,
+          "stratum": "hard"
+        }
+      ],
+      "ProgramBench/m2_probe": [
+        {
+          "historical_qc_status": "needs_acceptance",
+          "instance_id": "noborus__trdsql.d8c5ff6",
+          "position": 0,
+          "stratum": "medium"
+        },
+        {
+          "historical_qc_status": "pending",
+          "instance_id": "ffmpeg__ffmpeg.360a402",
+          "position": 1,
+          "stratum": "hard"
+        }
+      ],
+      "SWE-bench_Lite/development": [
+        {
+          "historical_qc_status": "ready",
+          "instance_id": "pydicom__pydicom-1694",
+          "original_instance_id": "pvlib__pvlib-python-1072",
+          "position": 0,
+          "stratum": "short"
+        },
+        {
+          "historical_qc_status": "ready",
+          "instance_id": "pylint-dev__astroid-1333",
+          "original_instance_id": "pvlib__pvlib-python-1854",
+          "position": 1,
+          "stratum": "medium"
+        },
+        {
+          "historical_qc_status": "ready",
+          "instance_id": "sqlfluff__sqlfluff-1763",
+          "original_instance_id": "pyvista__pyvista-4315",
+          "position": 2,
+          "stratum": "long"
+        }
+      ],
+      "SWE-bench_Lite/m1": [
+        {
+          "historical_qc_status": "pending",
+          "instance_id": "scikit-learn__scikit-learn-13584",
+          "position": 0,
+          "stratum": "short"
+        },
+        {
+          "historical_qc_status": "not_started",
+          "instance_id": "django__django-11583",
+          "position": 1,
+          "stratum": "short"
+        },
+        {
+          "historical_qc_status": "not_started",
+          "instance_id": "sympy__sympy-11870",
+          "position": 2,
+          "stratum": "medium"
+        },
+        {
+          "historical_qc_status": "not_started",
+          "instance_id": "django__django-16408",
+          "position": 3,
+          "stratum": "medium"
+        },
+        {
+          "historical_qc_status": "not_started",
+          "instance_id": "sympy__sympy-20322",
+          "position": 4,
+          "stratum": "long"
+        },
+        {
+          "historical_qc_status": "not_started",
+          "instance_id": "sympy__sympy-18835",
+          "position": 5,
+          "stratum": "long"
+        }
+      ],
+      "SWE-bench_Lite/m2_learning": [
+        {
+          "historical_qc_status": "not_started",
+          "instance_id": "sympy__sympy-18621",
+          "position": 0,
+          "stratum": "short"
+        },
+        {
+          "historical_qc_status": "not_started",
+          "instance_id": "django__django-15851",
+          "position": 1,
+          "stratum": "short"
+        },
+        {
+          "historical_qc_status": "not_started",
+          "instance_id": "scikit-learn__scikit-learn-11040",
+          "position": 2,
+          "stratum": "medium"
+        },
+        {
+          "historical_qc_status": "not_started",
+          "instance_id": "django__django-11019",
+          "position": 3,
+          "stratum": "long"
+        }
+      ],
+      "SWE-bench_Lite/m2_probe": [
+        {
+          "historical_qc_status": "not_started",
+          "instance_id": "django__django-13590",
+          "position": 0,
+          "stratum": "medium"
+        },
+        {
+          "historical_qc_status": "not_started",
+          "instance_id": "sympy__sympy-21055",
+          "position": 1,
+          "stratum": "long"
+        }
+      ]
+    },
+    "replacement_edges": [
+      {
+        "from_instance_id": "nikoladucak__caps-log.2cf2d1e",
+        "group": "ProgramBench/development",
+        "model_outcome_used": false,
+        "replacement_event_index": 0,
+        "stratum": "medium",
+        "to_instance_id": "trasta298__keifu.3331426"
+      },
+      {
+        "from_instance_id": "trasta298__keifu.3331426",
+        "group": "ProgramBench/development",
+        "model_outcome_used": false,
+        "replacement_event_index": 1,
+        "stratum": "medium",
+        "to_instance_id": "byron__dua-cli.8570c15"
+      },
+      {
+        "from_instance_id": "skeema__skeema.6a76243",
+        "group": "ProgramBench/development",
+        "model_outcome_used": false,
+        "replacement_event_index": 2,
+        "stratum": "hard",
+        "to_instance_id": "canop__broot.d6c798e"
+      },
+      {
+        "from_instance_id": "pvlib__pvlib-python-1072",
+        "group": "SWE-bench_Lite/development",
+        "model_outcome_used": false,
+        "replacement_event_index": 3,
+        "stratum": "short",
+        "to_instance_id": "pydicom__pydicom-1694"
+      },
+      {
+        "from_instance_id": "pvlib__pvlib-python-1854",
+        "group": "SWE-bench_Lite/development",
+        "model_outcome_used": false,
+        "replacement_event_index": 4,
+        "stratum": "medium",
+        "to_instance_id": "pylint-dev__astroid-1333"
+      },
+      {
+        "from_instance_id": "pyvista__pyvista-4315",
+        "group": "SWE-bench_Lite/development",
+        "model_outcome_used": false,
+        "replacement_event_index": 5,
+        "stratum": "long",
+        "to_instance_id": "pvlib__pvlib-python-1707"
+      },
+      {
+        "from_instance_id": "pvlib__pvlib-python-1707",
+        "group": "SWE-bench_Lite/development",
+        "model_outcome_used": false,
+        "replacement_event_index": 6,
+        "stratum": "long",
+        "to_instance_id": "sqlfluff__sqlfluff-1763"
+      }
+    ],
+    "source_refs": [
+      "legacy_qc_tracker_v2",
+      "legacy_qc_snapshot_14"
+    ],
+    "status_scope": "Historical v2-platform QC labels are not current native-platform acceptance or formal freeze.",
+    "updated_at": "2026-10-28T12:03:23.685117+08:00",
+    "used_replacements": [
+      "trasta298__keifu.3331426",
+      "byron__dua-cli.8570c15",
+      "canop__broot.d6c798e",
+      "pydicom__pydicom-1694",
+      "pylint-dev__astroid-1333",
+      "pvlib__pvlib-python-1707",
+      "sqlfluff__sqlfluff-1763"
+    ]
+  },
+  "native_preparation": {
+    "M1_started": false,
+    "M2_started": false,
+    "Strong_selected": null,
+    "formal_task_realization_frozen": false,
+    "groups_source_ref": "catalog_original",
+    "historical_seed_acceptance_ids": [
+      "wfxr__code-minimap.0ddeea5"
+    ],
+    "remote_experiment_execution_enabled": false,
+    "seed_acceptance_scope": "Administrative seed index on the historical native platform; does not establish a complete realized task cohort or current cloud acceptance.",
+    "selected_ids_equal_original_preselection": true,
+    "shutdown_recorded_at_utc": "2026-10-28T12:43:58.820154+00:00",
+    "source_refs": [
+      "native_supervisor_attempt_2",
+      "native_seed_acceptances_r6",
+      "native_shutdown_state_v6"
+    ],
+    "supervisor_status": "stopped_unknown",
+    "updated_at": "2026-10-28T09:53:37.761366+00:00",
+    "used_replacements": []
+  },
+  "original_preselection_source_ref": "catalog_original",
+  "schema": "alo-administrative-task-selection-history-v1",
+  "scope": "Candidate IDs, administrative statuses and replacement lineage only; no control metrics, diagnostics, log contents, private tests or model results.",
+  "source_refs": [
+    "catalog_original",
+    "legacy_qc_tracker_v2",
+    "legacy_qc_snapshot_14",
+    "legacy_replacement_plan_1",
+    "legacy_replacement_plan_2",
+    "legacy_replacement_plan_3",
+    "native_supervisor_attempt_2",
+    "native_seed_acceptances_r6",
+    "native_shutdown_state_v6"
+  ],
+  "status": "parallel_historical_candidate_states_not_a_formal_selection"
+}

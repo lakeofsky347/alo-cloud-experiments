@@ -1,0 +1,270 @@
+{
+  "export_date": "2026-10-30",
+  "exported_files": {
+    "../README.md": {
+      "bytes": 5977,
+      "sha256": "533008669dd6ca50afb9884cb5b4b401b80e18ddccf6c419fc8103176f00ca88"
+    },
+    "exposure_register.json": {
+      "bytes": 180747,
+      "sha256": "f23dfa1a5aa3fdcb111c3913943fecc4ab76082653200f17c21e3fc466898a79"
+    },
+    "m2_candidate_orders.json": {
+      "bytes": 4475,
+      "sha256": "8204a517559aef5ff383beacda4fecd0759a603be7edd0843fbdf2840d07a052"
+    },
+    "selection_history.json": {
+      "bytes": 10240,
+      "sha256": "95f769a20e81c98371bcf956f4d2224b235e2456a72d020880daea8f592a9bba"
+    },
+    "storage_index.json": {
+      "bytes": 33603,
+      "sha256": "9158985b1ce75851bd88e19fe5c249bfae34f1d89cdc6e371af915cacc1dbaf4"
+    },
+    "task_catalog.json": {
+      "bytes": 58955,
+      "sha256": "a25a87dddd54e36a378449889b91b5136992b7a3926053fab064fb3269825bff"
+    }
+  },
+  "formal_collection_ready": false,
+  "integrity_scope": "Exported-file digests detect byte changes. Original source hashes do not imply source contents are shipped, globally unexposed tasks, remote availability or accepted formal realization.",
+  "provider_requests_in_export": 0,
+  "schema": "alo-administrative-study-source-index-v1",
+  "scope": "User-requested administrative projections and historical source/location metadata. No raw task, model, ledger, scoring or credential contents are included.",
+  "source_reference_policy": "Logical source_refs and source_ids in this directory resolve through sources below; storage logical IDs resolve in storage_index.json.",
+  "sources": {
+    "catalog_original": {
+      "cloud_directly_accessible": false,
+      "contents_in_repository": false,
+      "local_absolute_path": "/Users/skylake/Work/Projects/paper/output/audit/2026-10-28-formal-experiment/catalog.json",
+      "local_source_hash_matches_on_export": true,
+      "object_kind": "historical_administrative_record",
+      "sha256": "caea686b1bbfcdfc19fad3e2900a8be0323ae93ca0e2271019f6df1b940cb7a5"
+    },
+    "exposure_binding_recheck_v1": {
+      "cloud_directly_accessible": false,
+      "contents_in_repository": false,
+      "local_absolute_path": "/Users/skylake/Work/Projects/paper/output/audit/2026-10-28-formal-experiment/native-x86-v1/cache-only-swe-feasibility-v1/exposure-binding-recheck.json",
+      "local_source_hash_matches_on_export": true,
+      "object_kind": "administrative_metadata_or_protocol_source",
+      "sha256": "8708e2d88c23f425e1b218377317ed9491419c0c054999baa7c9bf64b2c2d7ec"
+    },
+    "exposure_inventory_readout": {
+      "cloud_directly_accessible": false,
+      "contents_in_repository": false,
+      "local_absolute_path": "/Users/skylake/Work/Projects/paper/output/audit/2026-10-28-formal-experiment/exposure-inventory.md",
+      "local_source_hash_matches_on_export": true,
+      "object_kind": "administrative_metadata_or_protocol_source",
+      "sha256": "7e4035f5f996ccd235ff90411a6c764a856d3996d6b8869073509ddf5dccecff"
+    },
+    "exposure_inventory_v1": {
+      "cloud_directly_accessible": false,
+      "contents_in_repository": false,
+      "local_absolute_path": "/Users/skylake/Work/Projects/paper/output/audit/2026-10-28-formal-experiment/exposure-inventory.json",
+      "local_source_hash_matches_on_export": true,
+      "object_kind": "administrative_metadata_or_protocol_source",
+      "sha256": "5897f242c16c733bd34ba358a3a6ab145192904ce24ccba2f504d8defa5c6585"
+    },
+    "formal_freeze_draft": {
+      "cloud_directly_accessible": false,
+      "contents_in_repository": false,
+      "local_absolute_path": "/Users/skylake/Work/Projects/paper/docs/formal_experiment_freeze_2026-10-28.md",
+      "local_source_hash_matches_on_export": true,
+      "object_kind": "administrative_metadata_or_protocol_source",
+      "sha256": "21403f5fd3d9c276505d2fe2b53967e4c855e95da7c79b873823255c9a1e2b8b"
+    },
+    "formal_study_generator_current": {
+      "cloud_directly_accessible": false,
+      "contents_in_repository": false,
+      "local_absolute_path": "/Users/skylake/Work/Projects/paper/experiments/dual_benchmark_v2/formal_study.py",
+      "local_source_hash_matches_on_export": true,
+      "object_kind": "generator_source_current",
+      "sha256": "aa6eb5250105ea8655a77539d89a5ce3de12bb4990b7d45ce4a06fd4a7aa7476"
+    },
+    "historical-drive.agent-handoff-20261028.archives.metadata-1": {
+      "cloud_directly_accessible": false,
+      "contents_in_repository": false,
+      "local_absolute_path": "/Users/skylake/Work/Projects/paper/output/deliveries/agent-handoff-20261028.drive-upload.json",
+      "local_source_hash_matches_on_export": true,
+      "object_kind": "historical_cloud_delivery_location_metadata",
+      "sha256": "9557fdd1b499eb82ccbb0b4473ac1b9ab41028f245552de6b89852f8eedce5d6"
+    },
+    "historical-drive.agent-handoff-20261028.manifests.metadata-1": {
+      "cloud_directly_accessible": false,
+      "contents_in_repository": false,
+      "local_absolute_path": "/Users/skylake/Work/Projects/paper/output/deliveries/agent-handoff-20261028.drive-upload.json",
+      "local_source_hash_matches_on_export": true,
+      "object_kind": "historical_cloud_delivery_location_metadata",
+      "sha256": "9557fdd1b499eb82ccbb0b4473ac1b9ab41028f245552de6b89852f8eedce5d6"
+    },
+    "historical-drive.agent-handoff-20261028.manifests.qa.metadata-1": {
+      "cloud_directly_accessible": false,
+      "contents_in_repository": false,
+      "local_absolute_path": "/Users/skylake/Work/Projects/paper/output/deliveries/agent-handoff-20261028.drive-upload.json",
+      "local_source_hash_matches_on_export": true,
+      "object_kind": "historical_cloud_delivery_location_metadata",
+      "sha256": "9557fdd1b499eb82ccbb0b4473ac1b9ab41028f245552de6b89852f8eedce5d6"
+    },
+    "historical-drive.agent-handoff-20261028.root.metadata-1": {
+      "cloud_directly_accessible": false,
+      "contents_in_repository": false,
+      "local_absolute_path": "/Users/skylake/Work/Projects/paper/output/deliveries/agent-handoff-20261028.drive-upload.json",
+      "local_source_hash_matches_on_export": true,
+      "object_kind": "historical_cloud_delivery_location_metadata",
+      "sha256": "9557fdd1b499eb82ccbb0b4473ac1b9ab41028f245552de6b89852f8eedce5d6"
+    },
+    "historical-drive.agent-handoff-20261028.support.metadata-1": {
+      "cloud_directly_accessible": false,
+      "contents_in_repository": false,
+      "local_absolute_path": "/Users/skylake/Work/Projects/paper/output/deliveries/agent-handoff-20261028.drive-upload.json",
+      "local_source_hash_matches_on_export": true,
+      "object_kind": "historical_cloud_delivery_location_metadata",
+      "sha256": "9557fdd1b499eb82ccbb0b4473ac1b9ab41028f245552de6b89852f8eedce5d6"
+    },
+    "historical-drive.experiment-design-20261028.metadata-1": {
+      "cloud_directly_accessible": false,
+      "contents_in_repository": false,
+      "local_absolute_path": "/Users/skylake/Work/Projects/paper/output/deliveries/experiment-design-20261028.drive-upload.json",
+      "local_source_hash_matches_on_export": true,
+      "object_kind": "historical_cloud_delivery_location_metadata",
+      "sha256": "38dceb7bfff86ab3354c5eb6634794c04b421959e4c86f4fcf9f1a095e9b87be"
+    },
+    "historical-drive.experiment-design-parent.metadata-1": {
+      "cloud_directly_accessible": false,
+      "contents_in_repository": false,
+      "local_absolute_path": "/Users/skylake/Work/Projects/paper/output/deliveries/experiment-design-20261028.drive-upload.json",
+      "local_source_hash_matches_on_export": true,
+      "object_kind": "historical_cloud_delivery_location_metadata",
+      "sha256": "38dceb7bfff86ab3354c5eb6634794c04b421959e4c86f4fcf9f1a095e9b87be"
+    },
+    "historical-drive.weekly-delivery-20261026.metadata-1": {
+      "cloud_directly_accessible": false,
+      "contents_in_repository": false,
+      "local_absolute_path": "/Users/skylake/Work/Projects/paper/output/deliveries/2026-10-26-drive-project-weekly/cloud-upload-receipts.json",
+      "local_source_hash_matches_on_export": true,
+      "object_kind": "historical_cloud_delivery_location_metadata",
+      "sha256": "666c86d5049161c13750429f5bdc690b97fdef031d4c15e982499b1f020a6ca2"
+    },
+    "historical-drive.weekly-delivery-20261026.metadata-2": {
+      "cloud_directly_accessible": false,
+      "contents_in_repository": false,
+      "local_absolute_path": "/Users/skylake/Work/Projects/paper/output/deliveries/2026-10-26-drive-project-weekly/cloud-folder-final-listing.json",
+      "local_source_hash_matches_on_export": true,
+      "object_kind": "historical_cloud_delivery_location_metadata",
+      "sha256": "e102783b39402e295547079ccebd4402763e2a53c96e4eb97d1d31e33c6fbb60"
+    },
+    "historical_catalog_v1": {
+      "cloud_directly_accessible": false,
+      "contents_in_repository": false,
+      "local_absolute_path": "/Users/skylake/Work/Projects/paper/output/audit/2026-10-28-formal-experiment/catalog.json",
+      "local_source_hash_matches_on_export": true,
+      "object_kind": "administrative_metadata_or_protocol_source",
+      "sha256": "caea686b1bbfcdfc19fad3e2900a8be0323ae93ca0e2271019f6df1b940cb7a5"
+    },
+    "latest_historical_continuation_v6": {
+      "cloud_directly_accessible": false,
+      "contents_in_repository": false,
+      "local_absolute_path": "/Users/skylake/Work/Projects/paper/output/audit/2026-10-28-formal-experiment/native-x86-v1/continuation-current-state-v6.json",
+      "local_source_hash_matches_on_export": true,
+      "object_kind": "administrative_metadata_or_protocol_source",
+      "sha256": "d4c17580d3c43adf71b94b736a9123a8f5debb7bd140f09ad72b140e25f24685"
+    },
+    "legacy_qc_candidates_v2": {
+      "cloud_directly_accessible": false,
+      "contents_in_repository": false,
+      "local_absolute_path": "/Users/skylake/Work/Projects/paper/output/audit/2026-10-28-formal-experiment/qc-candidates.json",
+      "local_source_hash_matches_on_export": true,
+      "object_kind": "administrative_metadata_or_protocol_source",
+      "sha256": "f783010a80c24300552f26d4773feca09efa8b1aab5b3dd3866e6ce7a61f8dcf"
+    },
+    "legacy_qc_realization_14": {
+      "cloud_directly_accessible": false,
+      "contents_in_repository": false,
+      "local_absolute_path": "/Users/skylake/Work/Projects/paper/output/audit/2026-10-28-formal-experiment/qc-realization-000014.json",
+      "local_source_hash_matches_on_export": true,
+      "object_kind": "administrative_metadata_or_protocol_source",
+      "sha256": "f783010a80c24300552f26d4773feca09efa8b1aab5b3dd3866e6ce7a61f8dcf"
+    },
+    "legacy_qc_snapshot_14": {
+      "cloud_directly_accessible": false,
+      "contents_in_repository": false,
+      "local_absolute_path": "/Users/skylake/Work/Projects/paper/output/audit/2026-10-28-formal-experiment/qc-realization-000014.json",
+      "local_source_hash_matches_on_export": true,
+      "object_kind": "historical_administrative_record",
+      "sha256": "f783010a80c24300552f26d4773feca09efa8b1aab5b3dd3866e6ce7a61f8dcf"
+    },
+    "legacy_qc_tracker_v2": {
+      "cloud_directly_accessible": false,
+      "contents_in_repository": false,
+      "local_absolute_path": "/Users/skylake/Work/Projects/paper/output/audit/2026-10-28-formal-experiment/qc-candidates.json",
+      "local_source_hash_matches_on_export": true,
+      "object_kind": "historical_administrative_record",
+      "sha256": "f783010a80c24300552f26d4773feca09efa8b1aab5b3dd3866e6ce7a61f8dcf"
+    },
+    "legacy_replacement_plan_1": {
+      "cloud_directly_accessible": false,
+      "contents_in_repository": false,
+      "local_absolute_path": "/Users/skylake/Work/Projects/paper/output/audit/2026-10-28-formal-experiment/qc-realization-priority-replacement-plan.json",
+      "local_source_hash_matches_on_export": true,
+      "object_kind": "historical_administrative_record",
+      "sha256": "26abd8c0e2f86b28e712ef8d4e5bd387a9c1aa57165dad8abbaca9d82c20376d"
+    },
+    "legacy_replacement_plan_2": {
+      "cloud_directly_accessible": false,
+      "contents_in_repository": false,
+      "local_absolute_path": "/Users/skylake/Work/Projects/paper/output/audit/2026-10-28-formal-experiment/qc-realization-priority-replacement-plan-2.json",
+      "local_source_hash_matches_on_export": true,
+      "object_kind": "historical_administrative_record",
+      "sha256": "1a836e9ed0f9820ef18fee848273de889504dc8f3e21d1314affffd205ce89a6"
+    },
+    "legacy_replacement_plan_3": {
+      "cloud_directly_accessible": false,
+      "contents_in_repository": false,
+      "local_absolute_path": "/Users/skylake/Work/Projects/paper/output/audit/2026-10-28-formal-experiment/qc-realization-priority-replacement-plan-3.json",
+      "local_source_hash_matches_on_export": true,
+      "object_kind": "historical_administrative_record",
+      "sha256": "86f1ae17df64bc55519c6a58346eb9c84fffc21b84c8b5087587a9d4f73db9fd"
+    },
+    "native_qc_supervisor_attempt2": {
+      "cloud_directly_accessible": false,
+      "contents_in_repository": false,
+      "local_absolute_path": "/Users/skylake/Work/Projects/paper/output/audit/2026-10-28-formal-experiment/native-x86-v1/qc-supervisor-reviewed-attempt-2/supervisor-state.json",
+      "local_source_hash_matches_on_export": true,
+      "object_kind": "administrative_metadata_or_protocol_source",
+      "sha256": "3811b32c2c4273f3634432a21ac051be703712211bb42b25dd16f6fa07693afc"
+    },
+    "native_seed_acceptances_r6": {
+      "cloud_directly_accessible": false,
+      "contents_in_repository": false,
+      "local_absolute_path": "/Users/skylake/Work/Projects/paper/output/audit/2026-10-28-formal-experiment/native-x86-v1/seed-acceptances-r6.json",
+      "local_source_hash_matches_on_export": true,
+      "object_kind": "historical_administrative_record",
+      "sha256": "e4a5858610cc6c33a16a7cb8c885323d17096b59ac6f112f4aa4a3250e8d4e6d"
+    },
+    "native_shutdown_state_v6": {
+      "cloud_directly_accessible": false,
+      "contents_in_repository": false,
+      "local_absolute_path": "/Users/skylake/Work/Projects/paper/output/audit/2026-10-28-formal-experiment/native-x86-v1/continuation-current-state-v6.json",
+      "local_source_hash_matches_on_export": true,
+      "object_kind": "historical_administrative_record",
+      "sha256": "d4c17580d3c43adf71b94b736a9123a8f5debb7bd140f09ad72b140e25f24685"
+    },
+    "native_supervisor_attempt_2": {
+      "cloud_directly_accessible": false,
+      "contents_in_repository": false,
+      "local_absolute_path": "/Users/skylake/Work/Projects/paper/output/audit/2026-10-28-formal-experiment/native-x86-v1/qc-supervisor-reviewed-attempt-2/supervisor-state.json",
+      "local_source_hash_matches_on_export": true,
+      "object_kind": "historical_administrative_record",
+      "sha256": "3811b32c2c4273f3634432a21ac051be703712211bb42b25dd16f6fa07693afc"
+    },
+    "sample_count_lock": {
+      "cloud_directly_accessible": false,
+      "contents_in_repository": false,
+      "local_absolute_path": "/Users/skylake/Work/Projects/paper/output/audit/2026-10-28-formal-experiment/native-x86-v1/sample-size-lock-v1.json",
+      "local_source_hash_matches_on_export": true,
+      "object_kind": "historical_administrative_record",
+      "sha256": "37d03eb5a843eabc438137679956d97b5fa739bbb28978d9135e63b974f58fc5"
+    }
+  },
+  "timezone": "Asia/Singapore"
+}

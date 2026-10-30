@@ -3,8 +3,9 @@
 Read `docs/experiment_plan.md`, `docs/protocol.md`, and
 `docs/implementation_status.md` before changing research behavior.
 
-This is a source-only starting point for developing the M1 self-feedback and
-M2 cross-task learning experiments in a GPT/Codex cloud environment. Preserve
+This is a starting point for developing the M1 self-feedback and M2 cross-task
+learning experiments in a GPT/Codex cloud environment. Read `study_records/README.md`
+for the explicitly supplied task, exposure and private-storage metadata. Preserve
 the distinction between implemented software, scripted controls, actual
 benchmark evaluation, and model evidence.
 
@@ -26,11 +27,22 @@ benchmark evaluation, and model evidence.
 ## Repository contents
 
 Commit plans, contracts, source code, dependency declarations, and source tests.
+The user also authorized the administrative metadata allowlist under
+`study_records/2026-10-28-m1-m2/`: task identities and ordered reserves, historical
+selection states, exposure registration, proposed M2 orders, and location/hash
+indexes. These records do not contain candidate answers, benchmark payloads,
+private grading material, raw provider responses or the private budget ledger.
+Treat them as controller-side planning metadata, not candidate prompt inputs.
+Do not interpret a candidate catalog, historical QC label or scoped exposure
+search as a complete formal admission or an executable task manifest.
+
 Keep images, archives, datasets, benchmark assets, generated reports, audit
 results, logs, model responses, ledgers, checkpoints, and credentials outside
-this repository. Do not copy historical run directories or Git histories into
-it. Do not read or search neighboring projects to recover credentials or
-private benchmark data.
+this repository except for the specifically authorized administrative metadata
+above. Do not copy historical run directories or Git histories into it. Location
+indexes are pointers only: cloud access and contents migration are separately
+unverified. Do not automatically follow them into credentials or private benchmark
+data. Keep task text, answers and scoring assets out of these metadata files.
 
 Run `python3 scripts/check_repository.py` before committing. This check catches
 common unwanted files and secret shapes; it is not a complete secret detector.

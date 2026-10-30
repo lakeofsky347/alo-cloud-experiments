@@ -1,0 +1,6249 @@
+{
+  "admission": {
+    "Strong_selected": null,
+    "formal_M1_started": false,
+    "formal_M2_started": false,
+    "full_development_realization_file_present": false,
+    "full_formal_realization_file_present": false,
+    "historical_binding_recheck_new_model_task_ids": [],
+    "historically_native_accepted_development_ids": [
+      "wfxr__code-minimap.0ddeea5"
+    ],
+    "latest_historical_state_time_utc": "2026-10-28T12:43:58.820154+00:00",
+    "latest_state_new_provider_requests": 0,
+    "legacy_QC_is_final_realization": false,
+    "legacy_QC_updated_at": "2026-10-28T12:03:23.685117+08:00",
+    "native_supervisor_model_collection_started": false,
+    "native_supervisor_provider_requests": 0,
+    "native_supervisor_status": "stopped_unknown",
+    "native_supervisor_stop_reason": "native_positive_unknown",
+    "native_supervisor_used_replacements": [],
+    "realization_file_check_scope": "Historical formal audit root and native-x86-v1 root only; no development-realization.json or task-realization.json present at projection time.",
+    "separately_named_exposure_admission_receipt": "not_found_in_scoped_filename_discovery",
+    "source_ids": [
+      "legacy_qc_candidates_v2",
+      "native_qc_supervisor_attempt2",
+      "native_seed_acceptances_r6",
+      "latest_historical_continuation_v6",
+      "exposure_binding_recheck_v1"
+    ],
+    "status": "admission_pending"
+  },
+  "classification": "administrative_task_identity_metadata_only",
+  "evidence_as_of": "2026-10-28T10:31:45.273756+08:00",
+  "formal_experiment_authorized_by_projection": false,
+  "gold_or_hidden_tests_included": false,
+  "historical_development_reservations": {
+    "classification": "historical_development_or_QC_reservation_not_necessarily_provider_exposed",
+    "count": 13,
+    "formal_reuse_policy": "Do not automatically promote these IDs into formal/probe tasks in this cohort. Future redefinition requires exposure/split review; not a permanent global contamination claim.",
+    "instance_ids": [
+      "byron__dua-cli.8570c15",
+      "canop__broot.d6c798e",
+      "nikoladucak__caps-log.2cf2d1e",
+      "pvlib__pvlib-python-1072",
+      "pvlib__pvlib-python-1707",
+      "pvlib__pvlib-python-1854",
+      "pydicom__pydicom-1694",
+      "pylint-dev__astroid-1333",
+      "pyvista__pyvista-4315",
+      "skeema__skeema.6a76243",
+      "sqlfluff__sqlfluff-1763",
+      "trasta298__keifu.3331426",
+      "wfxr__code-minimap.0ddeea5"
+    ],
+    "legacy_QC_development_ids": [
+      "byron__dua-cli.8570c15",
+      "canop__broot.d6c798e",
+      "pydicom__pydicom-1694",
+      "pylint-dev__astroid-1333",
+      "sqlfluff__sqlfluff-1763",
+      "wfxr__code-minimap.0ddeea5"
+    ],
+    "original_development_ids": [
+      "nikoladucak__caps-log.2cf2d1e",
+      "pvlib__pvlib-python-1072",
+      "pvlib__pvlib-python-1854",
+      "pyvista__pyvista-4315",
+      "skeema__skeema.6a76243",
+      "wfxr__code-minimap.0ddeea5"
+    ],
+    "source_ids": [
+      "historical_catalog_v1",
+      "legacy_qc_candidates_v2"
+    ]
+  },
+  "known_positive_exposure": [
+    {
+      "exclude_from_new_Strong_M1_M2_and_probe": true,
+      "historical_checkpoint_units": 10,
+      "historical_task_request_intents": 171,
+      "instance_id": "chmln__sd.87d1ba5",
+      "repository_family": "chmln/sd",
+      "source_ids": [
+        "exposure_inventory_v1",
+        "exposure_inventory_readout",
+        "formal_freeze_draft"
+      ],
+      "status": "known_real_provider_task_exposure",
+      "track": "ProgramBench"
+    },
+    {
+      "exclude_from_new_Strong_M1_M2_and_probe": true,
+      "historical_checkpoint_units": 10,
+      "historical_task_request_intents": 137,
+      "instance_id": "sqlfluff__sqlfluff-2419",
+      "repository_family": "sqlfluff/sqlfluff",
+      "source_ids": [
+        "exposure_inventory_v1",
+        "exposure_inventory_readout",
+        "formal_freeze_draft"
+      ],
+      "status": "known_real_provider_task_exposure",
+      "track": "SWE-bench_Lite"
+    }
+  ],
+  "legacy_replacements_screening_coverage": [
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "trasta298__keifu.3331426",
+      "screened_set_membership": true,
+      "source_ids": [
+        "exposure_inventory_v1",
+        "legacy_qc_candidates_v2"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "byron__dua-cli.8570c15",
+      "screened_set_membership": true,
+      "source_ids": [
+        "exposure_inventory_v1",
+        "legacy_qc_candidates_v2"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "canop__broot.d6c798e",
+      "screened_set_membership": true,
+      "source_ids": [
+        "exposure_inventory_v1",
+        "legacy_qc_candidates_v2"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "pydicom__pydicom-1694",
+      "screened_set_membership": true,
+      "source_ids": [
+        "exposure_inventory_v1",
+        "legacy_qc_candidates_v2"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "pylint-dev__astroid-1333",
+      "screened_set_membership": true,
+      "source_ids": [
+        "exposure_inventory_v1",
+        "legacy_qc_candidates_v2"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "pvlib__pvlib-python-1707",
+      "screened_set_membership": true,
+      "source_ids": [
+        "exposure_inventory_v1",
+        "legacy_qc_candidates_v2"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sqlfluff__sqlfluff-1763",
+      "screened_set_membership": true,
+      "source_ids": [
+        "exposure_inventory_v1",
+        "legacy_qc_candidates_v2"
+      ]
+    }
+  ],
+  "other_conservative_exclusions": [
+    {
+      "classification": "prior_QC_exclusion_preserved",
+      "exclude_from_new_cohort": true,
+      "historical_task_requests_before_reselection": 0,
+      "instance_id": "sqlfluff__sqlfluff-1625",
+      "known_real_task_exposure": "not_found_in_historical_inventory",
+      "reason_scope": "QC/semantic exclusion, not a positive provider exposure claim",
+      "source_ids": [
+        "exposure_inventory_v1",
+        "formal_freeze_draft"
+      ],
+      "track": "SWE-bench_Lite"
+    },
+    {
+      "classification": "legacy_catalog_preexisting_exclusion",
+      "exclude_from_new_cohort": true,
+      "instance_id": "testorg__calculator.abc1234",
+      "known_real_task_exposure": "not_established_here",
+      "reason_scope": "Catalog lists exclusion; no provider-exposure reason inferred here.",
+      "source_ids": [
+        "historical_catalog_v1"
+      ]
+    }
+  ],
+  "projection_date": "2026-10-30",
+  "provider_api_calls_in_projection": 0,
+  "raw_model_content_included": false,
+  "repository_family_overlap": {
+    "cross_role_original_catalog_families": [
+      {
+        "historical_roles": {
+          "SWE-bench_Lite/m1": [
+            "django__django-11583",
+            "django__django-16408"
+          ],
+          "SWE-bench_Lite/m2_learning": [
+            "django__django-15851",
+            "django__django-11019"
+          ],
+          "SWE-bench_Lite/m2_probe": [
+            "django__django-13590"
+          ]
+        },
+        "repository_family": "django/django",
+        "source_id": "historical_catalog_v1"
+      },
+      {
+        "historical_roles": {
+          "SWE-bench_Lite/m1": [
+            "scikit-learn__scikit-learn-13584"
+          ],
+          "SWE-bench_Lite/m2_learning": [
+            "scikit-learn__scikit-learn-11040"
+          ]
+        },
+        "repository_family": "scikit-learn/scikit-learn",
+        "source_id": "historical_catalog_v1"
+      },
+      {
+        "historical_roles": {
+          "SWE-bench_Lite/m1": [
+            "sympy__sympy-11870",
+            "sympy__sympy-20322",
+            "sympy__sympy-18835"
+          ],
+          "SWE-bench_Lite/m2_learning": [
+            "sympy__sympy-18621"
+          ],
+          "SWE-bench_Lite/m2_probe": [
+            "sympy__sympy-21055"
+          ]
+        },
+        "repository_family": "sympy/sympy",
+        "source_id": "historical_catalog_v1"
+      }
+    ],
+    "derivation": "owner/repository parsed from IID syntax; upstream lineage not rechecked",
+    "development_related_to_known_exposed_repository": [
+      {
+        "development_instance_id": "sqlfluff__sqlfluff-1763",
+        "interpretation": "Different task ID; repository familiarity is not absent.",
+        "known_exposed_instance_id": "sqlfluff__sqlfluff-2419",
+        "repository_family": "sqlfluff/sqlfluff"
+      }
+    ],
+    "interpretation": "M1, M2 learning and heldout probes reuse repository families. Task-ID holdout is not repository-out-of-distribution evaluation. Preserve task/repository dependence.",
+    "semantic_or_lineage_family_separation": "unknown",
+    "source_ids": [
+      "historical_catalog_v1",
+      "legacy_qc_candidates_v2",
+      "formal_freeze_draft"
+    ]
+  },
+  "schema": "alo-administrative-exposure-projection-v1",
+  "scope": {
+    "fresh_underlying_ledger_or_checkpoint_revalidation": "not_performed",
+    "global_unexposed_status": "unknown",
+    "historical_scope": "Read-only local project records available at inventory time, before new Strong-development model requests.",
+    "limitations": [
+      "Local not_found is not proof of global non-exposure.",
+      "No claim about provider pretraining, external projects, deleted records, or unlogged prompts.",
+      "Payload hashes cannot reveal full wire prompts; historical identities used checkpoint/collection/manifest-to-ledger bindings.",
+      "Metadata, private QC, teacher controls and scripted fixtures were not counted as real provider task exposure.",
+      "Image availability and historical environment acceptance do not establish current formal admission.",
+      "This projection does not reread raw ledgers, checkpoints, model responses, SQLite, source-rows, gold patches or hidden tests."
+    ],
+    "local_record_screening_counts": {
+      "checkpoint_files": 160,
+      "checkpoint_modes": {
+        "model": 20,
+        "not_model_checkpoint": 2,
+        "scripted_control": 138
+      },
+      "first_round_QC_replacements_screened": 3,
+      "original_proposed_tasks": 30,
+      "real_model_checkpoint_units": 20,
+      "real_model_task_request_intents": 308,
+      "request_ledger_files": 77,
+      "reserve_unique_ids_screened": 473
+    },
+    "metadata_source_hashes_computed_for_this_projection": true,
+    "source_ids": [
+      "exposure_inventory_v1",
+      "exposure_inventory_readout",
+      "exposure_binding_recheck_v1"
+    ]
+  },
+  "screened_tasks": [
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "abishekvashok__cmatrix.5c082c6",
+      "repository_family": "abishekvashok/cmatrix",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "agourlay__zip-password-finder.704700d",
+      "repository_family": "agourlay/zip-password-finder",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "alexpovel__srgn.89f943b",
+      "repository_family": "alexpovel/srgn",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "altdesktop__i3-style.f93821b",
+      "repository_family": "altdesktop/i3-style",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "ammarabouzor__tui-journal.2b4540d",
+      "repository_family": "ammarabouzor/tui-journal",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "anordal__shellharden.6a6ffd4",
+      "repository_family": "anordal/shellharden",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "antonmedv__fx.86d0d34",
+      "repository_family": "antonmedv/fx",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "antonmedv__walk.bf802ef",
+      "repository_family": "antonmedv/walk",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_coverage_stratum": "hard",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "historical_original_role": "ProgramBench/m1",
+      "instance_id": "ariga__atlas.6d81150",
+      "repository_family": "ariga/atlas",
+      "screened_in": [
+        "original_30",
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ],
+      "track": "ProgramBench"
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_coverage_stratum": "easy",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "historical_original_role": "ProgramBench/m2_learning",
+      "instance_id": "arthursonzogni__json-tui.17a22b6",
+      "repository_family": "arthursonzogni/json-tui",
+      "screened_in": [
+        "original_30",
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ],
+      "track": "ProgramBench"
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "astaxie__bat.17d1080",
+      "repository_family": "astaxie/bat",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "astro__deadnix.d590041",
+      "repository_family": "astro/deadnix",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "astropy__astropy-12907",
+      "repository_family": "astropy/astropy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "astropy__astropy-14182",
+      "repository_family": "astropy/astropy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "astropy__astropy-14365",
+      "repository_family": "astropy/astropy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "astropy__astropy-14995",
+      "repository_family": "astropy/astropy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "astropy__astropy-6938",
+      "repository_family": "astropy/astropy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "astropy__astropy-7746",
+      "repository_family": "astropy/astropy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "axodotdev__oranda.27d60c7",
+      "repository_family": "axodotdev/oranda",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "bensadeh__tailspin.6278437",
+      "repository_family": "bensadeh/tailspin",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "blacknon__hwatch.edfcb62",
+      "repository_family": "blacknon/hwatch",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "bootandy__dust.62bf1e1",
+      "repository_family": "bootandy/dust",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "brocode__fblog.3b54330",
+      "repository_family": "brocode/fblog",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "burntsushi__ripgrep.3b7fd44",
+      "repository_family": "burntsushi/ripgrep",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "burntsushi__xsv.f430466",
+      "repository_family": "burntsushi/xsv",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "byron__dua-cli.8570c15",
+      "repository_family": "byron/dua-cli",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "canop__broot.d6c798e",
+      "repository_family": "canop/broot",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "canop__rhit.ae90bcb",
+      "repository_family": "canop/rhit",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "chmln__handlr.90e78ba",
+      "repository_family": "chmln/handlr",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "clog-tool__clog-cli.7066cba",
+      "repository_family": "clog-tool/clog-cli",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "cmatsuoka__figlet.202a0a8",
+      "repository_family": "cmatsuoka/figlet",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "codesnap-rs__codesnap.f81e4f3",
+      "repository_family": "codesnap-rs/codesnap",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "cordx56__rustowl.655bc5c",
+      "repository_family": "cordx56/rustowl",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "crowdagger__crowbook.ea214d7",
+      "repository_family": "crowdagger/crowbook",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "cslarsen__jp2a.61d205f",
+      "repository_family": "cslarsen/jp2a",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "cweill__gotests.2a672c5",
+      "repository_family": "cweill/gotests",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "dalance__amber.69a0f52",
+      "repository_family": "dalance/amber",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "dandavison__delta.acd758f",
+      "repository_family": "dandavison/delta",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "danmar__cppcheck.0a5b103",
+      "repository_family": "danmar/cppcheck",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "direnv__direnv.02040c7",
+      "repository_family": "direnv/direnv",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-10914",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-10924",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-11001",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_coverage_stratum": "long",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "historical_original_role": "SWE-bench_Lite/m2_learning",
+      "instance_id": "django__django-11019",
+      "repository_family": "django/django",
+      "screened_in": [
+        "original_30",
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ],
+      "track": "SWE-bench_Lite"
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-11039",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-11049",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-11099",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-11133",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-11179",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-11283",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-11422",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-11564",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_coverage_stratum": "short",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "historical_original_role": "SWE-bench_Lite/m1",
+      "instance_id": "django__django-11583",
+      "repository_family": "django/django",
+      "screened_in": [
+        "original_30"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ],
+      "track": "SWE-bench_Lite"
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-11620",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-11630",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-11742",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-11797",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-11815",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-11848",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-11905",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-11910",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-11964",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-11999",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-12113",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-12125",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-12184",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-12284",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-12286",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-12308",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-12453",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-12470",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-12497",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-12589",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-12700",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-12708",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-12747",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-12856",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-12908",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-12915",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-12983",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-13028",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-13033",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-13158",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-13220",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-13230",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-13265",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-13315",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-13321",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-13401",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-13447",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-13448",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-13551",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_coverage_stratum": "medium",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "historical_original_role": "SWE-bench_Lite/m2_probe",
+      "instance_id": "django__django-13590",
+      "repository_family": "django/django",
+      "screened_in": [
+        "original_30",
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ],
+      "track": "SWE-bench_Lite"
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-13658",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-13660",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-13710",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-13757",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-13768",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-13925",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-13933",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-13964",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-14016",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-14017",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-14155",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-14238",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-14382",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-14411",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-14534",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-14580",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-14608",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-14667",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-14672",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-14730",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-14752",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-14787",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-14855",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-14915",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-14997",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-14999",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-15061",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-15202",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-15213",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-15252",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-15320",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-15347",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-15388",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-15400",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-15498",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-15695",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-15738",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-15781",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-15789",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-15790",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-15814",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-15819",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_coverage_stratum": "short",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "historical_original_role": "SWE-bench_Lite/m2_learning",
+      "instance_id": "django__django-15851",
+      "repository_family": "django/django",
+      "screened_in": [
+        "original_30",
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ],
+      "track": "SWE-bench_Lite"
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-15902",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-15996",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-16041",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-16046",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-16139",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-16229",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-16255",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-16379",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-16400",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_coverage_stratum": "medium",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "historical_original_role": "SWE-bench_Lite/m1",
+      "instance_id": "django__django-16408",
+      "repository_family": "django/django",
+      "screened_in": [
+        "original_30"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ],
+      "track": "SWE-bench_Lite"
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-16527",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-16595",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-16816",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-16820",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-16873",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-16910",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-17051",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "django__django-17087",
+      "repository_family": "django/django",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "doxygen__doxygen.966d98e",
+      "repository_family": "doxygen/doxygen",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "drew-alleman__datasurgeon.d257cee",
+      "repository_family": "drew-alleman/datasurgeon",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "ducaale__xh.4a6e44f",
+      "repository_family": "ducaale/xh",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "dundee__gdu.ede21d2",
+      "repository_family": "dundee/gdu",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "ecumene__rust-sloth.051c559",
+      "repository_family": "ecumene/rust-sloth",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "ekzhang__bore.8e059cd",
+      "repository_family": "ekzhang/bore",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "eliukblau__pixterm.1a93fd5",
+      "repository_family": "eliukblau/pixterm",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "elkowar__pipr.fae0b17",
+      "repository_family": "elkowar/pipr",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "epistates__treemd.825c6dd",
+      "repository_family": "epistates/treemd",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "eradman__entr.8e2e8b4",
+      "repository_family": "eradman/entr",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_coverage_stratum": "medium",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "historical_original_role": "ProgramBench/m1",
+      "instance_id": "esubaalew__run.0fb9dec",
+      "repository_family": "esubaalew/run",
+      "screened_in": [
+        "original_30",
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ],
+      "track": "ProgramBench"
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "eudoxia0__hashcards.48aa136",
+      "repository_family": "eudoxia0/hashcards",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "facebook__zstd.1168da0",
+      "repository_family": "facebook/zstd",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_coverage_stratum": "hard",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "historical_original_role": "ProgramBench/m2_probe",
+      "instance_id": "ffmpeg__ffmpeg.360a402",
+      "repository_family": "ffmpeg/ffmpeg",
+      "screened_in": [
+        "original_30",
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ],
+      "track": "ProgramBench"
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "foriequal0__git-trim.07c2f50",
+      "repository_family": "foriequal0/git-trim",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "gabotechs__dep-tree.60a95a2",
+      "repository_family": "gabotechs/dep-tree",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "ggreer__the_silver_searcher.a61f178",
+      "repository_family": "ggreer/the_silver_searcher",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "git-bahn__git-graph.87b4473",
+      "repository_family": "git-bahn/git-graph",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "go-critic__go-critic.9aea378",
+      "repository_family": "go-critic/go-critic",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "guumaster__hostctl.d6d9699",
+      "repository_family": "guumaster/hostctl",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "hairyhenderson__gomplate.05eb3aa",
+      "repository_family": "hairyhenderson/gomplate",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "halitechallenge__halite.822cfb6",
+      "repository_family": "halitechallenge/halite",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "hatoo__oha.8dc6349",
+      "repository_family": "hatoo/oha",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "hooklift__gowsdl.2a06cec",
+      "repository_family": "hooklift/gowsdl",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "hpjansson__chafa.dd4d4c1",
+      "repository_family": "hpjansson/chafa",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "htop-dev__htop.523600b",
+      "repository_family": "htop-dev/htop",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "hush-shell__hush.560c33a",
+      "repository_family": "hush-shell/hush",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "incu6us__goimports-reviser.81bd549",
+      "repository_family": "incu6us/goimports-reviser",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "ismaelgv__rnr.fc0733b",
+      "repository_family": "ismaelgv/rnr",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "isona__dirble.e2dea9f",
+      "repository_family": "isona/dirble",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "jarun__nnn.cb2c535",
+      "repository_family": "jarun/nnn",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "jesseduffield__lazygit.1d0db51",
+      "repository_family": "jesseduffield/lazygit",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "johanneskaufmann__html-to-markdown.3006818",
+      "repository_family": "johanneskaufmann/html-to-markdown",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_coverage_stratum": "hard",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "historical_original_role": "ProgramBench/m2_learning",
+      "instance_id": "johnkerl__miller.8d85b46",
+      "repository_family": "johnkerl/miller",
+      "screened_in": [
+        "original_30",
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ],
+      "track": "ProgramBench"
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "jonas__tig.8334123",
+      "repository_family": "jonas/tig",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "jqlang__jq.b33a763",
+      "repository_family": "jqlang/jq",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "jrnxf__thokr.09375ef",
+      "repository_family": "jrnxf/thokr",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "junegunn__fzf.b56d614",
+      "repository_family": "junegunn/fzf",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "kaushiksrini__parqeye.8072121",
+      "repository_family": "kaushiksrini/parqeye",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_coverage_stratum": "easy",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "historical_original_role": "ProgramBench/m1",
+      "instance_id": "kisielk__errcheck.dacab89",
+      "repository_family": "kisielk/errcheck",
+      "screened_in": [
+        "original_30",
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ],
+      "track": "ProgramBench"
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "konradsz__igrep.aa75630",
+      "repository_family": "konradsz/igrep",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "ksxgithub__parallel-disk-usage.96978ed",
+      "repository_family": "ksxgithub/parallel-disk-usage",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "kyoh86__richgo.313114f",
+      "repository_family": "kyoh86/richgo",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "kyoheiu__felix.95df390",
+      "repository_family": "kyoheiu/felix",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "lfos__calcurse.49180d5",
+      "repository_family": "lfos/calcurse",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "lua__lua.c6b4848",
+      "repository_family": "lua/lua",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "luajit__luajit.a553b3d",
+      "repository_family": "luajit/luajit",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "lymphatus__caesium-clt.a529b2e",
+      "repository_family": "lymphatus/caesium-clt",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "lz4__lz4.1519f46",
+      "repository_family": "lz4/lz4",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "madler__pigz.fe4894f",
+      "repository_family": "madler/pigz",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "marshmallow-code__marshmallow-1343",
+      "repository_family": "marshmallow-code/marshmallow",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "marshmallow-code__marshmallow-1359",
+      "repository_family": "marshmallow-code/marshmallow",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "matplotlib__matplotlib-18869",
+      "repository_family": "matplotlib/matplotlib",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "matplotlib__matplotlib-22711",
+      "repository_family": "matplotlib/matplotlib",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "matplotlib__matplotlib-22835",
+      "repository_family": "matplotlib/matplotlib",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "matplotlib__matplotlib-23299",
+      "repository_family": "matplotlib/matplotlib",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "matplotlib__matplotlib-23314",
+      "repository_family": "matplotlib/matplotlib",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "matplotlib__matplotlib-23476",
+      "repository_family": "matplotlib/matplotlib",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "matplotlib__matplotlib-23562",
+      "repository_family": "matplotlib/matplotlib",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "matplotlib__matplotlib-23563",
+      "repository_family": "matplotlib/matplotlib",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "matplotlib__matplotlib-23913",
+      "repository_family": "matplotlib/matplotlib",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "matplotlib__matplotlib-23964",
+      "repository_family": "matplotlib/matplotlib",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "matplotlib__matplotlib-23987",
+      "repository_family": "matplotlib/matplotlib",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "matplotlib__matplotlib-24149",
+      "repository_family": "matplotlib/matplotlib",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "matplotlib__matplotlib-24265",
+      "repository_family": "matplotlib/matplotlib",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "matplotlib__matplotlib-24334",
+      "repository_family": "matplotlib/matplotlib",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "matplotlib__matplotlib-24970",
+      "repository_family": "matplotlib/matplotlib",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "matplotlib__matplotlib-25079",
+      "repository_family": "matplotlib/matplotlib",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "matplotlib__matplotlib-25311",
+      "repository_family": "matplotlib/matplotlib",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "matplotlib__matplotlib-25332",
+      "repository_family": "matplotlib/matplotlib",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "matplotlib__matplotlib-25433",
+      "repository_family": "matplotlib/matplotlib",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "matplotlib__matplotlib-25442",
+      "repository_family": "matplotlib/matplotlib",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "matplotlib__matplotlib-25498",
+      "repository_family": "matplotlib/matplotlib",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "matplotlib__matplotlib-26011",
+      "repository_family": "matplotlib/matplotlib",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "matplotlib__matplotlib-26020",
+      "repository_family": "matplotlib/matplotlib",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "mfridman__tparse.2416b4b",
+      "repository_family": "mfridman/tparse",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_coverage_stratum": "easy",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "historical_original_role": "ProgramBench/m1",
+      "instance_id": "mgdm__htmlq.6e31bc8",
+      "repository_family": "mgdm/htmlq",
+      "screened_in": [
+        "original_30",
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ],
+      "track": "ProgramBench"
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "mgechev__revive.201451e",
+      "repository_family": "mgechev/revive",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "mibk__dupl.1bf052b",
+      "repository_family": "mibk/dupl",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "miserlou__loop.209927c",
+      "repository_family": "miserlou/loop",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "mkj__dropbear.75f699b",
+      "repository_family": "mkj/dropbear",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "mookid__diffr.2152742",
+      "repository_family": "mookid/diffr",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "multiprocessio__dsq.c3ae0ba",
+      "repository_family": "multiprocessio/dsq",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "mwaskom__seaborn-2848",
+      "repository_family": "mwaskom/seaborn",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "mwaskom__seaborn-3010",
+      "repository_family": "mwaskom/seaborn",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "mwaskom__seaborn-3190",
+      "repository_family": "mwaskom/seaborn",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "mwaskom__seaborn-3407",
+      "repository_family": "mwaskom/seaborn",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "nachoparker__dutree.44e877d",
+      "repository_family": "nachoparker/dutree",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "naggie__dstask.ff57396",
+      "repository_family": "naggie/dstask",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_coverage_stratum": "medium",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "historical_original_role": "ProgramBench/development",
+      "instance_id": "nikoladucak__caps-log.2cf2d1e",
+      "repository_family": "nikoladucak/caps-log",
+      "screened_in": [
+        "original_30"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ],
+      "track": "ProgramBench"
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "nikolassv__bartib.6b9b5ce",
+      "repository_family": "nikolassv/bartib",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "ninja-build__ninja.cc60300",
+      "repository_family": "ninja-build/ninja",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "noborus__ov.b96c2ba",
+      "repository_family": "noborus/ov",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_coverage_stratum": "medium",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "historical_original_role": "ProgramBench/m2_probe",
+      "instance_id": "noborus__trdsql.d8c5ff6",
+      "repository_family": "noborus/trdsql",
+      "screened_in": [
+        "original_30",
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ],
+      "track": "ProgramBench"
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "nuta__nsh.bdd0702",
+      "repository_family": "nuta/nsh",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_coverage_stratum": "medium",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "historical_original_role": "ProgramBench/m2_learning",
+      "instance_id": "o2sh__onefetch.e5958ce",
+      "repository_family": "o2sh/onefetch",
+      "screened_in": [
+        "original_30",
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ],
+      "track": "ProgramBench"
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "ogham__dog.721440b",
+      "repository_family": "ogham/dog",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "oppiliappan__eva.41ae245",
+      "repository_family": "oppiliappan/eva",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "oppiliappan__statix.e9df54c",
+      "repository_family": "oppiliappan/statix",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "orf__gping.26eb5b9",
+      "repository_family": "orf/gping",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "pallets__flask-4045",
+      "repository_family": "pallets/flask",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "pallets__flask-4992",
+      "repository_family": "pallets/flask",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "pallets__flask-5063",
+      "repository_family": "pallets/flask",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "paradigmxyz__solar.5190d0e",
+      "repository_family": "paradigmxyz/solar",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "parcel-bundler__lightningcss.aa2ed1e",
+      "repository_family": "parcel-bundler/lightningcss",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "peco__peco.4e58dad",
+      "repository_family": "peco/peco",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "pemistahl__grex.fa3e8ed",
+      "repository_family": "pemistahl/grex",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "php__php-src.c891263",
+      "repository_family": "php/php-src",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "pier-cli__pier.5e1bde9",
+      "repository_family": "pier-cli/pier",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "pls-rs__pls.4e1ae50",
+      "repository_family": "pls-rs/pls",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "psampaz__go-mod-outdated.bb79367",
+      "repository_family": "psampaz/go-mod-outdated",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "psf__requests-1963",
+      "repository_family": "psf/requests",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "psf__requests-2148",
+      "repository_family": "psf/requests",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "psf__requests-2317",
+      "repository_family": "psf/requests",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "psf__requests-2674",
+      "repository_family": "psf/requests",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "psf__requests-3362",
+      "repository_family": "psf/requests",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "psf__requests-863",
+      "repository_family": "psf/requests",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_coverage_stratum": "short",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "historical_original_role": "SWE-bench_Lite/development",
+      "instance_id": "pvlib__pvlib-python-1072",
+      "repository_family": "pvlib/pvlib-python",
+      "screened_in": [
+        "original_30"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ],
+      "track": "SWE-bench_Lite"
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "pvlib__pvlib-python-1154",
+      "repository_family": "pvlib/pvlib-python",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "pvlib__pvlib-python-1606",
+      "repository_family": "pvlib/pvlib-python",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "pvlib__pvlib-python-1707",
+      "repository_family": "pvlib/pvlib-python",
+      "screened_in": [
+        "reserve_473",
+        "first_QC_replacement_3"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_coverage_stratum": "medium",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "historical_original_role": "SWE-bench_Lite/development",
+      "instance_id": "pvlib__pvlib-python-1854",
+      "repository_family": "pvlib/pvlib-python",
+      "screened_in": [
+        "original_30"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ],
+      "track": "SWE-bench_Lite"
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "pydata__xarray-3364",
+      "repository_family": "pydata/xarray",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "pydata__xarray-4094",
+      "repository_family": "pydata/xarray",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "pydata__xarray-4248",
+      "repository_family": "pydata/xarray",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "pydata__xarray-4493",
+      "repository_family": "pydata/xarray",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "pydata__xarray-5131",
+      "repository_family": "pydata/xarray",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "pydicom__pydicom-1139",
+      "repository_family": "pydicom/pydicom",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "pydicom__pydicom-1256",
+      "repository_family": "pydicom/pydicom",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "pydicom__pydicom-1413",
+      "repository_family": "pydicom/pydicom",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "pydicom__pydicom-1694",
+      "repository_family": "pydicom/pydicom",
+      "screened_in": [
+        "reserve_473",
+        "first_QC_replacement_3"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "pydicom__pydicom-901",
+      "repository_family": "pydicom/pydicom",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "pylint-dev__astroid-1196",
+      "repository_family": "pylint-dev/astroid",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "pylint-dev__astroid-1268",
+      "repository_family": "pylint-dev/astroid",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "pylint-dev__astroid-1333",
+      "repository_family": "pylint-dev/astroid",
+      "screened_in": [
+        "reserve_473",
+        "first_QC_replacement_3"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "pylint-dev__astroid-1866",
+      "repository_family": "pylint-dev/astroid",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "pylint-dev__astroid-1978",
+      "repository_family": "pylint-dev/astroid",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "pylint-dev__pylint-5859",
+      "repository_family": "pylint-dev/pylint",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "pylint-dev__pylint-6506",
+      "repository_family": "pylint-dev/pylint",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "pylint-dev__pylint-7080",
+      "repository_family": "pylint-dev/pylint",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "pylint-dev__pylint-7114",
+      "repository_family": "pylint-dev/pylint",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "pylint-dev__pylint-7228",
+      "repository_family": "pylint-dev/pylint",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "pylint-dev__pylint-7993",
+      "repository_family": "pylint-dev/pylint",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "pytest-dev__pytest-11143",
+      "repository_family": "pytest-dev/pytest",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "pytest-dev__pytest-11148",
+      "repository_family": "pytest-dev/pytest",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "pytest-dev__pytest-5103",
+      "repository_family": "pytest-dev/pytest",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "pytest-dev__pytest-5221",
+      "repository_family": "pytest-dev/pytest",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "pytest-dev__pytest-5227",
+      "repository_family": "pytest-dev/pytest",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "pytest-dev__pytest-5413",
+      "repository_family": "pytest-dev/pytest",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "pytest-dev__pytest-5495",
+      "repository_family": "pytest-dev/pytest",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "pytest-dev__pytest-5692",
+      "repository_family": "pytest-dev/pytest",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "pytest-dev__pytest-6116",
+      "repository_family": "pytest-dev/pytest",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "pytest-dev__pytest-7168",
+      "repository_family": "pytest-dev/pytest",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "pytest-dev__pytest-7220",
+      "repository_family": "pytest-dev/pytest",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "pytest-dev__pytest-7373",
+      "repository_family": "pytest-dev/pytest",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "pytest-dev__pytest-7432",
+      "repository_family": "pytest-dev/pytest",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "pytest-dev__pytest-7490",
+      "repository_family": "pytest-dev/pytest",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "pytest-dev__pytest-8365",
+      "repository_family": "pytest-dev/pytest",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "pytest-dev__pytest-8906",
+      "repository_family": "pytest-dev/pytest",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "pytest-dev__pytest-9359",
+      "repository_family": "pytest-dev/pytest",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_coverage_stratum": "long",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "historical_original_role": "SWE-bench_Lite/development",
+      "instance_id": "pyvista__pyvista-4315",
+      "repository_family": "pyvista/pyvista",
+      "screened_in": [
+        "original_30"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ],
+      "track": "SWE-bench_Lite"
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "quinn-rs__quinn.bb359cc",
+      "repository_family": "quinn-rs/quinn",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_coverage_stratum": "medium",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "historical_original_role": "ProgramBench/m1",
+      "instance_id": "raviqqe__muffet.a882908",
+      "repository_family": "raviqqe/muffet",
+      "screened_in": [
+        "original_30",
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ],
+      "track": "ProgramBench"
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "rbakbashev__elfcat.52f8cc7",
+      "repository_family": "rbakbashev/elfcat",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "rhysd__kiro-editor.4157485",
+      "repository_family": "rhysd/kiro-editor",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "riquito__tuc.16fb471",
+      "repository_family": "riquito/tuc",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "robertdavidgraham__masscan.b99d433",
+      "repository_family": "robertdavidgraham/masscan",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "rochacbruno__marmite.7d4bc2d",
+      "repository_family": "rochacbruno/marmite",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "rs__curlie.5dfcbb1",
+      "repository_family": "rs/curlie",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "rs__jplot.2a54bcc",
+      "repository_family": "rs/jplot",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "rust-embedded__svd2rust.1760b5e",
+      "repository_family": "rust-embedded/svd2rust",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "rust-ethereum__ethabi.b1710ad",
+      "repository_family": "rust-ethereum/ethabi",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "rust-lang__mdbook.37273ba",
+      "repository_family": "rust-lang/mdbook",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "rvben__rumdl.2d75c4d",
+      "repository_family": "rvben/rumdl",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sayanarijit__xplr.1751065",
+      "repository_family": "sayanarijit/xplr",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "scikit-learn__scikit-learn-10297",
+      "repository_family": "scikit-learn/scikit-learn",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "scikit-learn__scikit-learn-10508",
+      "repository_family": "scikit-learn/scikit-learn",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "scikit-learn__scikit-learn-10949",
+      "repository_family": "scikit-learn/scikit-learn",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_coverage_stratum": "medium",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "historical_original_role": "SWE-bench_Lite/m2_learning",
+      "instance_id": "scikit-learn__scikit-learn-11040",
+      "repository_family": "scikit-learn/scikit-learn",
+      "screened_in": [
+        "original_30",
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ],
+      "track": "SWE-bench_Lite"
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "scikit-learn__scikit-learn-11281",
+      "repository_family": "scikit-learn/scikit-learn",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "scikit-learn__scikit-learn-12471",
+      "repository_family": "scikit-learn/scikit-learn",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "scikit-learn__scikit-learn-13142",
+      "repository_family": "scikit-learn/scikit-learn",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "scikit-learn__scikit-learn-13241",
+      "repository_family": "scikit-learn/scikit-learn",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "scikit-learn__scikit-learn-13439",
+      "repository_family": "scikit-learn/scikit-learn",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "scikit-learn__scikit-learn-13496",
+      "repository_family": "scikit-learn/scikit-learn",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "scikit-learn__scikit-learn-13497",
+      "repository_family": "scikit-learn/scikit-learn",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_coverage_stratum": "short",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "historical_original_role": "SWE-bench_Lite/m1",
+      "instance_id": "scikit-learn__scikit-learn-13584",
+      "repository_family": "scikit-learn/scikit-learn",
+      "screened_in": [
+        "original_30"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ],
+      "track": "SWE-bench_Lite"
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "scikit-learn__scikit-learn-13779",
+      "repository_family": "scikit-learn/scikit-learn",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "scikit-learn__scikit-learn-14087",
+      "repository_family": "scikit-learn/scikit-learn",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "scikit-learn__scikit-learn-14092",
+      "repository_family": "scikit-learn/scikit-learn",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "scikit-learn__scikit-learn-14894",
+      "repository_family": "scikit-learn/scikit-learn",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "scikit-learn__scikit-learn-14983",
+      "repository_family": "scikit-learn/scikit-learn",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "scikit-learn__scikit-learn-15512",
+      "repository_family": "scikit-learn/scikit-learn",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "scikit-learn__scikit-learn-15535",
+      "repository_family": "scikit-learn/scikit-learn",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "scikit-learn__scikit-learn-25500",
+      "repository_family": "scikit-learn/scikit-learn",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "scikit-learn__scikit-learn-25570",
+      "repository_family": "scikit-learn/scikit-learn",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "scikit-learn__scikit-learn-25638",
+      "repository_family": "scikit-learn/scikit-learn",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "scikit-learn__scikit-learn-25747",
+      "repository_family": "scikit-learn/scikit-learn",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sclevine__yj.8016400",
+      "repository_family": "sclevine/yj",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "segmentio__chamber.5f93f5f",
+      "repository_family": "segmentio/chamber",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sharkdp__fd.40d8eb3",
+      "repository_family": "sharkdp/fd",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sharkdp__hexyl.2e26437",
+      "repository_family": "sharkdp/hexyl",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sharkdp__pastel.b60e899",
+      "repository_family": "sharkdp/pastel",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "shashwatah__jot.a92aad8",
+      "repository_family": "shashwatah/jot",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sheepla__pingu.926d475",
+      "repository_family": "sheepla/pingu",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sibprogrammer__xq.b89f681",
+      "repository_family": "sibprogrammer/xq",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "simeg__eureka.df3796c",
+      "repository_family": "simeg/eureka",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sirwart__ripsecrets.34c9e03",
+      "repository_family": "sirwart/ripsecrets",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sitkevij__hex.61ae69b",
+      "repository_family": "sitkevij/hex",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_coverage_stratum": "hard",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "historical_original_role": "ProgramBench/development",
+      "instance_id": "skeema__skeema.6a76243",
+      "repository_family": "skeema/skeema",
+      "screened_in": [
+        "original_30"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ],
+      "track": "ProgramBench"
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sphinx-doc__sphinx-10325",
+      "repository_family": "sphinx-doc/sphinx",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sphinx-doc__sphinx-10451",
+      "repository_family": "sphinx-doc/sphinx",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sphinx-doc__sphinx-11445",
+      "repository_family": "sphinx-doc/sphinx",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sphinx-doc__sphinx-7686",
+      "repository_family": "sphinx-doc/sphinx",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sphinx-doc__sphinx-7738",
+      "repository_family": "sphinx-doc/sphinx",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sphinx-doc__sphinx-7975",
+      "repository_family": "sphinx-doc/sphinx",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sphinx-doc__sphinx-8273",
+      "repository_family": "sphinx-doc/sphinx",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sphinx-doc__sphinx-8282",
+      "repository_family": "sphinx-doc/sphinx",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sphinx-doc__sphinx-8435",
+      "repository_family": "sphinx-doc/sphinx",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sphinx-doc__sphinx-8474",
+      "repository_family": "sphinx-doc/sphinx",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sphinx-doc__sphinx-8506",
+      "repository_family": "sphinx-doc/sphinx",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sphinx-doc__sphinx-8595",
+      "repository_family": "sphinx-doc/sphinx",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sphinx-doc__sphinx-8627",
+      "repository_family": "sphinx-doc/sphinx",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sphinx-doc__sphinx-8713",
+      "repository_family": "sphinx-doc/sphinx",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sphinx-doc__sphinx-8721",
+      "repository_family": "sphinx-doc/sphinx",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sphinx-doc__sphinx-8801",
+      "repository_family": "sphinx-doc/sphinx",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sqlfluff__sqlfluff-1517",
+      "repository_family": "sqlfluff/sqlfluff",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sqlfluff__sqlfluff-1733",
+      "repository_family": "sqlfluff/sqlfluff",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sqlfluff__sqlfluff-1763",
+      "repository_family": "sqlfluff/sqlfluff",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sstadick__hck.b66c751",
+      "repository_family": "sstadick/hck",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "stacked-git__stgit.430027d",
+      "repository_family": "stacked-git/stgit",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "stranger6667__jsonschema.d52e881",
+      "repository_family": "stranger6667/jsonschema",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "svenstaro__miniserve.8449e8b",
+      "repository_family": "svenstaro/miniserve",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-11400",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_coverage_stratum": "medium",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "historical_original_role": "SWE-bench_Lite/m1",
+      "instance_id": "sympy__sympy-11870",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "original_30"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ],
+      "track": "SWE-bench_Lite"
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-11897",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-12171",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-12236",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-12419",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-12454",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-12481",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-13031",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-13043",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-13146",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-13177",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-13437",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-13471",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-13480",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-13647",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-13773",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-13895",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-13915",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-13971",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-14024",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-14308",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-14317",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-14396",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-14774",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-14817",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-15011",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-15308",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-15345",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-15346",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-15609",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-15678",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-16106",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-16281",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-16503",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-16792",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-16988",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-17022",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-17139",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-17630",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-17655",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-18057",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-18087",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-18189",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-18199",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-18532",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_coverage_stratum": "short",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "historical_original_role": "SWE-bench_Lite/m2_learning",
+      "instance_id": "sympy__sympy-18621",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "original_30",
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ],
+      "track": "SWE-bench_Lite"
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-18698",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_coverage_stratum": "long",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "historical_original_role": "SWE-bench_Lite/m1",
+      "instance_id": "sympy__sympy-18835",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "original_30"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ],
+      "track": "SWE-bench_Lite"
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-19007",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-19254",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-19487",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-20049",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-20154",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-20212",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_coverage_stratum": "long",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "historical_original_role": "SWE-bench_Lite/m1",
+      "instance_id": "sympy__sympy-20322",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "original_30"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ],
+      "track": "SWE-bench_Lite"
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-20442",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-20590",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-20639",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_coverage_stratum": "long",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "historical_original_role": "SWE-bench_Lite/m2_probe",
+      "instance_id": "sympy__sympy-21055",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "original_30",
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ],
+      "track": "SWE-bench_Lite"
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-21171",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-21379",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-21612",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-21614",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-21627",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-21847",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-22005",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-22714",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-22840",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-23117",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-23191",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-23262",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-24066",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-24102",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-24152",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-24213",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "sympy__sympy-24909",
+      "repository_family": "sympy/sympy",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "tarka__xcp.5e5b448",
+      "repository_family": "tarka/xcp",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "thezoraiz__ascii-image-converter.d05a757",
+      "repository_family": "thezoraiz/ascii-image-converter",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "tomarrell__wrapcheck.c058da1",
+      "repository_family": "tomarrell/wrapcheck",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "trasta298__keifu.3331426",
+      "repository_family": "trasta298/keifu",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "tree-sitter__tree-sitter.5e23cca",
+      "repository_family": "tree-sitter/tree-sitter",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "tukaani-project__xz.1007bf0",
+      "repository_family": "tukaani-project/xz",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "typst__typst.88356d0",
+      "repository_family": "typst/typst",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_coverage_stratum": "hard",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "historical_original_role": "ProgramBench/m1",
+      "instance_id": "unhappychoice__gittype.34b72d0",
+      "repository_family": "unhappychoice/gittype",
+      "screened_in": [
+        "original_30",
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ],
+      "track": "ProgramBench"
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_coverage_stratum": "easy",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "historical_original_role": "ProgramBench/development",
+      "instance_id": "wfxr__code-minimap.0ddeea5",
+      "repository_family": "wfxr/code-minimap",
+      "screened_in": [
+        "original_30"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ],
+      "track": "ProgramBench"
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "wfxr__csview.8ac4de0",
+      "repository_family": "wfxr/csview",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "wgunderwood__tex-fmt.3f1aef6",
+      "repository_family": "wgunderwood/tex-fmt",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "wintermute-cell__ngrrram.8ea13c3",
+      "repository_family": "wintermute-cell/ngrrram",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "xampprocky__tokei.505d648",
+      "repository_family": "xampprocky/tokei",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_coverage_stratum": "easy",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "historical_original_role": "ProgramBench/m2_learning",
+      "instance_id": "xorg62__tty-clock.f2f847c",
+      "repository_family": "xorg62/tty-clock",
+      "screened_in": [
+        "original_30",
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ],
+      "track": "ProgramBench"
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "y2z__monolith.8702e66",
+      "repository_family": "y2z/monolith",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "yaa110__nomino.f892499",
+      "repository_family": "yaa110/nomino",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "yassinebridi__serpl.c48a9d7",
+      "repository_family": "yassinebridi/serpl",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "yoav-lavi__melody.f4af9b4",
+      "repository_family": "yoav-lavi/melody",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "ys-l__flamelens.0b4dc33",
+      "repository_family": "ys-l/flamelens",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "zevv__duc.a58fa4e",
+      "repository_family": "zevv/duc",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    },
+    {
+      "global_unexposed_status": "unknown",
+      "historical_local_dispatch_screen": "not_found_in_scoped_records",
+      "instance_id": "zk-org__zk.10d93d5",
+      "repository_family": "zk-org/zk",
+      "screened_in": [
+        "reserve_473"
+      ],
+      "source_ids": [
+        "exposure_inventory_v1"
+      ]
+    }
+  ],
+  "screening_set_counts": {
+    "first_replacement": 3,
+    "first_replacements_already_in_reserve": 3,
+    "not_additive": true,
+    "original": 30,
+    "original_reserve_overlap": 18,
+    "reserve": 473,
+    "union_unique": 485
+  },
+  "source_reference_policy": "Logical source IDs resolve through source_index.json; private record contents are not uploaded."
+}
