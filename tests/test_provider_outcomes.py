@@ -233,3 +233,47 @@ def test_vendor_tool_call_and_stream_chunks():
     folded = parse_sse(deepseek, "deepseek-flash")
     assert folded["choices"][0]["message"]["content"] == "a"
     assert folded["usage"]["prompt_cache_hit_tokens"] == 1
+
+
+def test_trickling_keepalive_hits_the_wall_clock():
+    from alo_cloud.providers import _read_sse
+    clock = {"t": 0.0}
+
+    class Tick:
+        def readline(self):
+            clock["t"] += 0.4
+            return b": keepalive\n"
+
+    with pytest.raises(TimeoutError, match="provider_wall_clock"):
+        _read_sse(Tick(), "mimo-v2.6-pro", deadline_s=1.0, started=0.0, clock=lambda: clock["t"])
+    assert clock["t"] <= 1.4
+
+
+def test_restart_after_cap_minus_one_gets_a_fresh_request_cap(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "urllib.request.urlopen", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("network")))
+    unit = select_units("m1", arms=("g1-strong",), tasks=("scikit-learn__scikit-learn-13584",))[0]
+    cap = unit.request_cap
+    calls = {"n": 0}
+
+    def sender(url, body, headers):
+        del url, headers
+        calls["n"] += 1
+        if calls["n"] == cap:
+            raise TimeoutError("trickle")
+        return _body(body["model"], "not-json", _usage(4, 2))
+
+    rows = run_schedule((unit,), tmp_path / "run", live=False, sender=sender)
+    assert rows[0]["restart_count"] == 1
+    assert rows[0]["status"] == "failed"
+    assert rows[0]["reason"] != "cumulative_request_or_model_limit"
+    assert calls["n"] == cap * 2
+    ledger = BudgetLedger(tmp_path / "run" / "budget.sqlite3")
+    ids = [item for item in ledger.request_ids() if unit.unit_id in item]
+    first = [item for item in ids if "-r1-" not in item]
+    second = [item for item in ids if "-r1-" in item]
+    assert len(first) == cap
+    assert len(second) == cap
+    assert ledger.unit_usage(unit.unit_id, restart_count=1)["requests"] == cap
+    assert ledger.snapshot()["committed_or_reserved_microcny"]["mimo-v2.6-pro"] > 0
+    assert ledger.snapshot()["unresolved_request_ids"] == []

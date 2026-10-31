@@ -157,7 +157,7 @@ class StudyServices:
         if not self.unit_id:
             return {}
         return {"unit_id": self.unit_id, "unit_request_cap": self.limits["requests"],
-                "protocol_epoch": self.protocol_epoch}
+                "protocol_epoch": self.protocol_epoch, "restart_count": self.restart_count}
 
     def _wall_remaining(self):
         return self.limits["seconds"] - (self._clock() - self._started)
@@ -198,7 +198,8 @@ class StudyServices:
         if "max_tokens" not in state or "max_seconds_ms" not in state:
             raise PilotStopped("resource_dimensions_unconfigured")
         if self.unit_id:
-            usage = self.ledger.unit_usage(self.unit_id, protocol_epoch=self.protocol_epoch)
+            usage = self.ledger.unit_usage(
+                self.unit_id, protocol_epoch=self.protocol_epoch, restart_count=self.restart_count)
             tokens = state["max_tokens"] - usage["tokens"]
             accounted_ms = state["max_seconds_ms"] - usage["seconds_ms"]
         else:
@@ -400,7 +401,7 @@ class StudyServices:
         try:
             self.ledger.reserve_tool(
                 tool_id, seconds_ms=second_hold, unit_id=self.unit_id or "",
-                protocol_epoch=self.protocol_epoch)
+                protocol_epoch=self.protocol_epoch, restart_count=self.restart_count)
         except BudgetStopped as error:
             self._stop(error)
         started = self._clock()
