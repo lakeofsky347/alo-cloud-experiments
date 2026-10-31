@@ -99,43 +99,90 @@ def restart_unit(run_dir, unit_id, *, reason, ledger=None):
             "archive": str(dest)}
 
 
-def archive_finished(run_dir, *, reason):
-    """Move every finished unit record and checkpoint aside. The ledger stays.
+def _epoch_path(run_dir):
+    return Path(run_dir) / "protocol_epoch.json"
 
-    Used when a protocol change should rerun units whose spend is already counted.
+
+def current_epoch(run_dir):
+    """0 before any protocol rerun. Later epochs are 1, 2, ..."""
+    path = _epoch_path(run_dir)
+    if not path.is_file():
+        return 0
+    value = json.loads(path.read_text(encoding="utf-8"))
+    epoch = value.get("epoch") if isinstance(value, dict) else None
+    if type(epoch) is not int or epoch < 0:
+        raise ValueError("invalid_protocol_epoch")
+    return epoch
+
+
+def begin_epoch(run_dir, *, reason):
+    """Start the next request-id generation and clear this epoch's restart counts.
+
+    Ledger rows stay. Their CNY remains in the model and total caps. Restart
+    allowances and the unknown-outcome counter belong to the epoch being left.
+    """
+    if not isinstance(reason, str) or not reason.strip():
+        raise ValueError("resolve_reason_required")
+    run_dir = Path(run_dir)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    previous = current_epoch(run_dir)
+    epoch = previous + 1
+    unknown = run_dir / "unknown_outcomes.jsonl"
+    if unknown.is_file() and unknown.stat().st_size:
+        dest = run_dir / "archive" / "epochs" / str(previous)
+        dest.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(unknown), str(dest / "unknown_outcomes.jsonl"))
+    _write_counts(run_dir, {})
+    _epoch_path(run_dir).write_text(json.dumps(
+        {"epoch": epoch, "reason": reason.strip()}, ensure_ascii=False, sort_keys=True) + "\n",
+        encoding="utf-8")
+    return {"epoch": epoch, "previous_epoch": previous, "restart_counts_reset": True}
+
+
+def archive_finished(run_dir, *, reason):
+    """Move finished unit records aside and start a new protocol epoch.
+
+    An empty or missing records file still bumps the epoch. That is the path
+    for a run directory whose archive was already written. The ledger is not
+    rewritten. Spending from earlier epochs stays inside the CNY caps.
     """
     if not isinstance(reason, str) or not reason.strip():
         raise ValueError("resolve_reason_required")
     run_dir = Path(run_dir)
     records = run_dir / "records.jsonl"
-    if not records.is_file():
-        return {"archived_units": 0, "archive": ""}
     rows = []
-    for line in records.read_text(encoding="utf-8").splitlines():
-        if line.strip():
-            rows.append(json.loads(line))
-    dest = run_dir / "archive" / "protocol-rerun"
-    dest.mkdir(parents=True, exist_ok=True)
-    (dest / "records.jsonl").write_text(
-        "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows), encoding="utf-8")
-    (dest / "reason.txt").write_text(reason.strip() + "\n", encoding="utf-8")
+    if records.is_file():
+        for line in records.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                rows.append(json.loads(line))
+    archived_units = 0
     moved = 0
-    for row in rows:
-        unit_id = row.get("unit_id")
-        if not isinstance(unit_id, str) or not unit_id:
-            continue
-        unit_dest = dest / unit_id
-        unit_dest.mkdir(parents=True, exist_ok=True)
-        if _archive_tree(run_dir / "checkpoints" / unit_id, unit_dest / "checkpoint"):
-            moved += 1
-        _archive_tree(run_dir / "sealed" / "swe_units" / f"{unit_id}.jsonl", unit_dest / "swe_unit.jsonl")
-    records.write_text("", encoding="utf-8")
-    return {"archived_units": len(rows), "checkpoints": moved, "archive": str(dest)}
+    archive = ""
+    if rows:
+        dest = run_dir / "archive" / "protocol-rerun"
+        dest.mkdir(parents=True, exist_ok=True)
+        (dest / "records.jsonl").write_text(
+            "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows), encoding="utf-8")
+        (dest / "reason.txt").write_text(reason.strip() + "\n", encoding="utf-8")
+        for row in rows:
+            unit_id = row.get("unit_id")
+            if not isinstance(unit_id, str) or not unit_id:
+                continue
+            unit_dest = dest / unit_id
+            unit_dest.mkdir(parents=True, exist_ok=True)
+            if _archive_tree(run_dir / "checkpoints" / unit_id, unit_dest / "checkpoint"):
+                moved += 1
+            _archive_tree(run_dir / "sealed" / "swe_units" / f"{unit_id}.jsonl", unit_dest / "swe_unit.jsonl")
+        records.write_text("", encoding="utf-8")
+        archived_units = len(rows)
+        archive = str(dest)
+    epoch = begin_epoch(run_dir, reason=reason)
+    return {"archived_units": archived_units, "checkpoints": moved, "archive": archive, **epoch}
 
 
 def _parser():
     parser = argparse.ArgumentParser(description="Resolve an unknown hold or restart one unit.")
-    parser.add_argument("command", choices=("resolve", "archive-finished"))
+    parser.add_argument("command", choices=("resolve", "archive-finished", "new-epoch"))
     parser.add_argument("--run-dir", required=True)
     parser.add_argument("--request-id", default=None)
     parser.add_argument("--charge-microcny", type=int, default=None)
@@ -148,9 +195,13 @@ def _parser():
 def main(argv=None):
     parser = _parser()
     args = parser.parse_args(argv)
-    if args.command == "archive-finished":
+    if args.command in {"archive-finished", "new-epoch"}:
         try:
-            print(json.dumps(archive_finished(args.run_dir, reason=args.reason), ensure_ascii=False, sort_keys=True))
+            if args.command == "new-epoch":
+                result = begin_epoch(args.run_dir, reason=args.reason)
+            else:
+                result = archive_finished(args.run_dir, reason=args.reason)
+            print(json.dumps(result, ensure_ascii=False, sort_keys=True))
         except (BudgetStopped, ValueError) as error:
             print(str(error))
             return 2

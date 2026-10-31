@@ -75,7 +75,7 @@ class StudyServices:
     def __init__(self, state_dir, ledger, *, unit, per_request_microcny_ceiling, charge_microcny,
                  sender=None, permit_network=False, sandbox=None, clock=None, public_quality=None,
                  unit_id=None, request_ceiling=None, require_credentials=True, limits=None,
-                 restart_count=0):
+                 restart_count=0, protocol_epoch=0):
         if unit not in PROTOCOL_UNIT_LIMITS:
             raise PilotStopped("unknown_protocol_unit")
         if not isinstance(ledger, BudgetLedger):
@@ -90,8 +90,11 @@ class StudyServices:
             raise PilotStopped("unit_id_required")
         if type(restart_count) is not int or restart_count not in {0, 1}:
             raise PilotStopped("invalid_restart_count")
+        if type(protocol_epoch) is not int or protocol_epoch < 0:
+            raise PilotStopped("invalid_protocol_epoch")
         self.limits = _merge_limits(unit, limits)
         self.restart_count = restart_count
+        self.protocol_epoch = protocol_epoch
         self.unit = unit
         self.unit_id = unit_id
         self.ledger = ledger
@@ -146,14 +149,15 @@ class StudyServices:
     def _next_id(self, kind):
         self._seq += 1
         label = self.unit_id or self.unit
-        if self.restart_count:
-            return f"{kind}-{label}-r{self.restart_count}-{self._seq}"
-        return f"{kind}-{label}-{self._seq}"
+        epoch = f"e{self.protocol_epoch}-" if self.protocol_epoch else ""
+        restart = f"-r{self.restart_count}" if self.restart_count else ""
+        return f"{kind}-{epoch}{label}{restart}-{self._seq}"
 
     def _resource_kwargs(self):
         if not self.unit_id:
             return {}
-        return {"unit_id": self.unit_id, "unit_request_cap": self.limits["requests"]}
+        return {"unit_id": self.unit_id, "unit_request_cap": self.limits["requests"],
+                "protocol_epoch": self.protocol_epoch}
 
     def _wall_remaining(self):
         return self.limits["seconds"] - (self._clock() - self._started)
@@ -194,7 +198,7 @@ class StudyServices:
         if "max_tokens" not in state or "max_seconds_ms" not in state:
             raise PilotStopped("resource_dimensions_unconfigured")
         if self.unit_id:
-            usage = self.ledger.unit_usage(self.unit_id)
+            usage = self.ledger.unit_usage(self.unit_id, protocol_epoch=self.protocol_epoch)
             tokens = state["max_tokens"] - usage["tokens"]
             accounted_ms = state["max_seconds_ms"] - usage["seconds_ms"]
         else:
@@ -394,7 +398,9 @@ class StudyServices:
         del token_hold
         tool_id = self._next_id("tool")
         try:
-            self.ledger.reserve_tool(tool_id, seconds_ms=second_hold, unit_id=self.unit_id or "")
+            self.ledger.reserve_tool(
+                tool_id, seconds_ms=second_hold, unit_id=self.unit_id or "",
+                protocol_epoch=self.protocol_epoch)
         except BudgetStopped as error:
             self._stop(error)
         started = self._clock()

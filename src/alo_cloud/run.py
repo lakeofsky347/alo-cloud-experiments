@@ -27,7 +27,7 @@ from .freeze import (
     BLOCKED_FRACTION_MIN_UNITS, G2_PLANNER_MODEL, G3_MANAGER_MODEL, G3_ROLES,
     MAX_BLOCKED_FRACTION, MAX_UNKNOWN_OUTCOMES, select_units,
 )
-from .ledger import restart_counts, restart_unit
+from .ledger import current_epoch, restart_counts, restart_unit
 from .images import resolve_task_image
 from .prices import ceiling_for_messages, charge_microcny
 from .sandbox import SWE_TESTBED_PATH, DockerSandbox
@@ -252,16 +252,20 @@ def _done_ids(path):
     return done
 
 
-def _touched(request_id, unit_id, restart_count=0):
-    """True when this id belongs to the attempt that would be started now.
+def _touched(request_id, unit_id, restart_count=0, protocol_epoch=0):
+    """True when this id belongs to the current epoch's attempt.
 
-    A restarted unit keeps its old rows for the CNY total. Those rows use the
-    previous id prefix, so they do not look like a partial retry of the new
-    attempt. A crash during the new attempt still blocks a silent retry.
+    Epoch 0 keeps the original ``req-<unit>`` prefix. A later protocol epoch
+    uses ``req-e<N>-<unit>``, so settled rows from an archived epoch are not a
+    partial retry. Within an epoch, a restart uses a different suffix, and a
+    crash during the current attempt still blocks a silent retry.
     """
     generation = f"-r{restart_count}" if restart_count else ""
-    return (request_id.startswith(f"req-{unit_id}{generation}-")
-            or request_id.startswith(f"tool-{unit_id}{generation}-"))
+    if protocol_epoch:
+        stem = f"e{protocol_epoch}-{unit_id}{generation}-"
+    else:
+        stem = f"{unit_id}{generation}-"
+    return request_id.startswith(f"req-{stem}") or request_id.startswith(f"tool-{stem}")
 
 
 def missing_payloads(units, data_dir):
@@ -326,7 +330,8 @@ def run_schedule(units, run_dir, *, live, data_dir=None, docker_image=None, send
                 results.append(done[unit.unit_id])
                 _stop_if_blocked(results)
                 continue
-            if any(_touched(request_id, unit.unit_id, restart_counts(run_dir).get(unit.unit_id, 0))
+            epoch = current_epoch(run_dir)
+            if any(_touched(request_id, unit.unit_id, restart_counts(run_dir).get(unit.unit_id, 0), epoch)
                    for request_id in known_ids):
                 raise BudgetStopped("partial_unit_not_retried")
             retried = False
@@ -518,7 +523,9 @@ def _execute_unit(unit, run_dir, ledger, *, live, data_dir, docker_image, sender
     }
     state_dir = Path(run_dir) / "units" / unit.unit_id / "state"
     restart_count = restart_counts(run_dir).get(unit.unit_id, 0)
+    epoch = current_epoch(run_dir)
     record["restart_count"] = restart_count
+    record["protocol_epoch"] = epoch
     services = StudyServices(
         state_dir, ledger, unit=unit.protocol_unit,
         per_request_microcny_ceiling=PER_MODEL_LIMIT_MICROCNY,
@@ -530,6 +537,7 @@ def _execute_unit(unit, run_dir, ledger, *, live, data_dir, docker_image, sender
         unit_id=unit.unit_id,
         limits={"requests": unit.request_cap},
         restart_count=1 if restart_count >= 1 else 0,
+        protocol_epoch=epoch,
     )
     payload = load_public_payload(data_dir, unit.track, unit.task_id)
     repo = _public_field(payload, "repo")

@@ -44,6 +44,12 @@ def _id(value):
     return value
 
 
+def _epoch(value):
+    if type(value) is not int or value < 0:
+        raise ValueError("invalid_protocol_epoch")
+    return value
+
+
 def _ceiling(max_value, prior, label):
     if (max_value is None) != (prior is None):
         raise ValueError(f"complete_{label}_ceiling_required")
@@ -209,26 +215,42 @@ class BudgetLedger:
         with self._transaction() as conn:
             return [row[0] for row in conn.execute("SELECT id FROM requests ORDER BY rowid")]
 
-    def unit_usage(self, unit_id):
-        """Resource counters for one unit. CNY is not included; it stays global."""
+    def unit_usage(self, unit_id, protocol_epoch=0):
+        """Resource counters for one unit. CNY is not included; it stays global.
+
+        A positive ``protocol_epoch`` counts only that epoch's request ids.
+        Older epochs stay in the CNY totals and do not consume the new epoch's
+        request, token, or tool caps.
+        """
         _id(unit_id)
+        _epoch(protocol_epoch)
         with self._transaction() as conn:
-            return self._unit_usage(conn, unit_id)
+            return self._unit_usage(conn, unit_id, protocol_epoch)
 
     @staticmethod
-    def _unit_usage(conn, unit_id):
-        requests = conn.execute(
-            """SELECT COUNT(*), COALESCE(SUM(held_tokens),0), COALESCE(SUM(held_seconds_ms),0)
-               FROM requests WHERE unit_id=?""",
-            (unit_id,)).fetchone()
-        tools = conn.execute(
-            """SELECT COUNT(*), COALESCE(SUM(held_seconds_ms),0)
-               FROM tool_calls WHERE unit_id=?""",
-            (unit_id,)).fetchone()
+    def _unit_usage(conn, unit_id, protocol_epoch=0):
+        if protocol_epoch:
+            requests = conn.execute(
+                """SELECT COUNT(*), COALESCE(SUM(held_tokens),0), COALESCE(SUM(held_seconds_ms),0)
+                   FROM requests WHERE unit_id=? AND id LIKE ?""",
+                (unit_id, f"req-e{protocol_epoch}-%")).fetchone()
+            tools = conn.execute(
+                """SELECT COUNT(*), COALESCE(SUM(held_seconds_ms),0)
+                   FROM tool_calls WHERE unit_id=? AND id LIKE ?""",
+                (unit_id, f"tool-e{protocol_epoch}-%")).fetchone()
+        else:
+            requests = conn.execute(
+                """SELECT COUNT(*), COALESCE(SUM(held_tokens),0), COALESCE(SUM(held_seconds_ms),0)
+                   FROM requests WHERE unit_id=?""",
+                (unit_id,)).fetchone()
+            tools = conn.execute(
+                """SELECT COUNT(*), COALESCE(SUM(held_seconds_ms),0)
+                   FROM tool_calls WHERE unit_id=?""",
+                (unit_id,)).fetchone()
         return {"requests": int(requests[0]), "tokens": int(requests[1]),
                 "seconds_ms": int(requests[2]) + int(tools[1]), "tools": int(tools[0])}
 
-    def remaining_resources(self, model, *, unit_id=None, unit_request_cap=None):
+    def remaining_resources(self, model, *, unit_id=None, unit_request_cap=None, protocol_epoch=0):
         """Policy view: shared unit remainder plus that model's remaining CNY.
 
         ``requests``, ``tokens`` and ``seconds`` are the active unit's shared
@@ -243,9 +265,10 @@ class BudgetLedger:
             _id(unit_id)
         if unit_request_cap is not None:
             _integer(unit_request_cap, positive=True)
+        _epoch(protocol_epoch)
         with self._transaction() as conn:
             state = self._snapshot(conn)
-            usage = self._unit_usage(conn, unit_id) if unit_id else None
+            usage = self._unit_usage(conn, unit_id, protocol_epoch) if unit_id else None
         if model not in state["remaining_microcny"]:
             raise BudgetStopped("model_not_in_frozen_pool")
         if any(key not in state for key in ("max_tokens", "max_seconds_ms")):
@@ -276,7 +299,7 @@ class BudgetLedger:
             raise BudgetStopped("unresolved_request_blocks_subsequent_dispatch")
 
     def reserve(self, request_id, model, amount_microcny, *, payload_sha256, tokens=0, seconds_ms=0,
-                unit_id="", unit_request_cap=None):
+                unit_id="", unit_request_cap=None, protocol_epoch=0):
         """Persist a unique worst-case hold before any separately permitted send."""
         _id(request_id)
         _id(model)
@@ -284,6 +307,7 @@ class BudgetLedger:
             _id(unit_id)
         if unit_request_cap is not None:
             _integer(unit_request_cap, positive=True)
+        _epoch(protocol_epoch)
         _integer(amount_microcny, positive=True)
         _integer(tokens)
         _integer(seconds_ms)
@@ -302,7 +326,7 @@ class BudgetLedger:
                     and state["total_committed_microcny"] + amount_microcny > state["total_limit_microcny"]):
                 raise BudgetStopped("cumulative_total_cny_limit")
             if unit_id:
-                usage = self._unit_usage(conn, unit_id)
+                usage = self._unit_usage(conn, unit_id, protocol_epoch)
                 request_cap = unit_request_cap if unit_request_cap is not None else state["max_requests"]
                 if usage["requests"] >= request_cap:
                     raise BudgetStopped("cumulative_request_or_model_limit")
@@ -432,12 +456,13 @@ class BudgetLedger:
                  "charge_microcny": row[3], "reserved_microcny": row[4],
                  "released_tokens": row[5], "released_seconds_ms": row[6]} for row in rows]
 
-    def reserve_tool(self, tool_id, *, seconds_ms, unit_id=""):
+    def reserve_tool(self, tool_id, *, seconds_ms, unit_id="", protocol_epoch=0):
         """Hold one tool call and its worst-case seconds before execution."""
         _id(tool_id)
         if unit_id:
             _id(unit_id)
         _integer(seconds_ms)
+        _epoch(protocol_epoch)
         with self._transaction() as conn:
             if conn.execute("SELECT 1 FROM tool_calls WHERE id=?", (tool_id,)).fetchone():
                 raise BudgetStopped("request_identity_consumed_never_replay")
@@ -446,7 +471,7 @@ class BudgetLedger:
             if "max_tools" not in state or "max_seconds_ms" not in state:
                 raise BudgetStopped("resource_dimensions_unconfigured")
             if unit_id:
-                usage = self._unit_usage(conn, unit_id)
+                usage = self._unit_usage(conn, unit_id, protocol_epoch)
                 used_tools, used_seconds = usage["tools"], usage["seconds_ms"]
             else:
                 used_tools, used_seconds = state["used_tools"], state["used_seconds_ms"]
