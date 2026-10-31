@@ -14,13 +14,14 @@ from pathlib import Path
 import shutil
 
 from .budget import BudgetLedger, BudgetStopped
+from .shardlock import exclusive_lock
 
 
 def _restarts_path(run_dir):
     return Path(run_dir) / "unit_restarts.json"
 
 
-def restart_counts(run_dir):
+def _read_counts(run_dir):
     path = _restarts_path(run_dir)
     if not path.is_file():
         return {}
@@ -33,6 +34,11 @@ def restart_counts(run_dir):
             raise ValueError("unit_restarts_must_be_object")
         counts[key] = count
     return counts
+
+
+def restart_counts(run_dir):
+    with exclusive_lock(run_dir, "unit_restarts"):
+        return _read_counts(run_dir)
 
 
 def _write_counts(run_dir, counts):
@@ -116,7 +122,7 @@ def _archive_records(run_dir, unit_id, dest_dir):
     return len(removed)
 
 
-def restart_unit(run_dir, unit_id, *, reason, ledger=None):
+def restart_unit(run_dir, unit_id, *, reason, ledger=None, shard_id=""):
     """Archive one interrupted unit and record that its single restart is used.
 
     Refuses when any unknown hold is still open, and refuses a second restart.
@@ -127,10 +133,14 @@ def restart_unit(run_dir, unit_id, *, reason, ledger=None):
         raise ValueError("resolve_reason_required")
     run_dir = Path(run_dir)
     ledger = ledger or BudgetLedger(run_dir / "budget.sqlite3")
-    state = ledger.snapshot()
-    if state["unresolved_request_ids"] or state["unresolved_tool_ids"]:
+    if ledger.blocks_dispatch(shard_id):
         raise BudgetStopped("unresolved_request_blocks_subsequent_dispatch")
-    counts = restart_counts(run_dir)
+    with exclusive_lock(run_dir, "unit_restarts"):
+        return _restart_unit_locked(run_dir, unit_id, reason=reason, ledger=ledger)
+
+
+def _restart_unit_locked(run_dir, unit_id, *, reason, ledger):
+    counts = _read_counts(run_dir)
     if counts.get(unit_id, 0) >= 1:
         raise BudgetStopped("restart_already_used")
     generation = counts.get(unit_id, 0) + 1
@@ -145,7 +155,8 @@ def restart_unit(run_dir, unit_id, *, reason, ledger=None):
     _safe_move(run_dir / "units" / unit_id, dest / "unit")
     _safe_move(run_dir / "sealed" / "swe_units" / f"{unit_id}.jsonl", dest / "swe_unit.jsonl")
     _safe_move(run_dir / "sealed" / "programbench" / unit_id, dest / "programbench")
-    removed = _archive_records(run_dir, unit_id, dest)
+    with exclusive_lock(run_dir, "records"):
+        removed = _archive_records(run_dir, unit_id, dest)
     counts[unit_id] = generation
     _write_counts(run_dir, counts)
     return {"unit_id": unit_id, "restart_count": generation, "protocol_epoch": epoch,
@@ -190,7 +201,8 @@ def begin_epoch(run_dir, *, reason):
             unknown.unlink()
         else:
             shutil.move(str(unknown), str(target))
-    _write_counts(run_dir, {})
+    with exclusive_lock(run_dir, "unit_restarts"):
+        _write_counts(run_dir, {})
     _epoch_path(run_dir).write_text(json.dumps(
         {"epoch": epoch, "reason": reason.strip()}, ensure_ascii=False, sort_keys=True) + "\n",
         encoding="utf-8")

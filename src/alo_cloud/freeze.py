@@ -238,7 +238,13 @@ def freeze_payload():
             "probe_seeds": list(row["probe_seeds"]),
         })
     return {
-        "schema": "alo-protocol-freeze-v7",
+        "schema": "alo-protocol-freeze-v8",
+        "sharding": {
+            "assignment": "round_robin_over_task_groups",
+            "group_rule": "one_catalog_task_or_one_connected_m2_sequence",
+            "intra_shard_order": "original_schedule_order",
+            "ledger": "one_shared_sqlite_file",
+        },
         "provider_timeout_s": dict(PROVIDER_TIMEOUT_S),
         "max_unknown_outcomes": MAX_UNKNOWN_OUTCOMES,
         "charged_timeout_window": CHARGED_TIMEOUT_WINDOW,
@@ -348,6 +354,77 @@ def _stratum(track, bucket, task_id):
         if identity == task_id:
             return stratum
     raise KeyError(task_id)
+
+
+def _find(parent, key):
+    parent.setdefault(key, key)
+    while parent[key] != key:
+        parent[key] = parent[parent[key]]
+        key = parent[key]
+    return key
+
+
+def _union(parent, left, right):
+    root_left, root_right = _find(parent, left), _find(parent, right)
+    if root_left != root_right:
+        parent[root_right] = root_left
+
+
+def task_groups():
+    """Tasks that must share a shard, in catalog order.
+
+    One catalog task is one group. Tasks linked by an M2 persist/reset sequence,
+    including both orders of the same track, are one group so the chain is not
+    split across processes. B0 and B1 of a task are the same key, so they stay
+    together.
+    """
+    parent = {}
+    for sequence in M2_SEQUENCES:
+        ids = list(sequence["learning_ids"]) + list(sequence["probe_ids"])
+        head = (sequence["track"], ids[0])
+        for task_id in ids[1:]:
+            _union(parent, head, (sequence["track"], task_id))
+    catalog = []
+    seen = set()
+    for track, buckets in TASKS.items():
+        for rows in buckets.values():
+            for task_id, _stratum in rows:
+                key = (track, task_id)
+                if key in seen:
+                    continue
+                seen.add(key)
+                _find(parent, key)
+                catalog.append(key)
+    groups = {}
+    for key in catalog:
+        groups.setdefault(_find(parent, key), []).append(key)
+    ordered = []
+    emitted = set()
+    for key in catalog:
+        root = _find(parent, key)
+        if root in emitted:
+            continue
+        emitted.add(root)
+        ordered.append(tuple(groups[root]))
+    return tuple(ordered)
+
+
+def shard_for_task(track, task_id, num_shards):
+    """Zero-based shard for one task. ``num_shards`` of 1 is the serial schedule."""
+    if type(num_shards) is not int or num_shards < 1:
+        raise ValueError("invalid_shard_count")
+    groups = task_groups()
+    for index, group in enumerate(groups):
+        if (track, task_id) in group:
+            return index % num_shards
+    raise KeyError((track, task_id))
+
+
+def filter_shard(units, index, num_shards):
+    """Units for shard ``index`` of ``num_shards``, in the original schedule order."""
+    if type(index) is not int or type(num_shards) is not int or num_shards < 1 or not 0 <= index < num_shards:
+        raise ValueError("invalid_shard")
+    return tuple(unit for unit in units if shard_for_task(unit.track, unit.task_id, num_shards) == index)
 
 
 def iter_m1_units():
