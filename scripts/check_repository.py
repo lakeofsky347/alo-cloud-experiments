@@ -17,7 +17,7 @@ from urllib.parse import parse_qsl, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 TOP_LEVEL = {
-    ".gitattributes", ".gitignore", "AGENTS.md", "README.md", "LICENSE",
+    ".gitattributes", ".github", ".gitignore", "AGENTS.md", "README.md", "LICENSE",
     "pyproject.toml", "requirements-cloud.txt", "docs", "src", "tests", "scripts", "study_records",
 }
 FORBIDDEN_PARTS = {

@@ -1,0 +1,60 @@
+# Offline source checks only. No secrets, model APIs, Docker, or benchmarks.
+name: offline
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: offline (${{ matrix.profile }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [default, native]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements-cloud.txt
+            pyproject.toml
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --disable-pip-version-check --no-input \
+            --requirement requirements-cloud.txt
+          if [ "${{ matrix.profile }}" = "native" ]; then
+            python -m pip install --disable-pip-version-check --no-input -e ".[native]"
+          else
+            python -m pip install --disable-pip-version-check --no-input -e .
+          fi
+
+      - name: Software import check
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          if [ "${{ matrix.profile }}" = "native" ]; then
+            python scripts/check_cloud.py --require-linux --with-native
+          else
+            python scripts/check_cloud.py --require-linux
+          fi
+
+      - name: Pytest
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: >
+          python -m pytest tests -q -p no:cacheprovider -o addopts=
+          --basetemp="${{ runner.temp }}/pytest"
+
+      - name: Repository check
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python scripts/check_repository.py
