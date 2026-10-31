@@ -270,7 +270,9 @@ def freeze_payload():
         "provider_outcomes": {
             "empty_completion": "settle_reported_usage",
             "vendor_error": "settle_0",
-            "unknown_causes": ["timeout", "connection_reset", "unparseable_success", "transport_error"],
+            "unknown_causes": ["connection_reset", "transport_error"],
+            "unparseable_success_settled": "provider_unparseable_charged",
+            "unparseable_valve": "same_window_and_cny_as_charged_timeout",
             "usage_reasoning_tokens": "top_level_or_completion_tokens_details",
             "restart_unknown_unit": "once_then_blocked",
             "timeout_charge": "worst_case_then_continue",

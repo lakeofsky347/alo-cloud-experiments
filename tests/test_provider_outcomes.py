@@ -90,7 +90,7 @@ def test_disagreed_reasoning_counts_stay_unknown(tmp_path, monkeypatch):
         _body("deepseek-flash", "x", usage),
         _body("deepseek-flash", "y", _usage(1, 1)),
     ])
-    with pytest.raises(PilotStopped, match="provider_outcome_charged"):
+    with pytest.raises(PilotStopped, match="provider_unparseable_charged"):
         blocked.complete_for_model("deepseek-flash", messages())
     assert blocked.complete_for_model("deepseek-flash", messages())["text"] == "y"
     assert len(seen) == 2

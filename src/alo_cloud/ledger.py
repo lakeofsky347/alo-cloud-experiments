@@ -14,7 +14,7 @@ from pathlib import Path
 import shutil
 
 from .budget import BudgetLedger, BudgetStopped
-from .shardlock import exclusive_lock
+from .shardlock import clear_drain, exclusive_lock, set_drain
 
 
 def _restarts_path(run_dir):
@@ -271,12 +271,13 @@ def archive_finished(run_dir, *, reason):
 
 def _parser():
     parser = argparse.ArgumentParser(description="Resolve an unknown hold or restart one unit.")
-    parser.add_argument("command", choices=("resolve", "archive-finished", "new-epoch"))
+    parser.add_argument("command", choices=("resolve", "archive-finished", "new-epoch", "drain"))
     parser.add_argument("--run-dir", required=True)
     parser.add_argument("--request-id", default=None)
     parser.add_argument("--charge-microcny", type=int, default=None)
     parser.add_argument("--worst-case", action="store_true")
-    parser.add_argument("--reason", required=True)
+    parser.add_argument("--reason", default=None)
+    parser.add_argument("--clear", action="store_true")
     parser.add_argument("--restart-unit", default=None)
     return parser
 
@@ -284,7 +285,17 @@ def _parser():
 def main(argv=None):
     parser = _parser()
     args = parser.parse_args(argv)
+    if args.command == "drain":
+        if args.clear:
+            clear_drain(args.run_dir)
+            print(json.dumps({"drain": False}, sort_keys=True))
+        else:
+            path = set_drain(args.run_dir)
+            print(json.dumps({"drain": True, "path": path}, sort_keys=True))
+        return 0
     if args.command in {"archive-finished", "new-epoch"}:
+        if not args.reason:
+            parser.error("--reason is required")
         try:
             if args.command == "new-epoch":
                 result = begin_epoch(args.run_dir, reason=args.reason)
@@ -295,6 +306,8 @@ def main(argv=None):
             print(str(error))
             return 2
         return 0
+    if not args.reason:
+        parser.error("--reason is required")
     if args.command != "resolve":
         parser.error("resolve is required")
     if args.request_id and (args.charge_microcny is None) == (not args.worst_case):

@@ -126,6 +126,14 @@ def _reasoning_tokens(usage, completion):
             detail = details["reasoning_tokens"]
     if top is None and detail is None:
         return None
+
+    def _as_int(value):
+        if isinstance(value, str) and value.isdigit():
+            return int(value)
+        return value
+
+    top = _as_int(top)
+    detail = _as_int(detail)
     for value in (top, detail):
         if value is None:
             continue
@@ -134,6 +142,17 @@ def _reasoning_tokens(usage, completion):
     if top is not None and detail is not None and top != detail:
         raise PilotStopped("provider_outcome_unknown")
     return top if top is not None else detail
+
+
+def _same_model(returned, model):
+    """Accept the pool id and a vendor prefix or different capitalisation."""
+    if returned == model:
+        return True
+    if not isinstance(returned, str):
+        return False
+    folded = returned.strip().casefold().replace("_", "-")
+    wanted = model.casefold()
+    return folded == wanted or folded.endswith("/" + wanted) or folded.endswith(":" + wanted)
 
 
 def parse_openai_chat_completion(payload, model):
@@ -149,19 +168,33 @@ def parse_openai_chat_completion(payload, model):
         raise PilotStopped("provider_outcome_unknown")
     message = choices[0].get("message")
     if not isinstance(message, dict):
-        raise PilotStopped("provider_outcome_unknown")
+        text_field = choices[0].get("text")
+        if isinstance(text_field, str):
+            message = {"content": text_field}
+        else:
+            raise PilotStopped("provider_outcome_unknown")
     content = message.get("content")
     if content is None:
         text = ""
     elif isinstance(content, str):
         text = content
+    elif isinstance(content, list):
+        pieces = []
+        for part in content:
+            if isinstance(part, str):
+                pieces.append(part)
+            elif isinstance(part, dict):
+                piece = part.get("text", part.get("content"))
+                if isinstance(piece, str):
+                    pieces.append(piece)
+        text = "".join(pieces)
     else:
         raise PilotStopped("provider_outcome_unknown")
     finish = choices[0].get("finish_reason")
     if finish is not None and not isinstance(finish, str):
         raise PilotStopped("provider_outcome_unknown")
     returned = payload.get("model")
-    if returned is not None and returned != model:
+    if returned is not None and not _same_model(returned, model):
         raise PilotStopped("provider_outcome_unknown")
     usage = payload.get("usage")
     if not isinstance(usage, dict):
