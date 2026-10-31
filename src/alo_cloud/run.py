@@ -28,8 +28,10 @@ from .freeze import (
 )
 from .images import resolve_task_image
 from .prices import ceiling_for_messages, charge_microcny
-from .sandbox import DockerSandbox
-from .workspace_prep import prepare_swe_checkout
+from .sandbox import SWE_TESTBED_PATH, DockerSandbox
+from .workspace_prep import (
+    apply_patch, head_matches, release_unreadable_executable, seed_image_tree,
+)
 from .services import PROTOCOL_UNIT_LIMITS, StudyServices
 from .state import export_learning_state, import_learning_state
 
@@ -148,19 +150,6 @@ def dry_run_sender(url, body, headers):
             "usage": {"prompt_tokens": 12, "completion_tokens": 8, "total_tokens": 20}}
 
 
-def _copy_tree(source, dest):
-    source, dest = Path(source), Path(dest)
-    if not source.is_dir():
-        return
-    dest.mkdir(parents=True, exist_ok=True)
-    for path in source.rglob("*"):
-        if path.is_symlink() or not path.is_file():
-            continue
-        target = dest / path.relative_to(source)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(path, target)
-
-
 def _build_adapter(unit):
     if unit.arm == "g1-main":
         return adapter_for("G1", {"fixed_model": G1_MAIN_MODEL, "max_turns": unit.request_cap})
@@ -214,7 +203,6 @@ def _apply_parent(unit, adapter, services, run_dir):
         if not state_path.is_file():
             return "b0_checkpoint_missing"
         _restore_transcript(adapter, json.loads(state_path.read_text(encoding="utf-8")))
-        _copy_tree(parent / "workspace", services.workspace.root)
         database = parent / "alo.sqlite3"
         if database.is_file() and unit.arm == "g2":
             shutil.copy2(database, services.state_dir / "alo.sqlite3")
@@ -228,20 +216,6 @@ def _apply_parent(unit, adapter, services, run_dir):
             services.state_dir / "alo.sqlite3", value, allowed_models=MODEL_POOL, mode="persist")
         adapter.state["observations"] = imported["observations"]
     return None
-
-
-def _seal(workspace, dest):
-    dest.mkdir(parents=True, exist_ok=True)
-    files = [path for path in Path(workspace).rglob("*") if path.is_file() and not path.is_symlink()]
-    for path in files:
-        target = dest / path.relative_to(workspace)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(path, target)
-    if files:
-        with tarfile.open(dest / "submission.tar.gz", "w:gz") as archive:
-            for path in files:
-                archive.add(path, arcname=str(path.relative_to(workspace)))
-    return len(files)
 
 
 def _charges(services):
@@ -289,7 +263,7 @@ def missing_payloads(units, data_dir):
 
 
 def run_schedule(units, run_dir, *, live, data_dir=None, docker_image=None, sender=None,
-                 git_runner=None, sandbox_memory=None, sandbox_pids=None):
+                 git_runner=None, sandbox_memory=None, sandbox_pids=None, image_seeder=None):
     """Execute units in order. Completed JSONL rows are skipped on resume."""
     run_dir = Path(run_dir)
     mode = "live" if live else "dry-run"
@@ -321,7 +295,8 @@ def run_schedule(units, run_dir, *, live, data_dir=None, docker_image=None, send
                 raise BudgetStopped("partial_unit_not_retried")
             record = _execute_unit(unit, run_dir, ledger, live=live, data_dir=data_dir,
                                    docker_image=docker_image, sender=sender, git_runner=git_runner,
-                                   sandbox_memory=sandbox_memory, sandbox_pids=sandbox_pids)
+                                   sandbox_memory=sandbox_memory, sandbox_pids=sandbox_pids,
+                                   image_seeder=image_seeder)
             _append_record(records_path, record)
             results.append(record)
             known_ids = ledger.request_ids()
@@ -332,23 +307,77 @@ def run_schedule(units, run_dir, *, live, data_dir=None, docker_image=None, send
     return results
 
 
-def _prepare_workspace(unit, services, *, live, repo, base_commit, git_runner):
-    """SWE units start from the task repo at base_commit. B1 keeps the B0 tree."""
-    if unit.track != "SWE-bench_Lite":
+def _want_image_seed(live, image_seeder):
+    if image_seeder is not None:
+        return True
+    if os.environ.get("ALO_SEED_IMAGES") == "1":
+        return True
+    return bool(live)
+
+
+def _prepare_workspace(unit, services, *, live, repo, base_commit, git_runner, image, image_seeder, run_dir):
+    """Copy the image tree into the one live workspace. Resume reapplies the sealed patch.
+
+    SWE comes from the image ``/testbed`` (built extensions, already at
+    ``base_commit``). ProgramBench comes from the image ``/workspace``.
+    A fresh GitHub clone is not mounted over ``/testbed``.
+    """
+    del repo
+    if not _want_image_seed(live, image_seeder):
         return None
-    if unit.phase == "B1-self":
-        if live and not (services.workspace.root / ".git").is_dir():
-            return "swe_checkout_missing"
-        return None
-    if not repo or not base_commit:
-        if live:
-            return "swe_checkout_metadata_missing"
-        return None
+    if not image:
+        return "sandbox_image_missing"
+    root = services.workspace.root
     try:
-        prepare_swe_checkout(services.workspace.root, repo, base_commit, runner=git_runner)
+        if unit.track == "SWE-bench_Lite":
+            if not base_commit:
+                return "swe_checkout_metadata_missing"
+            seed_image_tree(image, "/testbed", root, docker=image_seeder)
+            if not head_matches(root, base_commit, git=git_runner):
+                return "swe_image_base_commit_mismatch"
+            parent_patch = Path(run_dir) / "checkpoints" / unit.parent_unit_id / "model.patch"
+            if unit.parent_unit_id and parent_patch.is_file():
+                apply_patch(root, parent_patch.read_text(encoding="utf-8"))
+            return None
+        if unit.track == "ProgramBench":
+            seed_image_tree(image, "/workspace", root, docker=image_seeder)
+            if release_unreadable_executable(root):
+                services.preserve_image_executable = True
+            parent_tar = (Path(run_dir) / "sealed" / "programbench" / unit.parent_unit_id
+                          / unit.task_id / "submission.tar.gz")
+            if unit.parent_unit_id and parent_tar.is_file():
+                _extract_submission(parent_tar, root)
+            return None
     except PilotStopped as error:
         return str(error)
     return None
+
+
+def _extract_submission(archive, dest):
+    """Overlay a previous ProgramBench submission onto a fresh image seed."""
+    dest = Path(dest)
+    with tarfile.open(archive, "r:gz") as handle:
+        for member in handle.getmembers():
+            name = member.name
+            if not name or name.startswith("/") or ".." in Path(name).parts:
+                continue
+            if ".git" in Path(name).parts or Path(name).name == "executable":
+                continue
+            target = dest / name
+            if member.isdir():
+                target.mkdir(parents=True, exist_ok=True)
+                continue
+            if not member.isfile():
+                continue
+            extracted = handle.extractfile(member)
+            if extracted is None:
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(extracted.read())
+            try:
+                target.chmod(member.mode & 0o777)
+            except OSError:
+                pass
 
 
 def _public_field(payload, key):
@@ -359,7 +388,7 @@ def _public_field(payload, key):
 
 
 def _execute_unit(unit, run_dir, ledger, *, live, data_dir, docker_image, sender,
-                  git_runner=None, sandbox_memory=None, sandbox_pids=None):
+                  git_runner=None, sandbox_memory=None, sandbox_pids=None, image_seeder=None):
     record = {
         "schema": "alo-paid-unit-v1",
         "unit_id": unit.unit_id,
@@ -396,24 +425,24 @@ def _execute_unit(unit, run_dir, ledger, *, live, data_dir, docker_image, sender
         record["base_commit"] = base_commit
     image = resolve_task_image(unit.track, unit.task_id, fallback=docker_image)
     record["sandbox_image"] = image
-    if image:
-        extra_mounts = ("/testbed",) if unit.track == "SWE-bench_Lite" else ()
-        services.sandbox = DockerSandbox(
-            services.workspace.root, image_resolver=lambda image=image: image,
-            permit_execution=live, memory=sandbox_memory, pids_limit=sandbox_pids,
-            extra_mounts=extra_mounts)
     adapter = _build_adapter(unit)
     parent_note = _apply_parent(unit, adapter, services, run_dir)
     if parent_note == "b0_checkpoint_missing":
         record.update(status="blocked", reason=parent_note, charged_microcny={}, sealed_files=0)
+        _delete_live_unit(run_dir, unit.unit_id)
         return record
     if parent_note:
         record["parent_note"] = parent_note
-    prepare_note = _prepare_workspace(unit, services, live=live, repo=repo, base_commit=base_commit,
-                                      git_runner=git_runner)
+    prepare_note = _prepare_workspace(
+        unit, services, live=live, repo=repo, base_commit=base_commit, git_runner=git_runner,
+        image=image, image_seeder=image_seeder, run_dir=run_dir)
     if prepare_note:
         record.update(status="blocked", reason=prepare_note, charged_microcny={}, sealed_files=0)
+        _delete_live_unit(run_dir, unit.unit_id)
         return record
+    _attach_sandbox(services, unit, image, live=live, memory=sandbox_memory, pids=sandbox_pids)
+    record["sandbox_workdir"] = getattr(services.sandbox, "workdir", None) if services.sandbox else None
+    record["preserve_executable_in_image"] = bool(getattr(services, "preserve_image_executable", False))
     stage = stage_for(unit, payload, dry_run=not live)
     status, reason, halt = "completed", "", False
     try:
@@ -431,24 +460,8 @@ def _execute_unit(unit, run_dir, ledger, *, live, data_dir, docker_image, sender
     except BudgetStopped as error:
         reason = str(error)
         status, halt = "stopped", True
-    checkpoint = Path(run_dir) / "checkpoints" / unit.unit_id
-    checkpoint.mkdir(parents=True, exist_ok=True)
-    (checkpoint / "adapter.json").write_text(
-        json.dumps(adapter.dump_state(), ensure_ascii=False), encoding="utf-8")
-    _copy_tree(services.workspace.root, checkpoint / "workspace")
-    database = services.state_dir / "alo.sqlite3"
-    if database.is_file():
-        shutil.copy2(database, checkpoint / "alo.sqlite3")
-        if unit.arm == "g2" and unit.phase == "learning" and unit.m2_condition == "persist":
-            try:
-                exported = export_learning_state(
-                    database, adapter.dump_state(), allowed_models=MODEL_POOL, evidence_id=unit.unit_id)
-                (checkpoint / "learning_state.json").write_text(
-                    json.dumps(exported, ensure_ascii=False), encoding="utf-8")
-            except (ValueError, OSError) as error:
-                record["learning_export_error"] = type(error).__name__
-    sealed = Path(run_dir) / "sealed" / unit.unit_id
-    sealed_files = _seal(services.workspace.root, sealed)
+    sealed_files = _persist_compact(unit, services, adapter, run_dir, record)
+    _delete_live_unit(run_dir, unit.unit_id)
     resources = services.resources()
     record.update(
         status=status, reason=reason, halt_schedule=halt,
@@ -461,6 +474,73 @@ def _execute_unit(unit, run_dir, ledger, *, live, data_dir, docker_image, sender
         finished_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     )
     return record
+
+
+def _attach_sandbox(services, unit, image, *, live, memory, pids):
+    if not image:
+        return
+    preserve = bool(getattr(services, "preserve_image_executable", False))
+    if unit.track == "SWE-bench_Lite":
+        services.sandbox = DockerSandbox(
+            services.workspace.root, image_resolver=lambda image=image: image,
+            permit_execution=live, memory=memory, pids_limit=pids,
+            workdir="/testbed", mount_points=("/testbed",), path=SWE_TESTBED_PATH)
+        return
+    if preserve:
+        services.sandbox = DockerSandbox(
+            services.workspace.root, image_resolver=lambda image=image: image,
+            permit_execution=live, memory=memory, pids_limit=pids,
+            merge_image_workspace=True)
+        return
+    services.sandbox = DockerSandbox(
+        services.workspace.root, image_resolver=lambda image=image: image,
+        permit_execution=live, memory=memory, pids_limit=pids)
+
+
+def _persist_compact(unit, services, adapter, run_dir, record):
+    """Store a patch or submission tarball, not a second and third full tree."""
+    from .collect import _pack_submission, workspace_patch
+    checkpoint = Path(run_dir) / "checkpoints" / unit.unit_id
+    checkpoint.mkdir(parents=True, exist_ok=True)
+    (checkpoint / "adapter.json").write_text(
+        json.dumps(adapter.dump_state(), ensure_ascii=False), encoding="utf-8")
+    (checkpoint / "metadata.json").write_text(json.dumps({
+        "base_commit": record.get("base_commit"),
+        "sandbox_image": record.get("sandbox_image"),
+        "track": unit.track,
+        "task_id": unit.task_id,
+        "preserve_executable_in_image": bool(getattr(services, "preserve_image_executable", False)),
+    }, sort_keys=True), encoding="utf-8")
+    database = services.state_dir / "alo.sqlite3"
+    if database.is_file():
+        shutil.copy2(database, checkpoint / "alo.sqlite3")
+        if unit.arm == "g2" and unit.phase == "learning" and unit.m2_condition == "persist":
+            try:
+                exported = export_learning_state(
+                    database, adapter.dump_state(), allowed_models=MODEL_POOL, evidence_id=unit.unit_id)
+                (checkpoint / "learning_state.json").write_text(
+                    json.dumps(exported, ensure_ascii=False), encoding="utf-8")
+            except (ValueError, OSError) as error:
+                record["learning_export_error"] = type(error).__name__
+    workspace = services.workspace.root
+    if unit.track == "SWE-bench_Lite":
+        patch = ""
+        try:
+            patch = workspace_patch(workspace, record.get("base_commit") or "")
+        except RuntimeError:
+            record["patch_note"] = "git_diff_failed"
+        (checkpoint / "model.patch").write_text(patch, encoding="utf-8")
+        record["patch_bytes"] = len(patch.encode("utf-8"))
+        return 1 if patch else 0
+    if unit.track == "ProgramBench":
+        dest = (Path(run_dir) / "sealed" / "programbench" / unit.unit_id / unit.task_id
+                / "submission.tar.gz")
+        return _pack_submission(workspace, dest)
+    return 0
+
+
+def _delete_live_unit(run_dir, unit_id):
+    shutil.rmtree(Path(run_dir) / "units" / unit_id, ignore_errors=True)
 
 
 def _parser():

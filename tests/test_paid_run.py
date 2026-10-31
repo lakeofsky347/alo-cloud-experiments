@@ -245,14 +245,28 @@ def test_official_images_and_sandbox_limits(tmp_path):
     assert argv.index("--network=none") < argv.index("example.invalid/alo:test")
 
 
-def test_checkout_and_per_unit_scoring_handoff(tmp_path, monkeypatch):
+def _git_commit(path, filename, text):
+    path.mkdir(parents=True, exist_ok=True)
+    subprocess.check_call(["git", "init", "-q", str(path)])
+    subprocess.check_call(["git", "-C", str(path), "config", "user.email", "t@example.com"])
+    subprocess.check_call(["git", "-C", str(path), "config", "user.name", "t"])
+    (path / filename).write_text(text, encoding="utf-8")
+    subprocess.check_call(["git", "-C", str(path), "add", filename])
+    subprocess.check_call(["git", "-C", str(path), "commit", "-q", "-m", "base"])
+    return subprocess.check_output(["git", "-C", str(path), "rev-parse", "HEAD"], text=True).strip()
+
+
+def test_image_seed_verifies_head_and_deletes_the_workspace(tmp_path, monkeypatch):
     monkeypatch.setattr("urllib.request.urlopen", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("network")))
+    fixture = tmp_path / "fixture"
+    base = _git_commit(fixture, "a.py", "base\n")
     calls = []
 
-    def runner(argv):
+    def docker(argv):
         calls.append(list(argv))
-        if len(argv) >= 2 and argv[1] == "init":
-            Path(argv[-1], ".git").mkdir(parents=True, exist_ok=True)
+        if argv[1] == "cp":
+            dest = Path(argv[-1])
+            shutil_copy_repo(fixture, dest)
         completed = type("Completed", (), {})()
         completed.returncode = 0
         completed.stdout = ""
@@ -262,23 +276,49 @@ def test_checkout_and_per_unit_scoring_handoff(tmp_path, monkeypatch):
     data = tmp_path / "data" / "SWE-bench_Lite"
     data.mkdir(parents=True)
     (data / "django__django-11583.json").write_text(json.dumps({
-        "repo": "django/django",
-        "base_commit": "a" * 40,
-        "problem_statement": "public bug",
+        "repo": "django/django", "base_commit": base, "problem_statement": "public bug",
         "patch": "diff --git a/secret",
     }), encoding="utf-8")
     units = select_units("m1", arms=("g1-main",), tasks=("django__django-11583",))
     rows = run_schedule(units[:1], tmp_path / "run", live=False, data_dir=tmp_path / "data",
-                        sender=dry_run_sender, git_runner=runner)
+                        sender=dry_run_sender, image_seeder=docker)
     assert rows[0]["status"] == "completed"
-    assert rows[0]["sandbox_image"] == swebench_instance_image("django__django-11583")
-    assert rows[0]["base_commit"] == "a" * 40
-    assert "diff --git" not in json.dumps(rows[0])
-    assert any(argv[1:4] == ["-C", str(tmp_path / "run" / "units" / rows[0]["unit_id"] / "state" / "workspace"), "fetch"]
-               or (len(argv) > 3 and argv[1] == "-C" and "fetch" in argv) for argv in calls)
-    fetched = [argv for argv in calls if "fetch" in argv]
-    assert fetched and fetched[0][-1] == "a" * 40
-    assert (tmp_path / "run" / "sealed" / "swe_predictions.jsonl").is_file()
+    assert rows[0]["sandbox_workdir"] == "/testbed"
+    assert rows[0]["base_commit"] == base
+    assert "diff --git a/secret" not in json.dumps(rows[0])
+    assert any(argv[:3] == ["docker", "cp", f"alo-seed-{calls[0][3][9:]}:/testbed/."] or (
+        len(argv) > 2 and argv[1] == "cp" and argv[2].endswith(":/testbed/.")) for argv in calls)
+    unit_id = rows[0]["unit_id"]
+    assert not (tmp_path / "run" / "units" / unit_id).exists()
+    assert not (tmp_path / "run" / "checkpoints" / unit_id / "workspace").exists()
+    assert (tmp_path / "run" / "checkpoints" / unit_id / "model.patch").is_file()
+    patch = (tmp_path / "run" / "checkpoints" / unit_id / "model.patch").read_text(encoding="utf-8")
+    assert len(patch.encode()) < 100_000
+    box = DockerSandbox(
+        tmp_path, image="example.invalid/swe:latest", workdir="/testbed",
+        mount_points=("/testbed",), path=(
+            "/opt/miniconda3/envs/testbed/bin:/opt/miniconda3/bin:/usr/bin"))
+    argv = box.docker_argv(["python", "-c", "import sklearn"])
+    path_env = argv[argv.index("--env") + 1] if False else next(
+        item for item in argv if item.startswith("PATH="))
+    assert path_env.index("/opt/miniconda3/envs/testbed/bin") < path_env.index("/opt/miniconda3/bin")
+    assert "--workdir" in argv and argv[argv.index("--workdir") + 1] == "/testbed"
+    assert "dst=/testbed" in " ".join(argv)
+    assert "dst=/workspace" not in " ".join(argv)
+
+
+def shutil_copy_repo(source, dest):
+    import shutil
+    dest.mkdir(parents=True, exist_ok=True)
+    for path in source.rglob("*"):
+        if path.is_symlink():
+            continue
+        target = dest / path.relative_to(source)
+        if path.is_dir():
+            target.mkdir(parents=True, exist_ok=True)
+        elif path.is_file():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(path.read_bytes())
 
 
 def test_collect_keeps_one_prediction_per_unit(tmp_path, monkeypatch):
@@ -331,6 +371,79 @@ def test_collect_keeps_one_prediction_per_unit(tmp_path, monkeypatch):
     assert report["programbench"]["hf_revision"] == PROGRAMBENCH_TESTS_REVISION
     assert programbench_env()["PROGRAMBENCH_HF_REVISION"] == PROGRAMBENCH_TESTS_REVISION
     assert "DEEPSEEK_API_KEY" not in programbench_env({"DEEPSEEK_API_KEY": "secret", "PATH": "/usr/bin"})
+
+
+def test_source_patch_skips_gitignored_build_output(tmp_path):
+    from alo_cloud.collect import workspace_patch
+    repo = tmp_path / "repo"
+    base = _git_commit(repo, "a.py", "base\n")
+    (repo / ".gitignore").write_text("*.o\n", encoding="utf-8")
+    subprocess.check_call(["git", "-C", str(repo), "add", ".gitignore"])
+    subprocess.check_call(["git", "-C", str(repo), "commit", "-q", "-m", "ignore"])
+    base = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+    (repo / "a.py").write_text("changed\n", encoding="utf-8")
+    (repo / "new.py").write_text("print(1)\n", encoding="utf-8")
+    (repo / "build.o").write_bytes(b"\x7fELF")
+    patch = workspace_patch(repo, base)
+    assert "changed" in patch
+    assert "new.py" in patch
+    assert "build.o" not in patch
+
+
+def test_execute_only_binary_stays_in_the_image(tmp_path):
+    from alo_cloud.collect import _pack_submission
+    from alo_cloud.workspace_prep import release_unreadable_executable
+    root = tmp_path / "ws"
+    root.mkdir()
+    (root / "README.md").write_text("docs\n", encoding="utf-8")
+    exe = root / "executable"
+    exe.write_bytes(b"#!/bin/sh\n")
+    exe.chmod(0o111)
+    assert release_unreadable_executable(root) is True
+    assert not exe.exists()
+    kept = tmp_path / "kept"
+    kept.mkdir()
+    (kept / "README.md").write_text("docs\n", encoding="utf-8")
+    binary = kept / "executable"
+    binary.write_bytes(b"#!/bin/sh\n")
+    binary.chmod(0o755)
+    assert release_unreadable_executable(kept) is False
+    assert binary.is_file()
+    box = DockerSandbox(root, image="programbench/example:task_cleanroom_v6", merge_image_workspace=True)
+    argv = box.docker_argv(["./executable"])
+    rendered = " ".join(argv)
+    assert "--network=none" in argv
+    assert "--read-only" not in argv
+    assert "dst=/agent" in rendered
+    assert "dst=/workspace" not in rendered
+    assert "cp -a /agent/. /workspace/" in rendered
+    archive = tmp_path / "submission.tar.gz"
+    (root / "main.c").write_text("int main(void){return 0;}\n", encoding="utf-8")
+    (root / ".git").mkdir()
+    (root / ".git" / "config").write_text("x\n", encoding="utf-8")
+    exe.write_bytes(b"bin")
+    _pack_submission(root, archive)
+    import tarfile
+    names = tarfile.open(archive, "r:gz").getnames()
+    assert "main.c" in names
+    assert "README.md" in names
+    assert "executable" not in names
+    assert all(".git" not in name for name in names)
+
+
+def test_resume_applies_the_sealed_patch_onto_a_fresh_seed(tmp_path):
+    from alo_cloud.workspace_prep import apply_patch
+    from alo_cloud.collect import workspace_patch
+    origin = tmp_path / "origin"
+    base = _git_commit(origin, "a.py", "base\n")
+    (origin / "a.py").write_text("edited\n", encoding="utf-8")
+    patch = workspace_patch(origin, base)
+    fresh = tmp_path / "fresh"
+    shutil_copy_repo(origin, fresh)
+    subprocess.check_call(["git", "-C", str(fresh), "reset", "--hard", "HEAD"])
+    assert (fresh / "a.py").read_text(encoding="utf-8") == "base\n"
+    apply_patch(fresh, patch)
+    assert (fresh / "a.py").read_text(encoding="utf-8") == "edited\n"
 
 
 def test_live_swe_without_checkout_metadata_does_not_call_the_model(tmp_path, monkeypatch):

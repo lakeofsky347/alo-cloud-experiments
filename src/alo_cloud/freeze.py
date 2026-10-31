@@ -218,7 +218,7 @@ def freeze_payload():
             "probe_seeds": list(row["probe_seeds"]),
         })
     return {
-        "schema": "alo-protocol-freeze-v2",
+        "schema": "alo-protocol-freeze-v3",
         "price_retrieved_on": RETRIEVED_ON,
         "models": {
             "pool": list(MODEL_POOL),
@@ -260,12 +260,19 @@ def freeze_payload():
             "fallback_image_env": "ALO_SANDBOX_IMAGE",
             "swebench_image": "swebench/sweb.eval.x86_64.<id>:latest (__ rewritten to _1776_)",
             "programbench_image": "programbench/<id>:task_cleanroom_v6 (__ rewritten to _1776_)",
-            "swe_mounts": ["/workspace", "/testbed"],
+            "swe_seed": "image:/testbed",
+            "swe_mount": "/testbed",
+            "swe_path_prefix": "/opt/miniconda3/envs/testbed/bin",
+            "programbench_seed": "image:/workspace",
+            "programbench_submission_excludes": [".git", "executable"],
+            "persistence": "patch_or_submission_tarball",
+            "live_workspace": "one_deleted_after_seal",
         },
         "scoring": {
             "swe_model_name_or_path": "unit_id",
             "swe_one_command_per_unit": True,
             "programbench_layout": "sealed/programbench/<unit_id>/<instance_id>/submission.tar.gz",
+            "swe_patch": "gitignore_respected_diff_against_base_commit",
         },
     }
 
