@@ -12,7 +12,11 @@ from dataclasses import dataclass
 import yaml
 
 from ..models.base import ModelAdapter
+from ..org.authority import GOVERNANCE_GATED, AuthorityError, validate as validate_authority
 from ..org.role import ContractError, RoleContract
+
+# Must stay inside the M2 topic allowlist. "general" is not transferable.
+FALLBACK_TOPIC = "generic"
 
 DECOMPOSE_MARKER = "ALO_DECOMPOSE"
 
@@ -88,6 +92,14 @@ def parse_dag(text: str) -> list[Subtask]:
         role_data = dict(raw["role"])
         role_data.setdefault("goal", str(raw["goal"]))
         role = RoleContract.from_dict(sid, role_data)
+        try:
+            validate_authority(set(role.authority))
+        except AuthorityError as error:
+            raise DecompositionError(str(error)) from error
+        if set(role.authority) & set(GOVERNANCE_GATED):
+            raise DecompositionError(
+                f"{sid} requests governance-gated authority {sorted(set(role.authority) & set(GOVERNANCE_GATED))}"
+            )
         subtasks[sid] = Subtask(
             id=sid,
             goal=str(raw["goal"]),
@@ -153,7 +165,7 @@ def fallback_subtasks(task: str) -> list[Subtask]:
             "success_criteria": "non_empty_output",
         },
     )
-    return [Subtask(id="generalist", goal=task, deps=(), topics=("general",), role=role)]
+    return [Subtask(id="generalist", goal=task, deps=(), topics=(FALLBACK_TOPIC,), role=role)]
 
 
 def decompose(adapter: ModelAdapter, task: str, *, on_completion=None) -> tuple[list[Subtask], bool]:
@@ -163,5 +175,5 @@ def decompose(adapter: ModelAdapter, task: str, *, on_completion=None) -> tuple[
         on_completion(resp)
     try:
         return parse_dag(resp.text), False
-    except (DecompositionError, ContractError, yaml.YAMLError, KeyError, TypeError, AttributeError):
+    except (DecompositionError, ContractError, AuthorityError, yaml.YAMLError, KeyError, TypeError, AttributeError):
         return fallback_subtasks(task), True

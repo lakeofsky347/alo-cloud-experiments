@@ -5,6 +5,9 @@ from dataclasses import dataclass
 
 
 MODEL_POOL = ("deepseek-flash", "mimo-v2.6-flash", "glm-5.3-flash", "mimo-v2.6-pro")
+# G1 Main is this named identity. Pool position 0 is deepseek-flash and is not Main.
+# G1 Strong stays unselected; do not substitute Main for a missing Strong choice.
+G1_MAIN_MODEL = "mimo-v2.6-flash"
 PER_MODEL_LIMIT_MICROCNY = 50_000_000
 
 

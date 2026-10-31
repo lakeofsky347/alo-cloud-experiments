@@ -121,6 +121,7 @@ def run_task(
     event_fn=None,
     remediation=None,
     execution_scope=None,
+    include_synthetic_context: bool = False,
 ) -> TaskRun:
     if max_attempts < 1:
         raise ValueError("max_attempts must be positive")
@@ -160,16 +161,20 @@ def run_task(
     # (§1.5 experiment substrate) + artifacts written as nodes complete.
     # TMS information allocation (§1.9): downstream roles only see an
     # artifact if their epistemic_scope includes it.
+    # Synthetic bandwidth blobs are an opt-in noise substrate. Study prompts
+    # leave them out so BROAD/FULL views and planner includes cannot treat
+    # fabricated logs or a "prod" region as task evidence.
     global_state: dict[str, object] = {
         "goal": task,
         "constraints": [],
         "current_phase": "execute",
         "team_structure": [s.id for s in order],
         "execution_history": [],
-        "raw_logs": RAW_LOGS_BLOB,
-        "env_state": {"budget": "ok", "region": "prod"},
-        "full_dump": FULL_DUMP_BLOB,
     }
+    if include_synthetic_context:
+        global_state["raw_logs"] = RAW_LOGS_BLOB
+        global_state["env_state"] = {"budget": "ok", "region": "prod"}
+        global_state["full_dump"] = FULL_DUMP_BLOB
     if extra_state:
         global_state.update(extra_state)  # experiment-controlled sections (§1.5)
 
