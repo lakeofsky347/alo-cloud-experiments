@@ -7,6 +7,8 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
+import re
+
 from .errors import ProtocolError, BaselineUnavailable
 from .native_bridge import ServiceCodeExecutor
 
@@ -80,6 +82,95 @@ def parse_action(text):
                                        or not isinstance(arguments["timeout_s"], (int, float))):
         raise ProtocolError("public action timeout must be numeric")
     return action
+
+_TOOL_CALL = re.compile(
+    r"<tool_call>\s*<function=([A-Za-z_]+)>(.*?)</function>\s*</tool_call>",
+    re.DOTALL,
+)
+_PARAM = re.compile(r"<parameter(?:=([A-Za-z0-9_]+))?>(.*?)</parameter>", re.DOTALL)
+_FENCE = re.compile(r"```([A-Za-z0-9_+-]*)\n(.*?)```", re.DOTALL)
+
+
+def _argument_value(key, raw):
+    text = raw.strip()
+    if key == "argv":
+        value = json.loads(text)
+        if not isinstance(value, list):
+            raise ProtocolError("public action argv must be a string list")
+        return value
+    if key == "timeout_s":
+        return json.loads(text)
+    return text
+
+
+def coerce_public_action(text):
+    """Turn one vendor tool_call into the strict public JSON object.
+
+    The live models emit ``<tool_call><function=name>`` instead of the JSON
+    object the loop asks for. One such call, naming one of the six tools, is
+    the same action. Two calls, or an unknown name, are left for the JSON parser
+    to reject.
+    """
+    if not isinstance(text, str) or "<tool_call>" not in text:
+        return None
+    calls = list(_TOOL_CALL.finditer(text))
+    if len(calls) != 1:
+        return None
+    name = calls[0].group(1)
+    if name not in TOOLS:
+        return None
+    body = calls[0].group(2).strip()
+    arguments = {}
+    params = list(_PARAM.finditer(body))
+    try:
+        if len(params) == 1 and (params[0].group(1) in {None, "arguments"}):
+            raw = params[0].group(2).strip()
+            if raw:
+                parsed = json.loads(raw)
+                if not isinstance(parsed, dict):
+                    return None
+                arguments = parsed
+        elif params:
+            for param in params:
+                key = param.group(1) or "arguments"
+                arguments[key] = _argument_value(key, param.group(2))
+        elif body.startswith("{"):
+            parsed = json.loads(body)
+            if not isinstance(parsed, dict):
+                return None
+            arguments = parsed
+        elif body:
+            return None
+        action = parse_action(json.dumps({"tool": name, "arguments": arguments}))
+    except (ProtocolError, ValueError, TypeError, KeyError, json.JSONDecodeError):
+        return None
+    return json.dumps(action, ensure_ascii=False)
+
+
+class PublicActionExtractor:
+    """Markdown fences, plus one vendor tool_call as a public_tool block."""
+
+    def extract_code_blocks(self, message):
+        text = message if isinstance(message, str) else ""
+        if not isinstance(text, str):
+            content = getattr(message, "content", "")
+            text = content if isinstance(content, str) else ""
+        blocks = [SimpleNamespace(language=lang or "", code=code)
+                  for lang, code in _FENCE.findall(text)]
+        if blocks:
+            return blocks
+        coerced = coerce_public_action(text)
+        if coerced:
+            return [SimpleNamespace(language=ACTION_LANGUAGE, code=coerced)]
+        stripped = text.strip()
+        if stripped.startswith("{") and stripped.endswith("}"):
+            try:
+                parse_action(stripped)
+            except (ProtocolError, ValueError, TypeError, KeyError, json.JSONDecodeError):
+                return []
+            return [SimpleNamespace(language=ACTION_LANGUAGE, code=stripped)]
+        return []
+
 
 def dispatch_action(services, action):
     """Explicit six-entry dispatch; model strings never select arbitrary attrs."""

@@ -59,7 +59,7 @@ def test_vendor_usage_shapes_and_empty_mimo_completion_are_billed(tmp_path, monk
     assert empty["reasoning_tokens"] == 4
     assert empty["cost_microcny"] == charge_microcny(
         "mimo-v2.6-flash", {"input_tokens": 10, "output_tokens": 4, "cache_hit_tokens": None})
-    assert seen[0]["body"]["max_completion_tokens"] == 8192
+    assert seen[0]["body"]["max_completion_tokens"] == 16384
     assert "max_tokens" not in seen[0]["body"]
     record = _diag(tmp_path, "req-m1_b0-1")
     assert record["cause"] == "empty_completion"
@@ -79,7 +79,7 @@ def test_vendor_usage_shapes_and_empty_mimo_completion_are_billed(tmp_path, monk
     assert ledger.snapshot()["unresolved_request_ids"] == []
     reserved = sqlite3.connect(ledger.path).execute(
         "SELECT reserved FROM requests WHERE id='req-m1_b0-1'").fetchone()[0]
-    assert reserved == ceiling_for_messages("mimo-v2.6-flash", messages(), 8192)
+    assert reserved == ceiling_for_messages("mimo-v2.6-flash", messages(), 16384)
 
 
 def test_disagreed_reasoning_counts_stay_unknown(tmp_path, monkeypatch):
@@ -90,15 +90,14 @@ def test_disagreed_reasoning_counts_stay_unknown(tmp_path, monkeypatch):
         _body("deepseek-flash", "x", usage),
         _body("deepseek-flash", "y", _usage(1, 1)),
     ])
-    with pytest.raises(PilotStopped, match="provider_outcome_unknown"):
+    with pytest.raises(PilotStopped, match="provider_outcome_charged"):
         blocked.complete_for_model("deepseek-flash", messages())
-    with pytest.raises(PilotStopped, match="unresolved"):
-        blocked.complete_for_model("deepseek-flash", messages())
-    assert len(seen) == 1
+    assert blocked.complete_for_model("deepseek-flash", messages())["text"] == "y"
+    assert len(seen) == 2
     record = _diag(tmp_path, "req-m1_b0-1")
     assert record["cause"] == "unparseable_success"
-    assert record["settled"] is False
-    assert ledger.snapshot()["unresolved_request_ids"] == ["req-m1_b0-1"]
+    assert record["settled"] is True
+    assert ledger.snapshot()["unresolved_request_ids"] == []
 
 
 def test_vendor_error_settles_zero_and_transport_failures_hold(tmp_path, monkeypatch):
@@ -124,30 +123,39 @@ def test_vendor_error_settles_zero_and_transport_failures_hold(tmp_path, monkeyp
 
     held, _seen, held_ledger = build(tmp_path / "timeout", monkeypatch, [])
     held.transport._sender = boom
-    with pytest.raises(PilotStopped, match="provider_outcome_unknown"):
+    with pytest.raises(PilotStopped, match="provider_outcome_charged"):
         held.complete_for_model("mimo-v2.6-flash", messages(), max_tokens=128)
     timeout = _diag(tmp_path / "timeout", "req-m1_b0-1")
     assert timeout["cause"] == "timeout"
+    assert timeout["settled"] is True
     assert timeout["response"] is None
     assert secret not in json.dumps(timeout)
-    assert held_ledger.snapshot()["unresolved_request_ids"] == ["req-m1_b0-1"]
+    assert held_ledger.snapshot()["unresolved_request_ids"] == []
+    assert held_ledger.audit_rows()[0]["charge_microcny"] == held_ledger.audit_rows()[0]["reserved_microcny"]
+    # The settled hold does not block the next request.
+    held.transport._sender = lambda url, body, headers: _body(
+        body["model"], "after-timeout", _usage(2, 2))
+    assert held.complete_for_model("mimo-v2.6-flash", messages("next"), max_tokens=128)["text"] == "after-timeout"
 
-    reset, _seen, _ledger = build(tmp_path / "reset", monkeypatch, [])
+    reset, _seen, reset_ledger = build(tmp_path / "reset", monkeypatch, [])
     reset.transport._sender = lambda *args: (_ for _ in ()).throw(ConnectionResetError("reset"))
-    with pytest.raises(PilotStopped, match="provider_outcome_unknown"):
+    with pytest.raises(PilotStopped, match="provider_outcome_charged"):
         reset.complete_for_model("deepseek-flash", messages())
     assert _diag(tmp_path / "reset", "req-m1_b0-1")["cause"] == "connection_reset"
+    assert reset_ledger.snapshot()["unresolved_request_ids"] == []
 
     opaque, _seen, _ledger = build(tmp_path / "opaque", monkeypatch, [(None, 500)])
-    with pytest.raises(PilotStopped, match="provider_outcome_unknown"):
+    with pytest.raises(PilotStopped, match="provider_outcome_charged"):
         opaque.complete_for_model("glm-5.3-flash", messages())
     assert _diag(tmp_path / "opaque", "req-m1_b0-1")["cause"] == "transport_error"
 
 
-def test_resolve_worst_case_and_restart_once(tmp_path, monkeypatch):
-    monkeypatch.delenv("ALO_RUN_DIR", raising=False)
+def test_timeout_charges_worst_case_restarts_once_and_continues(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "urllib.request.urlopen", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("network")))
+    live = tmp_path / "live-run" / "diagnostics"
+    live.mkdir(parents=True)
+    monkeypatch.setenv("ALO_RUN_DIR", str(tmp_path / "live-run"))
     secret = "live-key-must-not-leak"
     monkeypatch.setenv("MIMO_API_KEY", secret)
     unit = select_units("m1", arms=("g1-main",), tasks=("scikit-learn__scikit-learn-13584",))[0]
@@ -155,67 +163,73 @@ def test_resolve_worst_case_and_restart_once(tmp_path, monkeypatch):
     def fail(url, body, headers):
         raise TimeoutError(secret)
 
-    with pytest.raises(PilotStopped, match="provider_outcome_unknown"):
-        run_schedule((unit,), tmp_path / "run", live=False, sender=fail)
-    ledger = BudgetLedger(tmp_path / "run" / "budget.sqlite3")
-    request_id = ledger.snapshot()["unresolved_request_ids"][0]
-    assert request_id.startswith("req-" + unit.unit_id + "-")
-    assert main([
-        "resolve", "--run-dir", str(tmp_path / "run"), "--request-id", request_id,
-        "--worst-case", "--reason", "charge the reserved hold",
-        "--restart-unit", unit.unit_id,
-    ]) == 0
-    settled = ledger.snapshot()
-    assert settled["unresolved_request_ids"] == []
-    audit = ledger.audit_rows()[0]
-    assert audit["charge_microcny"] == audit["reserved_microcny"]
-    assert audit["released_tokens"] > 0
-    assert settled["used_tokens"] == 0
-    assert secret not in (tmp_path / "run" / "diagnostics" / f"{request_id}.json").read_text(encoding="utf-8")
-    assert not (tmp_path / "run" / "checkpoints" / unit.unit_id).exists()
-    archived = list((tmp_path / "run" / "archive" / "restarts" / unit.unit_id).rglob("records.jsonl"))
-    assert archived and "provider_outcome_unknown" in archived[0].read_text(encoding="utf-8")
-
-    def succeed(url, body, headers):
-        return _body(body["model"], '{"final":"restarted"}', _usage(3, 2))
-
-    rows = run_schedule((unit,), tmp_path / "run", live=False, sender=succeed)
-    assert rows[0]["status"] == "completed"
+    rows = run_schedule((unit,), tmp_path / "run", live=False, sender=fail)
+    assert rows[0]["status"] == "blocked"
+    assert rows[0]["reason"] == "second_unknown_interruption"
     assert rows[0]["restart_count"] == 1
-    assert any(item.startswith(f"req-{unit.unit_id}-r1-") for item in ledger.request_ids())
+    assert rows[0]["halt_schedule"] is False
+    ledger = BudgetLedger(tmp_path / "run" / "budget.sqlite3")
+    assert ledger.snapshot()["unresolved_request_ids"] == []
+    assert all(row["charge_microcny"] == row["reserved_microcny"] for row in ledger.audit_rows())
+    assert ledger.snapshot()["used_tokens"] == 0
+    diagnostics = list((tmp_path / "run" / "diagnostics").glob("*.json"))
+    assert diagnostics
+    assert all(secret not in path.read_text(encoding="utf-8") for path in diagnostics)
+    assert list(live.glob("*.json")) == []
+    archived = list((tmp_path / "run" / "archive" / "restarts" / unit.unit_id).rglob("records.jsonl"))
+    assert archived and "provider_outcome_charged" in archived[0].read_text(encoding="utf-8")
+    assert sum(1 for line in (tmp_path / "run" / "unknown_outcomes.jsonl").read_text().splitlines() if line.strip()) == 2
+    assert main([
+        "archive-finished", "--run-dir", str(tmp_path / "run"),
+        "--reason", "rerun under the updated caps",
+    ]) == 0
+    assert (tmp_path / "run" / "records.jsonl").read_text(encoding="utf-8").strip() == ""
+    assert (tmp_path / "run" / "archive" / "protocol-rerun" / "records.jsonl").is_file()
 
-    with pytest.raises(PilotStopped, match="provider_outcome_unknown"):
-        run_schedule((unit,), tmp_path / "second", live=False, sender=fail)
-    # Second interruption is on a unit that has already used its one restart.
-    (tmp_path / "second" / "unit_restarts.json").write_text(
-        json.dumps({unit.unit_id: 1}), encoding="utf-8")
-    second_ledger = BudgetLedger(tmp_path / "second" / "budget.sqlite3")
-    first_hold = second_ledger.snapshot()["unresolved_request_ids"][0]
-    assert main([
-        "resolve", "--run-dir", str(tmp_path / "second"), "--request-id", first_hold,
-        "--worst-case", "--reason", "first hold on the restarted generation",
-    ]) == 0
-    # The record from the generation-0 failure is still "stopped". Remove it so the
-    # same unit is dispatched again with restart_count 1.
-    record_path = tmp_path / "second" / "records.jsonl"
-    kept = []
-    for line in record_path.read_text(encoding="utf-8").splitlines():
-        row = json.loads(line)
-        if row.get("unit_id") != unit.unit_id:
-            kept.append(line)
-    record_path.write_text(("\n".join(kept) + "\n") if kept else "", encoding="utf-8")
-    with pytest.raises(PilotStopped, match="second_unknown_interruption"):
-        run_schedule((unit,), tmp_path / "second", live=False, sender=fail)
-    blocked = [json.loads(line) for line in record_path.read_text().splitlines() if line.strip()]
-    assert blocked[-1]["status"] == "blocked"
-    assert blocked[-1]["reason"] == "second_unknown_interruption"
-    assert blocked[-1]["restart_count"] == 1
-    second = second_ledger.snapshot()["unresolved_request_ids"][0]
-    assert main([
-        "resolve", "--run-dir", str(tmp_path / "second"), "--request-id", second,
-        "--charge-microcny", 0, "--reason", "release after the second interruption",
-    ]) == 0
-    assert main([
-        "resolve", "--run-dir", str(tmp_path / "second"), "--restart-unit", unit.unit_id,
-        "--reason", "second restart is refused",
-    ]) == 2
+
+def test_vendor_tool_call_and_stream_chunks():
+    from alo_cloud.providers import parse_sse
+    from alo_cloud.public_tools import PublicActionExtractor, coerce_public_action
+    from alo_cloud.tool_loop import persistent_tool_loop
+    from tests.test_tool_loop import LoopServices
+    text = '<tool_call><function=list_files><parameter=arguments>{}</parameter></function></tool_call>'
+    coerced = json.loads(coerce_public_action(text))
+    assert coerced == {"tool": "list_files", "arguments": {}}
+    services = LoopServices([
+        'I will look first. ' + text,
+        '{"final":"edited"}',
+    ])
+    result = persistent_tool_loop(services, "public task", [], max_turns=2)
+    assert result["status"] == "completed"
+    assert "list_files" in services.calls
+    blocks = PublicActionExtractor().extract_code_blocks(
+        '<tool_call><function=list_files><parameter=arguments>{}</parameter></function></tool_call>')
+    assert blocks[0].language == "public_tool"
+    assert json.loads(blocks[0].code)["tool"] == "list_files"
+    mimo = "\n".join([
+        'data: {"choices":[{"delta":{"reasoning_content":"think"},"finish_reason":null}]}',
+        'data: {"choices":[{"delta":{"content":"{\\"final\\":\\"ok\\"}"},"finish_reason":"stop"}],'
+        '"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5,'
+        '"completion_tokens_details":{"reasoning_tokens":1}}}',
+        "data: [DONE]",
+    ])
+    folded = parse_sse(mimo, "mimo-v2.6-pro")
+    assert folded["choices"][0]["message"]["content"] == '{"final":"ok"}'
+    assert folded["usage"]["completion_tokens"] == 2
+    glm = (
+        'data: {"choices":[{"delta":{"content":"hi"},"finish_reason":null}]}\n'
+        'data: {"choices":[{"finish_reason":"stop","delta":{"content":""}}],'
+        '"usage":{"prompt_tokens":8,"completion_tokens":4,"total_tokens":12}}\n'
+        "data: [DONE]\n"
+    )
+    assert parse_sse(glm, "glm-5.3-flash")["usage"]["total_tokens"] == 12
+    deepseek = (
+        'data: {"choices":[{"delta":{"content":"a"},"finish_reason":null}],"usage":null}\n'
+        'data: {"choices":[{"delta":{"content":""},"finish_reason":"stop"}],'
+        '"usage":{"prompt_tokens":4,"completion_tokens":1,"total_tokens":5,'
+        '"prompt_cache_hit_tokens":1,"prompt_cache_miss_tokens":3}}\n'
+        "data: [DONE]\n"
+    )
+    folded = parse_sse(deepseek, "deepseek-flash")
+    assert folded["choices"][0]["message"]["content"] == "a"
+    assert folded["usage"]["prompt_cache_hit_tokens"] == 1

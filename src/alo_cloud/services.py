@@ -17,7 +17,7 @@ from .budget import MICROCNY_PER_CNY, BudgetLedger, BudgetStopped
 from .contracts import MODEL_POOL, PER_MODEL_LIMIT_MICROCNY, STUDY_TOTAL_LIMIT_MICROCNY
 from .diagnostics import write_diagnostic
 from .errors import PilotStopped, ProtocolError
-from .freeze import MIMO_MAX_COMPLETION_TOKENS
+from .freeze import MIMO_MAX_COMPLETION_TOKENS, PROVIDER_TIMEOUT_S
 from .providers import (
     MIMO_MODELS, OpenAICompatibleTransport, credential_configured, messages_contain_credential,
     request_body,
@@ -100,7 +100,7 @@ class StudyServices:
         self._request_ceiling = request_ceiling
         self._require_credentials = bool(require_credentials)
         self.transport = OpenAICompatibleTransport(
-            sender=sender, permit_network=permit_network, timeout_s=self.limits["command_seconds"],
+            sender=sender, permit_network=permit_network, timeout_s=max(PROVIDER_TIMEOUT_S.values()),
             require_credentials=require_credentials)
         if sender is None and not permit_network:
             raise PilotStopped("provider_sender_required")
@@ -213,14 +213,14 @@ class StudyServices:
             self._stop(error)
 
     def _sent_max_tokens(self, model, max_tokens):
-        """Give MiMo a completion cap that can hold reasoning and a visible answer.
+        """Leave room for reasoning and a visible answer on every pool model.
 
-        ``max_completion_tokens`` includes reasoning. A caller asking for at least
-        the historical 4096 cap is raised to ``MIMO_MAX_COMPLETION_TOKENS``.
-        Smaller explicit caps, used by smoke tests, stay as requested. The
-        reservation uses this same number.
+        A caller asking for at least the historical 4096 cap is raised to the
+        reasoning cap. Smaller explicit caps, used by smoke tests, stay as
+        requested. The reservation uses this same number.
         """
-        if model in MIMO_MODELS and max_tokens >= 4096:
+        del model
+        if max_tokens >= 4096:
             return min(self.limits["max_output_tokens"], MIMO_MAX_COMPLETION_TOKENS)
         return max_tokens
 
@@ -294,7 +294,9 @@ class StudyServices:
             self._stop(error)
         started = self._clock()
         try:
-            outcome = self.transport.complete_for_model(model, messages, max_tokens=sent_max_tokens)
+            outcome = self.transport.complete_for_model(
+                model, messages, max_tokens=sent_max_tokens,
+                timeout_s=PROVIDER_TIMEOUT_S[model])
             elapsed_ms = max(0, int(round((self._clock() - started) * 1000)))
             kind = outcome.get("kind")
             if kind == "completion":
@@ -334,15 +336,21 @@ class StudyServices:
                 return {"text": "", "input_tokens": 0, "output_tokens": 0, "reasoning_tokens": None,
                         "latency_ms": elapsed_ms, "cost_microcny": 0, "currency": "CNY",
                         "finish_reason": None, "length_stop": False, "vendor_error": True}
-            self._diagnose(request_id, model, outcome, latency_ms=elapsed_ms, settled=False)
             self._mark_request_unknown(request_id)
-            raise PilotStopped("provider_outcome_unknown")
-        except PilotStopped as error:
-            if str(error) != "provider_outcome_unknown":
-                self._diagnose(request_id, model, {"cause": "transport_error"}, latency_ms=0, settled=False)
-                self._mark_request_unknown(request_id)
+            try:
+                self.ledger.resolve_unknown(
+                    request_id, None, reason=outcome.get("cause") or "transport_error", worst_case=True)
+            except BudgetStopped:
+                self._diagnose(request_id, model, outcome, latency_ms=elapsed_ms, settled=False)
                 raise PilotStopped("provider_outcome_unknown") from None
-            raise
+            self._diagnose(request_id, model, outcome, latency_ms=elapsed_ms, settled=True)
+            raise PilotStopped("provider_outcome_charged")
+        except PilotStopped as error:
+            if str(error) in {"provider_outcome_unknown", "provider_outcome_charged"}:
+                raise
+            self._diagnose(request_id, model, {"cause": "transport_error"}, latency_ms=0, settled=False)
+            self._mark_request_unknown(request_id)
+            raise PilotStopped("provider_outcome_unknown") from None
         except BudgetStopped:
             self._diagnose(request_id, model, {"cause": "charge_rejected"}, latency_ms=0,
                            settled=False, cause="charge_rejected")

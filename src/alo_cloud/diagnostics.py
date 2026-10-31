@@ -30,10 +30,12 @@ _STRING_LIMIT = 4000
 
 
 def diagnostics_directory(ledger):
-    """``$ALO_RUN_DIR/diagnostics`` when that variable is set, else beside the ledger."""
-    env = os.environ.get("ALO_RUN_DIR", "").strip()
-    root = Path(env) if env else Path(ledger.path).parent
-    path = root / "diagnostics"
+    """Directory beside the ledger. The paid run keeps that ledger in ``$ALO_RUN_DIR``.
+
+    The process environment is not consulted. A test that inherits ``ALO_RUN_DIR``
+    must not write into the live run.
+    """
+    path = Path(ledger.path).parent / "diagnostics"
     path.mkdir(parents=True, exist_ok=True)
     return path
 

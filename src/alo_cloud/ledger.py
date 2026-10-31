@@ -99,9 +99,43 @@ def restart_unit(run_dir, unit_id, *, reason, ledger=None):
             "archive": str(dest)}
 
 
+def archive_finished(run_dir, *, reason):
+    """Move every finished unit record and checkpoint aside. The ledger stays.
+
+    Used when a protocol change should rerun units whose spend is already counted.
+    """
+    if not isinstance(reason, str) or not reason.strip():
+        raise ValueError("resolve_reason_required")
+    run_dir = Path(run_dir)
+    records = run_dir / "records.jsonl"
+    if not records.is_file():
+        return {"archived_units": 0, "archive": ""}
+    rows = []
+    for line in records.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            rows.append(json.loads(line))
+    dest = run_dir / "archive" / "protocol-rerun"
+    dest.mkdir(parents=True, exist_ok=True)
+    (dest / "records.jsonl").write_text(
+        "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows), encoding="utf-8")
+    (dest / "reason.txt").write_text(reason.strip() + "\n", encoding="utf-8")
+    moved = 0
+    for row in rows:
+        unit_id = row.get("unit_id")
+        if not isinstance(unit_id, str) or not unit_id:
+            continue
+        unit_dest = dest / unit_id
+        unit_dest.mkdir(parents=True, exist_ok=True)
+        if _archive_tree(run_dir / "checkpoints" / unit_id, unit_dest / "checkpoint"):
+            moved += 1
+        _archive_tree(run_dir / "sealed" / "swe_units" / f"{unit_id}.jsonl", unit_dest / "swe_unit.jsonl")
+    records.write_text("", encoding="utf-8")
+    return {"archived_units": len(rows), "checkpoints": moved, "archive": str(dest)}
+
+
 def _parser():
     parser = argparse.ArgumentParser(description="Resolve an unknown hold or restart one unit.")
-    parser.add_argument("command", choices=("resolve",))
+    parser.add_argument("command", choices=("resolve", "archive-finished"))
     parser.add_argument("--run-dir", required=True)
     parser.add_argument("--request-id", default=None)
     parser.add_argument("--charge-microcny", type=int, default=None)
@@ -114,6 +148,13 @@ def _parser():
 def main(argv=None):
     parser = _parser()
     args = parser.parse_args(argv)
+    if args.command == "archive-finished":
+        try:
+            print(json.dumps(archive_finished(args.run_dir, reason=args.reason), ensure_ascii=False, sort_keys=True))
+        except (BudgetStopped, ValueError) as error:
+            print(str(error))
+            return 2
+        return 0
     if args.command != "resolve":
         parser.error("resolve is required")
     if args.request_id and (args.charge_microcny is None) == (not args.worst_case):

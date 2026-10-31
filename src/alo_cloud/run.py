@@ -25,9 +25,9 @@ from .contracts import (
 from .errors import PilotStopped
 from .freeze import (
     BLOCKED_FRACTION_MIN_UNITS, G2_PLANNER_MODEL, G3_MANAGER_MODEL, G3_ROLES,
-    MAX_BLOCKED_FRACTION, select_units,
+    MAX_BLOCKED_FRACTION, MAX_UNKNOWN_OUTCOMES, select_units,
 )
-from .ledger import restart_counts
+from .ledger import restart_counts, restart_unit
 from .images import resolve_task_image
 from .prices import ceiling_for_messages, charge_microcny
 from .sandbox import SWE_TESTBED_PATH, DockerSandbox
@@ -272,6 +272,30 @@ def missing_payloads(units, data_dir):
     return missing
 
 
+def _unknown_log(run_dir):
+    return Path(run_dir) / "unknown_outcomes.jsonl"
+
+
+def _unknown_count(run_dir):
+    path = _unknown_log(run_dir)
+    if not path.is_file():
+        return 0
+    return sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
+
+
+def _note_unknown(run_dir, record):
+    path = _unknown_log(run_dir)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({
+            "unit_id": record.get("unit_id"),
+            "reason": record.get("reason"),
+            "request_id": record.get("unknown_request_id"),
+        }, ensure_ascii=False) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    return _unknown_count(run_dir)
+
+
 def run_schedule(units, run_dir, *, live, data_dir=None, docker_image=None, sender=None,
                  git_runner=None, sandbox_memory=None, sandbox_pids=None, image_seeder=None):
     """Execute units in order. Completed JSONL rows are skipped on resume."""
@@ -305,13 +329,27 @@ def run_schedule(units, run_dir, *, live, data_dir=None, docker_image=None, send
             if any(_touched(request_id, unit.unit_id, restart_counts(run_dir).get(unit.unit_id, 0))
                    for request_id in known_ids):
                 raise BudgetStopped("partial_unit_not_retried")
-            record = _execute_unit(unit, run_dir, ledger, live=live, data_dir=data_dir,
-                                   docker_image=docker_image, sender=sender, git_runner=git_runner,
-                                   sandbox_memory=sandbox_memory, sandbox_pids=sandbox_pids,
-                                   image_seeder=image_seeder)
-            _append_record(records_path, record)
+            retried = False
+            while True:
+                record = _execute_unit(
+                    unit, run_dir, ledger, live=live, data_dir=data_dir,
+                    docker_image=docker_image, sender=sender, git_runner=git_runner,
+                    sandbox_memory=sandbox_memory, sandbox_pids=sandbox_pids,
+                    image_seeder=image_seeder, unknown_so_far=_unknown_count(run_dir))
+                _append_record(records_path, record)
+                if record.get("charged_unknown"):
+                    count = _note_unknown(run_dir, record)
+                    if count > MAX_UNKNOWN_OUTCOMES:
+                        record["halt_schedule"] = True
+                        record["reason"] = "unknown_outcome_threshold"
+                known_ids = ledger.request_ids()
+                if (record.get("charged_unknown") and not retried and record.get("restart_count", 0) == 0
+                        and not record.get("halt_schedule")):
+                    restart_unit(run_dir, unit.unit_id, reason="charged unknown; restart once", ledger=ledger)
+                    retried = True
+                    continue
+                break
             results.append(record)
-            known_ids = ledger.request_ids()
             _stop_if_blocked(results)
             if record.get("halt_schedule"):
                 raise PilotStopped(record.get("reason") or "schedule_stopped")
@@ -461,7 +499,8 @@ def _public_field(payload, key):
 
 
 def _execute_unit(unit, run_dir, ledger, *, live, data_dir, docker_image, sender,
-                  git_runner=None, sandbox_memory=None, sandbox_pids=None, image_seeder=None):
+                  git_runner=None, sandbox_memory=None, sandbox_pids=None, image_seeder=None,
+                  unknown_so_far=0):
     record = {
         "schema": "alo-paid-unit-v1",
         "unit_id": unit.unit_id,
@@ -535,8 +574,16 @@ def _execute_unit(unit, run_dir, ledger, *, live, data_dir, docker_image, sender
     except PilotStopped as error:
         reason = str(error)
         status = "stopped"
-        halt = reason not in {"cumulative_request_or_model_limit", "unit_seconds_exhausted"}
-        if reason == "provider_outcome_unknown" and restart_count >= 1:
+        halt = reason not in {
+            "cumulative_request_or_model_limit", "unit_seconds_exhausted", "provider_outcome_charged",
+        }
+        if reason == "provider_outcome_charged":
+            record["charged_unknown"] = True
+            if restart_count >= 1:
+                status = "blocked"
+                reason = "second_unknown_interruption"
+            halt = unknown_so_far + 1 > MAX_UNKNOWN_OUTCOMES
+        elif reason == "provider_outcome_unknown" and restart_count >= 1:
             status = "blocked"
             reason = "second_unknown_interruption"
             halt = True

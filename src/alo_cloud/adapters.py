@@ -149,7 +149,7 @@ class HeterogeneousGroupChat:
 
     def run_stage(self, stage, services):
         import autogen as native
-        from autogen.coding.markdown_code_extractor import MarkdownCodeExtractor
+        from alo_cloud.public_tools import PublicActionExtractor
         if importlib.metadata.version("autogen-agentchat") != "0.2.40":
             raise PilotStopped("native_groupchat_version_changed")
         self._bind(_models(services))
@@ -170,7 +170,7 @@ class HeterogeneousGroupChat:
         for agent in agents:
             agent.register_model_client(model_client_cls=client)
         workspace = native.UserProxyAgent(name="Workspace", human_input_mode="NEVER", llm_config=False,
-            code_execution_config={"executor": PublicToolCodeExecutor(services, MarkdownCodeExtractor()),
+            code_execution_config={"executor": PublicToolCodeExecutor(services, PublicActionExtractor()),
                                    "last_n_messages": 1},
             default_auto_reply="Use the shared public tools or submit STAGE_DONE.", is_termination_msg=_terminated)
         group = native.GroupChat(agents=[workspace, *agents], messages=[], max_round=self.max_round,

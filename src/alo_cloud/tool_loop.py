@@ -11,7 +11,7 @@ import json
 import math
 
 from .public_tools import (
-    _unique_object, dispatch_action, parse_action,
+    _unique_object, coerce_public_action, dispatch_action, parse_action,
 )
 from .public_tools import TOOLS_PROMPT
 from .errors import ProtocolError
@@ -122,6 +122,9 @@ def persistent_tool_loop(services, prompt, messages, *, system="", max_turns=10)
                 "protocol_version": TOOL_LOOP_VERSION, "error_phase": "response_validation",
                 "required_response": FORMAT_RULE, "automatic_retry": False})
             continue
+        coerced = coerce_public_action(text)
+        if coerced:
+            text = coerced
         try:
             action = parse_response(text)
         except (ValueError, TypeError, KeyError) as error:
