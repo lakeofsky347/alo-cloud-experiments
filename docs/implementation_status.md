@@ -39,7 +39,7 @@ Linux执行需明确选择受支持的本地Docker后端，核对原生amd64、�
 | 预算 | 在私有运行存储核对每模型累计使用与未决预留；不得按新仓库重置50 CNY上限 |
 | 冻结 | 绑定代码版本、最终任务、阶段、预算、顺序、模型及评分合同后才可启动对应采集 |
 
-`StudyServices` 在离线测试里仍可注入 sender。付费路径使用 `alo_cloud.prices.charge_microcny` 和按提示字节上限加 `max_completion_tokens` 算出的单次预留。传输仍是中国站按量入口：MiMo 发送 `max_completion_tokens`，GLM-5.3-Flash 发送 `thinking.type=enabled`；tokens 按 `prompt + completion` 入账，reasoning 明细不重复加计。调度器是 `python -m alo_cloud.run`。收卷交接是 `python -m alo_cloud.collect`：每个 SWE 单元一条 prediction，ProgramBench 按单元目录放 `submission.tar.gz`。SWE 工作区在宿主机按 `base_commit` 检出后再以 `--network=none` 挂进官方实例镜像；ProgramBench 使用 `task_cleanroom_v6` 镜像。`--live` 才读 `DEEPSEEK_API_KEY`、`MIMO_API_KEY`、`ZAI_API_KEY` 并允许网络。账本期初按业主决定为 0，因为检出里没有数值期初占用。采样、`reasoning_effort` 和 `clear_thinking` 仍不发送。独立评分在 `alo_cloud.evaluate`，没有模型调用。离线测试通过不是模型分数，也不是采集已经开始。
+`StudyServices` 在离线测试里仍可注入 sender。付费路径使用 `alo_cloud.prices.charge_microcny` 和按提示字节上限加 `max_completion_tokens` 算出的单次预留。传输仍是中国站按量入口：MiMo 发送 `max_completion_tokens`，GLM-5.3-Flash 发送 `thinking.type=enabled`；tokens 按 `prompt + completion` 入账，reasoning 明细不重复加计。调度器是 `python -m alo_cloud.run`。收卷交接是 `python -m alo_cloud.collect`：每个 SWE 单元一条 prediction，ProgramBench 按单元目录放 `submission.tar.gz`。SWE 工作区从官方实例镜像的 `/testbed` 拷出后以 `--network=none` 挂回 `/testbed`：接受 HEAD 等于 `base_commit`，或 HEAD 的父提交等于 `base_commit` 且该提交只改文件模式；计分补丁相对镜像 HEAD。ProgramBench 使用 `task_cleanroom_v6` 镜像，命令前后的目录同步排除 `.git` 和 `executable`。`--live` 才读 `DEEPSEEK_API_KEY`、`MIMO_API_KEY`、`ZAI_API_KEY` 并允许网络。账本期初按业主决定为 0，因为检出里没有数值期初占用。采样、`reasoning_effort` 和 `clear_thinking` 仍不发送。独立评分在 `alo_cloud.evaluate`，没有模型调用。离线测试通过不是模型分数，也不是采集已经开始。
 
 离线测试通过只说明其覆盖的软件行为；零API容器控制通过只说明相应环境行为。它们不证明真实模型质量、整体研究功效或跨任务学习效果。
 

@@ -24,13 +24,14 @@ from .contracts import (
 )
 from .errors import PilotStopped
 from .freeze import (
-    G2_PLANNER_MODEL, G3_MANAGER_MODEL, G3_ROLES, select_units,
+    BLOCKED_FRACTION_MIN_UNITS, G2_PLANNER_MODEL, G3_MANAGER_MODEL, G3_ROLES,
+    MAX_BLOCKED_FRACTION, select_units,
 )
 from .images import resolve_task_image
 from .prices import ceiling_for_messages, charge_microcny
 from .sandbox import SWE_TESTBED_PATH, DockerSandbox
 from .workspace_prep import (
-    apply_patch, head_matches, release_unreadable_executable, seed_image_tree,
+    apply_patch, release_unreadable_executable, resolve_image_head, seed_image_tree,
 )
 from .services import PROTOCOL_UNIT_LIMITS, StudyServices
 from .state import export_learning_state, import_learning_state
@@ -290,6 +291,7 @@ def run_schedule(units, run_dir, *, live, data_dir=None, docker_image=None, send
         for unit in units:
             if unit.unit_id in done:
                 results.append(done[unit.unit_id])
+                _stop_if_blocked(results)
                 continue
             if any(_touched(request_id, unit.unit_id) for request_id in known_ids):
                 raise BudgetStopped("partial_unit_not_retried")
@@ -300,6 +302,7 @@ def run_schedule(units, run_dir, *, live, data_dir=None, docker_image=None, send
             _append_record(records_path, record)
             results.append(record)
             known_ids = ledger.request_ids()
+            _stop_if_blocked(results)
             if record["status"] == "stopped" and record.get("halt_schedule"):
                 raise PilotStopped(record.get("reason") or "schedule_stopped")
     finally:
@@ -315,11 +318,69 @@ def _want_image_seed(live, image_seeder):
     return bool(live)
 
 
-def _prepare_workspace(unit, services, *, live, repo, base_commit, git_runner, image, image_seeder, run_dir):
-    """Copy the image tree into the one live workspace. Resume reapplies the sealed patch.
+def _max_blocked_fraction(maximum):
+    if maximum is not None:
+        return float(maximum)
+    raw = os.environ.get("ALO_MAX_BLOCKED_FRACTION", "").strip()
+    if not raw:
+        return MAX_BLOCKED_FRACTION
+    try:
+        value = float(raw)
+    except ValueError:
+        return MAX_BLOCKED_FRACTION
+    if value < 0 or value > 1:
+        return MAX_BLOCKED_FRACTION
+    return value
 
-    SWE comes from the image ``/testbed`` (built extensions, already at
-    ``base_commit``). ProgramBench comes from the image ``/workspace``.
+
+def blocked_fraction_exceeded(records, *, maximum=None):
+    """True when blocked units are more than the allowed share of a large enough sample."""
+    finished = [row for row in records if isinstance(row, dict) and row.get("status")]
+    if len(finished) < BLOCKED_FRACTION_MIN_UNITS:
+        return False
+    blocked = sum(1 for row in finished if row.get("status") == "blocked")
+    return blocked / len(finished) > _max_blocked_fraction(maximum)
+
+
+def format_blocked_report(records, *, maximum=None):
+    """One histogram line per blocked reason, then whether the schedule must stop."""
+    counts = {}
+    finished = 0
+    blocked = 0
+    for row in records:
+        if not isinstance(row, dict) or not row.get("status"):
+            continue
+        finished += 1
+        if row.get("status") != "blocked":
+            continue
+        blocked += 1
+        reason = row.get("reason") or "unspecified"
+        counts[reason] = counts.get(reason, 0) + 1
+    lines = [f"blocked {blocked} of {finished}"]
+    for reason, count in sorted(counts.items(), key=lambda item: (-item[1], item[0])):
+        lines.append(f"{count} {reason}")
+    exceeded = blocked_fraction_exceeded(records, maximum=maximum)
+    if exceeded:
+        lines.append("blocked_fraction_exceeded")
+    return "\n".join(lines), exceeded
+
+
+def _stop_if_blocked(records):
+    exceeded = blocked_fraction_exceeded(records)
+    if not exceeded:
+        return
+    text, _exceeded = format_blocked_report(records)
+    print(text)
+    raise PilotStopped("blocked_fraction_exceeded")
+
+
+def _prepare_workspace(unit, services, *, live, repo, base_commit, git_runner, image, image_seeder, run_dir):
+    """Copy the image tree into the one live workspace. Resume reapplies onto image HEAD.
+
+    SWE comes from the image ``/testbed``. Official images may add one
+    mode-only commit above ``base_commit``; the scored patch and a resumed
+    apply both use that HEAD, which is the tree the harness patches.
+    ProgramBench comes from the image ``/workspace``.
     A fresh GitHub clone is not mounted over ``/testbed``.
     """
     del repo
@@ -333,8 +394,10 @@ def _prepare_workspace(unit, services, *, live, repo, base_commit, git_runner, i
             if not base_commit:
                 return "swe_checkout_metadata_missing"
             seed_image_tree(image, "/testbed", root, docker=image_seeder)
-            if not head_matches(root, base_commit, git=git_runner):
+            image_head = resolve_image_head(root, base_commit, git=git_runner)
+            if not image_head:
                 return "swe_image_base_commit_mismatch"
+            services.image_head = image_head
             parent_patch = Path(run_dir) / "checkpoints" / unit.parent_unit_id / "model.patch"
             if unit.parent_unit_id and parent_patch.is_file():
                 apply_patch(root, parent_patch.read_text(encoding="utf-8"))
@@ -440,6 +503,9 @@ def _execute_unit(unit, run_dir, ledger, *, live, data_dir, docker_image, sender
         record.update(status="blocked", reason=prepare_note, charged_microcny={}, sealed_files=0)
         _delete_live_unit(run_dir, unit.unit_id)
         return record
+    image_head = getattr(services, "image_head", None)
+    if image_head:
+        record["image_head"] = image_head
     _attach_sandbox(services, unit, image, live=live, memory=sandbox_memory, pids=sandbox_pids)
     record["sandbox_workdir"] = getattr(services.sandbox, "workdir", None) if services.sandbox else None
     record["preserve_executable_in_image"] = bool(getattr(services, "preserve_image_executable", False))
@@ -506,6 +572,7 @@ def _persist_compact(unit, services, adapter, run_dir, record):
         json.dumps(adapter.dump_state(), ensure_ascii=False), encoding="utf-8")
     (checkpoint / "metadata.json").write_text(json.dumps({
         "base_commit": record.get("base_commit"),
+        "image_head": record.get("image_head"),
         "sandbox_image": record.get("sandbox_image"),
         "track": unit.track,
         "task_id": unit.task_id,
@@ -526,7 +593,8 @@ def _persist_compact(unit, services, adapter, run_dir, record):
     if unit.track == "SWE-bench_Lite":
         patch = ""
         try:
-            patch = workspace_patch(workspace, record.get("base_commit") or "")
+            diff_base = record.get("image_head") or record.get("base_commit") or ""
+            patch = workspace_patch(workspace, diff_base)
         except RuntimeError:
             record["patch_note"] = "git_diff_failed"
         (checkpoint / "model.patch").write_text(patch, encoding="utf-8")
@@ -545,12 +613,14 @@ def _delete_live_unit(run_dir, unit_id):
 
 def _parser():
     parser = argparse.ArgumentParser(description="Run the frozen M1 or M2 schedule.")
-    parser.add_argument("--study", required=True, choices=("m1", "m2"))
+    parser.add_argument("--study", choices=("m1", "m2"))
     parser.add_argument("--arm", action="append", default=[],
                         choices=("g1-main", "g1-strong", "g2", "g3"))
     parser.add_argument("--tasks", action="append", default=[])
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--live", action="store_true")
+    parser.add_argument("--blocked-report", action="store_true",
+                        help="Print the blocked-reason histogram and exit 1 if the fraction is too high.")
     parser.add_argument("--run-dir", required=True)
     parser.add_argument("--data-dir", default=None)
     parser.add_argument("--docker-image", default=os.environ.get("ALO_SANDBOX_IMAGE") or None)
@@ -560,6 +630,13 @@ def _parser():
 def main(argv=None):
     parser = _parser()
     args = parser.parse_args(argv)
+    if args.blocked_report:
+        records = list(_done_ids(Path(args.run_dir) / "records.jsonl").values())
+        text, exceeded = format_blocked_report(records)
+        print(text)
+        return 1 if exceeded else 0
+    if args.study not in {"m1", "m2"}:
+        parser.error("--study is required")
     if args.live == args.dry_run:
         parser.error("pass exactly one of --dry-run or --live")
     units = select_units(args.study, arms=args.arm, tasks=args.tasks)

@@ -29,12 +29,27 @@ if [ ! -d "$DATA_DIR/SWE-bench_Lite" ] || [ ! -d "$DATA_DIR/ProgramBench" ]; the
   exit 2
 fi
 
+# Stop once blocked units exceed ALO_MAX_BLOCKED_FRACTION (default 0.25,
+# and only after at least 4 finished units). The histogram is printed even
+# when M1 itself exits 0, and M2 does not start when the fraction is too high.
+set +e
 "$PY" -m alo_cloud.run --study m1 --live --run-dir "$RUN_DIR" --data-dir "$DATA_DIR"
+m1_status=$?
+echo "M1 blocked-reason histogram"
+"$PY" -m alo_cloud.run --blocked-report --run-dir "$RUN_DIR"
+report_status=$?
+set -e
+if [ "$m1_status" -ne 0 ] || [ "$report_status" -ne 0 ]; then
+  echo "M1 stopped (run=$m1_status, blocked_report=$report_status). M2 was not started."
+  exit 1
+fi
+
 "$PY" -m alo_cloud.run --study m2 --live --run-dir "$RUN_DIR" --data-dir "$DATA_DIR"
 "$PY" -m alo_cloud.collect --run-dir "$RUN_DIR"
 
 # Scoring is a separate process. It does not read the provider keys.
 # Revisions are passed on the command and set again inside the evaluator.
+# The harness cwd is $RUN_DIR/eval, so report JSON is not written into this repo.
 export PROGRAMBENCH_HF_REVISION=de0ddfb637590c7ecb54fa0b5301f6dc7dfbcee5
 export PROGRAMBENCH_REPO="${PROGRAMBENCH_REPO:-}"
 "$PY" -m alo_cloud.evaluate --run-dir "$RUN_DIR" --execute \

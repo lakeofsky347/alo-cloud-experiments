@@ -78,6 +78,6 @@ ALO 在一次任务开始生成 DAG，当前按固定拓扑顺序串行执行；
 
 ## 正式冻结与后置研究
 
-任务身份、种子、组别、模型和参数见 [protocol_freeze.md](protocol_freeze.md)。费用投影见 [cost_projection.md](cost_projection.md)。2026-10-31 的冻结哈希后来又改过一次：题单和标价未变。工作区改为从官方镜像种子拷出，SWE 使用 testbed 环境的 `python`，封存只保留相对 `base_commit` 的补丁或 ProgramBench 交卷包，活工作区在封存后删除。阶段准备不等于采集许可，离线单元测试不代替原生环境正负控制，也不是模型分数。
+任务身份、种子、组别、模型和参数见 [protocol_freeze.md](protocol_freeze.md)。费用投影见 [cost_projection.md](cost_projection.md)。2026-10-31 的冻结哈希再次更新，上一版和原因写在 [protocol_freeze.md](protocol_freeze.md)。题单和标价未变。官方 SWE 镜像的 HEAD 比 `base_commit` 多一个只改文件模式的提交，计分补丁相对该镜像 HEAD；评分工作目录在运行目录的 `eval`；blocked 比例超过 0.25 时停止，并在 M2 之前打印原因直方图。阶段准备不等于采集许可，离线单元测试不代替原生环境正负控制，也不是模型分数。
 
 A1 固定同一 DAG 比较调度、A2 比较同来源反馈维度、A3 比较组织更新启用／冻结，均另行冻结。X1 后置；若开展，只共享白名单公开失败摘要，使用同一父检查点上的自身反馈对照与等追加预算，不共享源码、补丁或隐藏评分。

@@ -225,8 +225,9 @@ def _score_swebench(run_dir, predictions):
         return result
     result["units"] = []
     failed = False
+    cwd = harness_cwd(run_dir)
     for item in commands:
-        unit_result = execute_swebench(item["command"])
+        unit_result = execute_swebench(item["command"], cwd=cwd)
         unit_result["unit_id"] = item["unit_id"]
         unit_result["instance_id"] = item["instance_id"]
         result["units"].append(unit_result)
@@ -237,7 +238,21 @@ def _score_swebench(run_dir, predictions):
     return result
 
 
-def execute_swebench(command):
+def harness_cwd(run_dir):
+    """Directory the official harness may write into. Never the repository root."""
+    path = Path(run_dir) / "eval"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _harness_run(argv, *, cwd, env):
+    return subprocess.run(
+        argv, check=False, capture_output=True, text=True, env=env,
+        cwd=str(cwd) if cwd else None,
+    )
+
+
+def execute_swebench(command, *, cwd=None):
     """Run one unit through the official harness with the dataset revision pinned."""
     argv = list(command)
     if "--dataset_revision" not in argv:
@@ -249,10 +264,9 @@ def execute_swebench(command):
         return {"status": "unavailable", "reason": "dataset_revision_mismatch", "command": command}
     module_at = official.index("-m")
     official_flags = official[module_at + 2:]
-    completed = subprocess.run(
+    completed = _harness_run(
         [sys.executable, "-c", _SWEBENCH_PINNED_LAUNCHER, revision, *official_flags],
-        check=False, capture_output=True, text=True,
-        env=programbench_env(),
+        cwd=cwd, env=programbench_env(),
     )
     return {
         "status": "finished" if completed.returncode == 0 else "harness_failed",
@@ -292,8 +306,9 @@ def _score_programbench(run_dir, repo):
     result["units"] = []
     failed = False
     env = programbench_env()
+    cwd = harness_cwd(run_dir)
     for item in commands:
-        completed = subprocess.run(item["command"], check=False, capture_output=True, text=True, env=env)
+        completed = _harness_run(item["command"], cwd=cwd, env=env)
         item = dict(item)
         item["returncode"] = completed.returncode
         item["status"] = "finished" if completed.returncode == 0 else "harness_failed"

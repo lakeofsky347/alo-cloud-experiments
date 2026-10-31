@@ -6,6 +6,7 @@ Tests inject ``docker`` and ``git`` and never start a daemon.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -29,10 +30,17 @@ def _commit_ok(commit):
 
 
 def subprocess_git(argv):
-    completed = subprocess.run(argv, check=False, capture_output=True, text=True)
-    if completed.returncode != 0:
-        raise PilotStopped("workspace_prepare_failed")
-    return completed
+    env = dict(os.environ)
+    env["LC_ALL"] = "C"
+    env["LANG"] = "C"
+    completed = subprocess.run(argv, check=False, capture_output=True, text=True, env=env)
+    # ``git diff A B`` exits 0 when it prints a diff. Exit 1 is also a
+    # successful diff for wrappers that pass ``--exit-code``.
+    if completed.returncode == 0:
+        return completed
+    if completed.returncode == 1 and "diff" in argv:
+        return completed
+    raise PilotStopped("workspace_prepare_failed")
 
 
 def prepare_swe_checkout(dest, repo, base_commit, *, runner=None):
@@ -121,17 +129,77 @@ def release_unreadable_executable(dest):
     return True
 
 
-def head_matches(dest, base_commit, *, git=None):
-    """True when ``git rev-parse HEAD`` is the image's ``base_commit``."""
+def _same_commit(left, right):
+    left, right = (left or "").strip().lower(), (right or "").strip().lower()
+    if not left or not right:
+        return False
+    return left == right or left.startswith(right) or right.startswith(left)
+
+
+def _git_stdout(run, dest, *args):
+    try:
+        completed = run(["git", "-C", str(dest), *args])
+    except PilotStopped:
+        return None
+    code = getattr(completed, "returncode", 0)
+    diff_with_changes = code == 1 and bool(args) and args[0] == "diff"
+    if code not in (0, None) and not diff_with_changes:
+        return None
+    return getattr(completed, "stdout", "") or ""
+
+
+def _mode_only_parent_diff(text_summary, text_numstat):
+    """True when HEAD^..HEAD changes file modes only.
+
+    ``git diff --summary`` lists mode changes. ``--numstat`` is zero on both
+    sides when the blob is unchanged. Any added or removed line blocks.
+    """
+    for line in (text_numstat or "").splitlines():
+        if not line.strip():
+            continue
+        columns = line.split("\t")
+        if len(columns) < 3 or columns[0] not in {"0", "-"} or columns[1] not in {"0", "-"}:
+            return False
+    for line in (text_summary or "").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if not stripped.startswith("mode change "):
+            return False
+    return True
+
+
+def resolve_image_head(dest, base_commit, *, git=None):
+    """Commit the scored patch is taken against.
+
+    Official SWE-bench images add one commit on top of ``base_commit`` whose
+    subject is ``SWE-bench`` and whose only effect is ``100644`` to ``100755``.
+    The harness applies patches to that HEAD. A content change in that commit
+    is rejected (returns None).
+    """
     if not _commit_ok(base_commit):
-        return False
+        return None
     run = git or subprocess_git
-    completed = run(["git", "-C", str(dest), "rev-parse", "HEAD"])
-    head = (getattr(completed, "stdout", "") or "").strip().lower()
-    wanted = base_commit.strip().lower()
+    head = (_git_stdout(run, dest, "rev-parse", "HEAD") or "").strip()
     if not head:
-        return False
-    return head == wanted or head.startswith(wanted) or wanted.startswith(head)
+        return None
+    if _same_commit(head, base_commit):
+        return head
+    parent = (_git_stdout(run, dest, "rev-parse", "HEAD^") or "").strip()
+    if not _same_commit(parent, base_commit):
+        return None
+    summary = _git_stdout(run, dest, "diff", "--summary", "HEAD^", "HEAD")
+    numstat = _git_stdout(run, dest, "diff", "--numstat", "HEAD^", "HEAD")
+    if summary is None or numstat is None:
+        return None
+    if not _mode_only_parent_diff(summary, numstat):
+        return None
+    return head
+
+
+def head_matches(dest, base_commit, *, git=None):
+    """True when the image HEAD is ``base_commit`` or a mode-only child of it."""
+    return resolve_image_head(dest, base_commit, git=git) is not None
 
 
 def apply_patch(dest, patch):
