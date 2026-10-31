@@ -2,9 +2,9 @@
 
 日期：2026-10-31。本文件列出付费日程的任务身份、种子、组别、模型和参数。规范载荷在 `alo_cloud.freeze.freeze_payload`。CI 重新计算其 SHA-256，必须与下面这一行一致。
 
-freeze_sha256: cafa57a2cac03b0f78247700a0e9d3cc71701f4b5bbdc1d5d68b1628a4fb33ce
+freeze_sha256: 154458dde567c0037d7b00113d9302455dfed895342799c8349d8b3581a8c242
 
-上一版哈希是 `c52c07572724e07ce39bade88449ed0c476bca65e8a9265c44e1486ca63e27fe`。题单、种子、组别和标价没有改。这次改哈希是因为：`mimo-v2.6-flash` 的墙钟从 300 秒改为 600 秒，与 `mimo-v2.6-pro` 相同；DeepSeek 与 GLM 仍是 300 秒。进程在墙钟上中止并按预留最坏金额结算的超时改为已计费超时，不计入未知结果的 3 次上限。同一代里，某个模型最近 40 次请求中已计费超时超过 25%（不满 40 次不按比例停），或本代已计费超时合计超过 10 CNY，才停止日程。载荷版本改为 `alo-protocol-freeze-v7`。
+上一版哈希是 `cafa57a2cac03b0f78247700a0e9d3cc71701f4b5bbdc1d5d68b1628a4fb33ce`。题单、种子、组别、模型、标价、超时和计费都没有改。这次改哈希是因为载荷加入任务分片规则并升到 `alo-protocol-freeze-v8`：同一任务的 B0 与 B1，以及同一条 M2 persist/reset 链，分到同一个进程；多个分片共用一份账本，50 CNY/模型和 200 CNY 合计仍然是全局上限。
 
 检查：`python -m alo_cloud.freeze --check`
 

@@ -25,7 +25,7 @@ from .contracts import (
 from .errors import PilotStopped
 from .freeze import (
     BLOCKED_FRACTION_MIN_UNITS, G2_PLANNER_MODEL, G3_MANAGER_MODEL, G3_ROLES,
-    MAX_BLOCKED_FRACTION, MAX_UNKNOWN_OUTCOMES, select_units,
+    MAX_BLOCKED_FRACTION, MAX_UNKNOWN_OUTCOMES, filter_shard, select_units,
 )
 from .ledger import current_epoch, restart_counts, restart_unit
 from .progress import publish_timeout_counts
@@ -36,6 +36,7 @@ from .workspace_prep import (
     apply_patch, release_unreadable_executable, resolve_image_head, seed_image_tree,
 )
 from .services import PROTOCOL_UNIT_LIMITS, StudyServices
+from .shardlock import exclusive_lock, halt_reason, set_halt
 from .state import export_learning_state, import_learning_state
 
 
@@ -234,10 +235,12 @@ def _charges(services):
 
 def _append_record(path, record):
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
-        handle.flush()
-        os.fsync(handle.fileno())
+    line = json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n"
+    with exclusive_lock(path.parent, "records"):
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(line)
+            handle.flush()
+            os.fsync(handle.fileno())
 
 
 def _done_ids(path):
@@ -290,19 +293,22 @@ def _unknown_count(run_dir):
 
 def _note_unknown(run_dir, record):
     path = _unknown_log(run_dir)
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps({
-            "unit_id": record.get("unit_id"),
-            "reason": record.get("reason"),
-            "request_id": record.get("unknown_request_id"),
-        }, ensure_ascii=False) + "\n")
-        handle.flush()
-        os.fsync(handle.fileno())
-    return _unknown_count(run_dir)
+    line = json.dumps({
+        "unit_id": record.get("unit_id"),
+        "reason": record.get("reason"),
+        "request_id": record.get("unknown_request_id"),
+    }, ensure_ascii=False) + "\n"
+    with exclusive_lock(run_dir, "unknown"):
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(line)
+            handle.flush()
+            os.fsync(handle.fileno())
+        return _unknown_count(run_dir)
 
 
 def run_schedule(units, run_dir, *, live, data_dir=None, docker_image=None, sender=None,
-                 git_runner=None, sandbox_memory=None, sandbox_pids=None, image_seeder=None):
+                 git_runner=None, sandbox_memory=None, sandbox_pids=None, image_seeder=None,
+                 shard=None):
     """Execute units in order. Completed JSONL rows are skipped on resume."""
     run_dir = Path(run_dir)
     mode = "live" if live else "dry-run"
@@ -310,6 +316,9 @@ def run_schedule(units, run_dir, *, live, data_dir=None, docker_image=None, send
         raise PilotStopped("live_run_uses_the_network_transport")
     if not live and sender is None:
         sender = dry_run_sender
+    shard_label = "" if shard is None else f"{shard[0]}/{shard[1]}"
+    if shard is not None:
+        units = filter_shard(units, shard[0], shard[1])
     ledger = open_run_ledger(run_dir / "budget.sqlite3", mode)
     if live:
         missing = [name for name in KEY_ENVS if not os.environ.get(name)]
@@ -318,8 +327,7 @@ def run_schedule(units, run_dir, *, live, data_dir=None, docker_image=None, send
         absent = missing_payloads(units, data_dir)
         if absent:
             raise PilotStopped("public_task_payload_missing")
-    state = ledger.snapshot()
-    if state["unresolved_request_ids"] or state["unresolved_tool_ids"]:
+    if ledger.blocks_dispatch(shard_label):
         raise BudgetStopped("unresolved_request_blocks_subsequent_dispatch")
     records_path = run_dir / "records.jsonl"
     done = _done_ids(records_path)
@@ -328,6 +336,9 @@ def run_schedule(units, run_dir, *, live, data_dir=None, docker_image=None, send
     results = []
     try:
         for unit in units:
+            reason = halt_reason(run_dir)
+            if reason:
+                raise PilotStopped(reason)
             if unit.unit_id in done:
                 # The row is terminal, including one that stopped the previous
                 # process with halt_schedule. Resume does not raise that flag again.
@@ -344,7 +355,8 @@ def run_schedule(units, run_dir, *, live, data_dir=None, docker_image=None, send
                     unit, run_dir, ledger, live=live, data_dir=data_dir,
                     docker_image=docker_image, sender=sender, git_runner=git_runner,
                     sandbox_memory=sandbox_memory, sandbox_pids=sandbox_pids,
-                    image_seeder=image_seeder, unknown_so_far=_unknown_count(run_dir))
+                    image_seeder=image_seeder, unknown_so_far=_unknown_count(run_dir),
+                    shard_id=shard_label)
                 if record.get("charged_timeout"):
                     verdict = publish_timeout_counts(
                         run_dir, ledger, protocol_epoch=current_epoch(run_dir))
@@ -365,14 +377,17 @@ def run_schedule(units, run_dir, *, live, data_dir=None, docker_image=None, send
                     restart_reason = (
                         "charged timeout; restart once" if record.get("charged_timeout")
                         else "charged unknown; restart once")
-                    restart_unit(run_dir, unit.unit_id, reason=restart_reason, ledger=ledger)
+                    restart_unit(run_dir, unit.unit_id, reason=restart_reason, ledger=ledger,
+                                 shard_id=shard_label)
                     retried = True
                     continue
                 break
             results.append(record)
-            _stop_if_blocked(results)
+            _stop_if_blocked(results, run_dir=run_dir, shard=shard_label)
             if record.get("halt_schedule"):
-                raise PilotStopped(record.get("reason") or "schedule_stopped")
+                reason = record.get("reason") or "schedule_stopped"
+                set_halt(run_dir, reason, shard_label)
+                raise PilotStopped(reason)
     finally:
         collect_sealed(run_dir)
     return results
@@ -433,12 +448,17 @@ def format_blocked_report(records, *, maximum=None):
     return "\n".join(lines), exceeded
 
 
-def _stop_if_blocked(records):
+def _stop_if_blocked(records, run_dir=None, shard=""):
+    if run_dir is not None:
+        with exclusive_lock(run_dir, "records"):
+            records = list(_done_ids(Path(run_dir) / "records.jsonl").values())
     exceeded = blocked_fraction_exceeded(records)
     if not exceeded:
         return
     text, _exceeded = format_blocked_report(records)
     print(text)
+    if run_dir is not None:
+        set_halt(run_dir, "blocked_fraction_exceeded", shard)
     raise PilotStopped("blocked_fraction_exceeded")
 
 
@@ -520,7 +540,7 @@ def _public_field(payload, key):
 
 def _execute_unit(unit, run_dir, ledger, *, live, data_dir, docker_image, sender,
                   git_runner=None, sandbox_memory=None, sandbox_pids=None, image_seeder=None,
-                  unknown_so_far=0):
+                  unknown_so_far=0, shard_id=""):
     record = {
         "schema": "alo-paid-unit-v1",
         "unit_id": unit.unit_id,
@@ -553,6 +573,7 @@ def _execute_unit(unit, run_dir, ledger, *, live, data_dir, docker_image, sender
         limits={"requests": unit.request_cap},
         restart_count=1 if restart_count >= 1 else 0,
         protocol_epoch=epoch,
+        shard_id=shard_id,
     )
     payload = load_public_payload(data_dir, unit.track, unit.task_id)
     repo = _public_field(payload, "repo")
@@ -705,6 +726,18 @@ def _delete_live_unit(run_dir, unit_id):
     shutil.rmtree(Path(run_dir) / "units" / unit_id, ignore_errors=True)
 
 
+def _parse_shard(text):
+    if text is None or text == "":
+        return None
+    parts = text.split("/")
+    if len(parts) != 2 or not parts[0].isdigit() or not parts[1].isdigit():
+        raise PilotStopped("invalid_shard")
+    index, count = int(parts[0]), int(parts[1])
+    if count < 1 or index < 0 or index >= count:
+        raise PilotStopped("invalid_shard")
+    return index, count
+
+
 def _parser():
     parser = argparse.ArgumentParser(description="Run the frozen M1 or M2 schedule.")
     parser.add_argument("--study", choices=("m1", "m2"))
@@ -715,6 +748,8 @@ def _parser():
     parser.add_argument("--live", action="store_true")
     parser.add_argument("--blocked-report", action="store_true",
                         help="Print the blocked-reason histogram and exit 1 if the fraction is too high.")
+    parser.add_argument("--shard", default=None,
+                        help="Task shard i/N (0-based). Whole tasks stay on one shard.")
     parser.add_argument("--run-dir", required=True)
     parser.add_argument("--data-dir", default=None)
     parser.add_argument("--docker-image", default=os.environ.get("ALO_SANDBOX_IMAGE") or None)
@@ -737,8 +772,12 @@ def main(argv=None):
     if not units:
         parser.error("no units match --arm and --tasks")
     try:
+        shard = _parse_shard(args.shard)
+    except PilotStopped:
+        parser.error("--shard must be i/N with 0 <= i < N")
+    try:
         results = run_schedule(units, args.run_dir, live=args.live, data_dir=args.data_dir,
-                               docker_image=args.docker_image)
+                               docker_image=args.docker_image, shard=shard)
     except (PilotStopped, BudgetStopped) as error:
         print(str(error))
         return 2

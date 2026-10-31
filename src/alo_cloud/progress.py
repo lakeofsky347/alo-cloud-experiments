@@ -15,6 +15,7 @@ from pathlib import Path
 
 from .freeze import CHARGED_TIMEOUT_EPOCH_CNY, CHARGED_TIMEOUT_RATE, CHARGED_TIMEOUT_WINDOW
 from .prices import MICROCNY_PER_CNY
+from .shardlock import exclusive_lock
 
 
 CHARGED_TIMEOUT_CAUSES = frozenset({"deadline_timeout", "timeout"})
@@ -104,6 +105,11 @@ def assess_charged_timeouts(ledger, *, protocol_epoch):
 
 def publish_timeout_counts(run_dir, ledger, *, protocol_epoch):
     """Rewrite the snapshot from the ledger and diagnostics."""
+    with exclusive_lock(run_dir, "timeout_counts"):
+        return _publish_timeout_counts(run_dir, ledger, protocol_epoch=protocol_epoch)
+
+
+def _publish_timeout_counts(run_dir, ledger, *, protocol_epoch):
     body = assess_charged_timeouts(ledger, protocol_epoch=protocol_epoch)
     path = Path(run_dir) / "progress" / "timeout_counts.json"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -126,7 +132,8 @@ def append_provider_outcome(ledger, *, epoch, model, request_id, outcome, charge
         "outcome": outcome,
         "charge_microcny": charge_microcny,
     }, ensure_ascii=False, sort_keys=True)
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(line + "\n")
-        handle.flush()
-        os.fsync(handle.fileno())
+    with exclusive_lock(ledger.path.parent, "provider_outcomes"):
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())

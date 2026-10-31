@@ -17,6 +17,7 @@ from .budget import MICROCNY_PER_CNY, BudgetLedger, BudgetStopped
 from .contracts import MODEL_POOL, PER_MODEL_LIMIT_MICROCNY, STUDY_TOTAL_LIMIT_MICROCNY
 from .diagnostics import write_diagnostic
 from .errors import PilotStopped, ProtocolError
+from .shardlock import halt_reason
 from .progress import append_provider_outcome, publish_timeout_counts
 from .freeze import MIMO_MAX_COMPLETION_TOKENS, PROVIDER_TIMEOUT_S
 from .providers import (
@@ -76,7 +77,7 @@ class StudyServices:
     def __init__(self, state_dir, ledger, *, unit, per_request_microcny_ceiling, charge_microcny,
                  sender=None, permit_network=False, sandbox=None, clock=None, public_quality=None,
                  unit_id=None, request_ceiling=None, require_credentials=True, limits=None,
-                 restart_count=0, protocol_epoch=0):
+                 restart_count=0, protocol_epoch=0, shard_id=""):
         if unit not in PROTOCOL_UNIT_LIMITS:
             raise PilotStopped("unknown_protocol_unit")
         if not isinstance(ledger, BudgetLedger):
@@ -93,7 +94,10 @@ class StudyServices:
             raise PilotStopped("invalid_restart_count")
         if type(protocol_epoch) is not int or protocol_epoch < 0:
             raise PilotStopped("invalid_protocol_epoch")
+        if not isinstance(shard_id, str) or (shard_id and "/" not in shard_id):
+            raise PilotStopped("invalid_shard")
         self.limits = _merge_limits(unit, limits)
+        self.shard_id = shard_id
         self.restart_count = restart_count
         self.protocol_epoch = protocol_epoch
         self.unit = unit
@@ -155,10 +159,12 @@ class StudyServices:
         return f"{kind}-{epoch}{label}{restart}-{self._seq}"
 
     def _resource_kwargs(self):
+        fields = {"shard_id": self.shard_id} if self.shard_id else {}
         if not self.unit_id:
-            return {}
-        return {"unit_id": self.unit_id, "unit_request_cap": self.limits["requests"],
-                "protocol_epoch": self.protocol_epoch, "restart_count": self.restart_count}
+            return fields
+        fields.update(unit_id=self.unit_id, unit_request_cap=self.limits["requests"],
+                      protocol_epoch=self.protocol_epoch, restart_count=self.restart_count)
+        return fields
 
     def _wall_remaining(self):
         return self.limits["seconds"] - (self._clock() - self._started)
@@ -168,8 +174,10 @@ class StudyServices:
             raise PilotStopped("unit_seconds_exhausted")
 
     def _ensure_not_blocked(self):
-        state = self.ledger.snapshot()
-        if state["unresolved_request_ids"] or state["unresolved_tool_ids"]:
+        reason = halt_reason(self.ledger.path.parent)
+        if reason:
+            raise PilotStopped(reason)
+        if self.ledger.blocks_dispatch(self.shard_id):
             raise PilotStopped("unresolved_request_blocks_subsequent_dispatch")
 
     def _stop(self, error):
@@ -440,7 +448,8 @@ class StudyServices:
         try:
             self.ledger.reserve_tool(
                 tool_id, seconds_ms=second_hold, unit_id=self.unit_id or "",
-                protocol_epoch=self.protocol_epoch, restart_count=self.restart_count)
+                protocol_epoch=self.protocol_epoch, restart_count=self.restart_count,
+                shard_id=self.shard_id)
         except BudgetStopped as error:
             self._stop(error)
         started = self._clock()

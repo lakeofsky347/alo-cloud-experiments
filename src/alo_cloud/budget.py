@@ -12,7 +12,9 @@ the optional total caps the sum. A v1 or v2 file is refused rather than opened
 with a partial balance. Missing ceilings do not become zero.
 
 An in-progress v3 file stays openable. ``resolve_unknown`` adds an ``audit``
-table when it is first used and does not change the schema key.
+table when it is first used and does not change the schema key. A ``shard_id``
+column is added on open when it is missing. Empty shard ids are the serial
+ledger; a named shard only sees its own unresolved holds plus those legacy rows.
 """
 from __future__ import annotations
 
@@ -152,10 +154,12 @@ class BudgetLedger:
                     held_tokens INTEGER NOT NULL DEFAULT 0,
                     reserved_seconds_ms INTEGER NOT NULL DEFAULT 0,
                     held_seconds_ms INTEGER NOT NULL DEFAULT 0,
-                    unit_id TEXT NOT NULL DEFAULT '');
+                    unit_id TEXT NOT NULL DEFAULT '',
+                    shard_id TEXT NOT NULL DEFAULT '');
                 CREATE TABLE tool_calls(id TEXT PRIMARY KEY, status TEXT NOT NULL,
                     reserved_seconds_ms INTEGER NOT NULL, held_seconds_ms INTEGER NOT NULL,
-                    unit_id TEXT NOT NULL DEFAULT '');
+                    unit_id TEXT NOT NULL DEFAULT '',
+                    shard_id TEXT NOT NULL DEFAULT '');
             """)
             values = {"schema": SCHEMA, "limits": json.dumps(limits),
                       "opening": json.dumps(opening), "max_requests": str(max_requests),
@@ -182,7 +186,7 @@ class BudgetLedger:
     def _connect(self):
         if self.path.is_symlink() or not self.path.is_file():
             raise BudgetStopped("budget_state_missing_or_replaced")
-        conn = sqlite3.connect(self.path.resolve().as_uri() + "?mode=rw", uri=True, timeout=5)
+        conn = sqlite3.connect(self.path.resolve().as_uri() + "?mode=rw", uri=True, timeout=60)
         conn.execute("PRAGMA synchronous=FULL")
         return conn
 
@@ -191,6 +195,7 @@ class BudgetLedger:
         conn = self._connect()
         try:
             conn.execute("BEGIN IMMEDIATE")
+            self._ensure_shard_columns(conn)
             yield conn
             conn.commit()
         except BaseException:
@@ -200,15 +205,44 @@ class BudgetLedger:
             conn.close()
 
     @staticmethod
+    def _ensure_shard_columns(conn):
+        for table in ("requests", "tool_calls"):
+            columns = [row[1] for row in conn.execute(f"PRAGMA table_info({table})")]
+            if "shard_id" not in columns:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN shard_id TEXT NOT NULL DEFAULT ''")
+
+    @staticmethod
+    def _visible_unresolved(state, shard_id):
+        """Unresolved holds this caller must wait for.
+
+        An empty ``shard_id`` is the serial process and sees every hold. A named
+        shard sees its own holds and legacy rows whose shard is still empty.
+        Another shard's named hold does not block it. CNY checks stay global.
+        """
+        if not shard_id:
+            requests = [item[0] for item in state["unresolved_request_shards"]]
+            tools = [item[0] for item in state["unresolved_tool_shards"]]
+        else:
+            requests = [item[0] for item in state["unresolved_request_shards"] if item[1] in ("", shard_id)]
+            tools = [item[0] for item in state["unresolved_tool_shards"] if item[1] in ("", shard_id)]
+        return requests, tools
+
+    def blocks_dispatch(self, shard_id=""):
+        with self._transaction() as conn:
+            state = self._snapshot(conn)
+        requests, tools = self._visible_unresolved(state, shard_id)
+        return bool(requests or tools)
+
+    @staticmethod
     def _snapshot(conn):
         meta = dict(conn.execute("SELECT key,value FROM meta"))
         limits, used = json.loads(meta["limits"]), json.loads(meta["opening"])
         rows = list(conn.execute(
-            """SELECT id,model,reserved,held,status,held_tokens,held_seconds_ms,unit_id
+            """SELECT id,model,reserved,held,status,held_tokens,held_seconds_ms,unit_id,shard_id
                FROM requests ORDER BY rowid"""))
         tools = list(conn.execute(
-            "SELECT id,status,held_seconds_ms,unit_id FROM tool_calls ORDER BY rowid"))
-        for _request_id, model, _reserved, held, _status, _tokens, _seconds, _unit in rows:
+            "SELECT id,status,held_seconds_ms,unit_id,shard_id FROM tool_calls ORDER BY rowid"))
+        for _request_id, model, _reserved, held, _status, _tokens, _seconds, _unit, _shard in rows:
             used[model] += held
         used_tokens = int(meta.get("prior_tokens", "0")) + sum(row[5] for row in rows)
         used_seconds_ms = (int(meta.get("prior_seconds_ms", "0")) + sum(row[6] for row in rows)
@@ -217,6 +251,8 @@ class BudgetLedger:
                  "remaining_microcny": {model: limits[model] - used[model] for model in limits},
                  "unresolved_request_ids": [row[0] for row in rows if row[4] != "settled"],
                  "unresolved_tool_ids": [row[0] for row in tools if row[1] != "settled"],
+                 "unresolved_request_shards": [(row[0], row[8] or "") for row in rows if row[4] != "settled"],
+                 "unresolved_tool_shards": [(row[0], row[4] or "") for row in tools if row[1] != "settled"],
                  "requests": int(meta["prior_requests"]) + len(rows),
                  "max_requests": int(meta["max_requests"]),
                  "used_tokens": used_tokens,
@@ -278,7 +314,7 @@ class BudgetLedger:
                 "seconds_ms": int(requests[2]) + int(tools[1]), "tools": int(tools[0])}
 
     def remaining_resources(self, model, *, unit_id=None, unit_request_cap=None, protocol_epoch=0,
-                            restart_count=0):
+                            restart_count=0, shard_id=""):
         """Policy view: shared unit remainder plus that model's remaining CNY.
 
         ``requests``, ``tokens`` and ``seconds`` are the active unit's shared
@@ -302,7 +338,8 @@ class BudgetLedger:
             raise BudgetStopped("model_not_in_frozen_pool")
         if any(key not in state for key in ("max_tokens", "max_seconds_ms")):
             raise BudgetStopped("resource_dimensions_unconfigured")
-        if state["unresolved_request_ids"] or state["unresolved_tool_ids"]:
+        requests_blocked, tools_blocked = self._visible_unresolved(state, shard_id)
+        if requests_blocked or tools_blocked:
             raise BudgetStopped("unresolved_request_blocks_subsequent_dispatch")
         if usage is None:
             requests_left = state["max_requests"] - state["requests"]
@@ -323,12 +360,13 @@ class BudgetLedger:
             raise BudgetStopped("resource_accounting_negative")
         return remaining
 
-    def _blocked(self, state):
-        if state["unresolved_request_ids"] or state["unresolved_tool_ids"]:
+    def _blocked(self, state, shard_id=""):
+        requests_blocked, tools_blocked = self._visible_unresolved(state, shard_id)
+        if requests_blocked or tools_blocked:
             raise BudgetStopped("unresolved_request_blocks_subsequent_dispatch")
 
     def reserve(self, request_id, model, amount_microcny, *, payload_sha256, tokens=0, seconds_ms=0,
-                unit_id="", unit_request_cap=None, protocol_epoch=0, restart_count=0):
+                unit_id="", unit_request_cap=None, protocol_epoch=0, restart_count=0, shard_id=""):
         """Persist a unique worst-case hold before any separately permitted send."""
         _id(request_id)
         _id(model)
@@ -338,6 +376,8 @@ class BudgetLedger:
             _integer(unit_request_cap, positive=True)
         _epoch(protocol_epoch)
         _restart(restart_count)
+        if not isinstance(shard_id, str) or len(shard_id) > 32 or (shard_id and not re.fullmatch(r"\d+/\d+", shard_id)):
+            raise ValueError("invalid_shard_id")
         _integer(amount_microcny, positive=True)
         _integer(tokens)
         _integer(seconds_ms)
@@ -347,7 +387,7 @@ class BudgetLedger:
             if conn.execute("SELECT 1 FROM requests WHERE id=?", (request_id,)).fetchone():
                 raise BudgetStopped("request_identity_consumed_never_replay")
             state = self._snapshot(conn)
-            self._blocked(state)
+            self._blocked(state, shard_id)
             if model not in state["remaining_microcny"]:
                 raise BudgetStopped("model_not_in_frozen_pool")
             if amount_microcny > state["remaining_microcny"][model]:
@@ -373,10 +413,10 @@ class BudgetLedger:
             conn.execute(
                 """INSERT INTO requests
                    (id, model, reserved, held, status, payload_sha256,
-                    reserved_tokens, held_tokens, reserved_seconds_ms, held_seconds_ms, unit_id)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                    reserved_tokens, held_tokens, reserved_seconds_ms, held_seconds_ms, unit_id, shard_id)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (request_id, model, amount_microcny, amount_microcny, "reserved", payload_sha256,
-                 tokens, tokens, seconds_ms, seconds_ms, unit_id))
+                 tokens, tokens, seconds_ms, seconds_ms, unit_id, shard_id))
         return {"request_id": request_id, "reserved_microcny": amount_microcny, "is_execution_permit": False}
 
     def settle_known(self, request_id, charge_microcny, *, tokens=None, seconds_ms=None):
@@ -486,7 +526,7 @@ class BudgetLedger:
                  "charge_microcny": row[3], "reserved_microcny": row[4],
                  "released_tokens": row[5], "released_seconds_ms": row[6]} for row in rows]
 
-    def reserve_tool(self, tool_id, *, seconds_ms, unit_id="", protocol_epoch=0, restart_count=0):
+    def reserve_tool(self, tool_id, *, seconds_ms, unit_id="", protocol_epoch=0, restart_count=0, shard_id=""):
         """Hold one tool call and its worst-case seconds before execution."""
         _id(tool_id)
         if unit_id:
@@ -494,11 +534,13 @@ class BudgetLedger:
         _integer(seconds_ms)
         _epoch(protocol_epoch)
         _restart(restart_count)
+        if not isinstance(shard_id, str) or len(shard_id) > 32 or (shard_id and not re.fullmatch(r"\d+/\d+", shard_id)):
+            raise ValueError("invalid_shard_id")
         with self._transaction() as conn:
             if conn.execute("SELECT 1 FROM tool_calls WHERE id=?", (tool_id,)).fetchone():
                 raise BudgetStopped("request_identity_consumed_never_replay")
             state = self._snapshot(conn)
-            self._blocked(state)
+            self._blocked(state, shard_id)
             if "max_tools" not in state or "max_seconds_ms" not in state:
                 raise BudgetStopped("resource_dimensions_unconfigured")
             if unit_id:
@@ -510,8 +552,8 @@ class BudgetLedger:
                 raise BudgetStopped("unit_resource_exhausted")
             conn.execute(
                 """INSERT INTO tool_calls
-                   (id, status, reserved_seconds_ms, held_seconds_ms, unit_id) VALUES (?,?,?,?,?)""",
-                (tool_id, "reserved", seconds_ms, seconds_ms, unit_id))
+                   (id, status, reserved_seconds_ms, held_seconds_ms, unit_id, shard_id) VALUES (?,?,?,?,?,?)""",
+                (tool_id, "reserved", seconds_ms, seconds_ms, unit_id, shard_id))
         return {"tool_id": tool_id, "is_execution_permit": False}
 
     def settle_tool(self, tool_id, *, seconds_ms):

@@ -11,6 +11,10 @@ DATA_DIR=${ALO_DATA_DIR:-"$RUN_DIR/public_tasks"}
 PY=${PYTHON:-python3}
 cd "$ROOT"
 
+if [ "${NUM_SHARDS:-1}" != "1" ]; then
+  exec "$ROOT/scripts/run_sharded.sh"
+fi
+
 "$PY" -m alo_cloud.freeze --check
 
 # One short completion per model. Refuses if the four ceilings exceed 0.5 CNY.
