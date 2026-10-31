@@ -28,15 +28,20 @@ def _git(argv):
 SUBMISSION_EXCLUDE = frozenset({".git", "executable"})
 
 
-def workspace_patch(workspace, base_commit, *, git=_git):
-    """Source diff against ``base_commit``. ``git add -A`` skips gitignored build output."""
+def workspace_patch(workspace, diff_base, *, git=_git):
+    """Source diff against the image HEAD the harness patches.
+
+    ``git add -A`` skips gitignored build output. ``diff_base`` is that HEAD,
+    which equals ``base_commit`` only when the image did not add a mode-only
+    commit on top of it.
+    """
     workspace = Path(workspace)
     if not (workspace / ".git").is_dir():
         return ""
-    if not isinstance(base_commit, str) or not base_commit:
+    if not isinstance(diff_base, str) or not diff_base:
         return ""
     git(["git", "-C", str(workspace), "add", "-A"])
-    return git(["git", "-C", str(workspace), "diff", "--cached", base_commit])
+    return git(["git", "-C", str(workspace), "diff", "--cached", diff_base])
 
 
 def prediction_row(instance_id, unit_id, patch):
@@ -121,7 +126,8 @@ def collect_sealed(run_dir, *, git=_git):
                 patch = sealed_patch.read_text(encoding="utf-8")
             else:
                 try:
-                    patch = workspace_patch(source, record.get("base_commit") or "", git=git)
+                    diff_base = record.get("image_head") or record.get("base_commit") or ""
+                    patch = workspace_patch(source, diff_base, git=git)
                 except RuntimeError:
                     note = "git_diff_failed"
             row = prediction_row(task_id, unit_id, patch)

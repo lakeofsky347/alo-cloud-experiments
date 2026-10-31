@@ -285,10 +285,14 @@ def test_image_seed_verifies_head_and_deletes_the_workspace(tmp_path, monkeypatc
     assert rows[0]["status"] == "completed"
     assert rows[0]["sandbox_workdir"] == "/testbed"
     assert rows[0]["base_commit"] == base
+    assert rows[0]["image_head"] == base
     assert "diff --git a/secret" not in json.dumps(rows[0])
     assert any(argv[:3] == ["docker", "cp", f"alo-seed-{calls[0][3][9:]}:/testbed/."] or (
         len(argv) > 2 and argv[1] == "cp" and argv[2].endswith(":/testbed/.")) for argv in calls)
     unit_id = rows[0]["unit_id"]
+    meta = json.loads((tmp_path / "run" / "checkpoints" / unit_id / "metadata.json").read_text())
+    assert meta["image_head"] == base
+    assert meta["base_commit"] == base
     assert not (tmp_path / "run" / "units" / unit_id).exists()
     assert not (tmp_path / "run" / "checkpoints" / unit_id / "workspace").exists()
     assert (tmp_path / "run" / "checkpoints" / unit_id / "model.patch").is_file()
@@ -319,6 +323,7 @@ def shutil_copy_repo(source, dest):
         elif path.is_file():
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(path.read_bytes())
+            target.chmod(path.stat().st_mode & 0o777)
 
 
 def test_collect_keeps_one_prediction_per_unit(tmp_path, monkeypatch):
@@ -416,7 +421,10 @@ def test_execute_only_binary_stays_in_the_image(tmp_path):
     assert "--read-only" not in argv
     assert "dst=/agent" in rendered
     assert "dst=/workspace" not in rendered
-    assert "cp -a /agent/. /workspace/" in rendered
+    assert "cp -a" not in rendered
+    assert "--exclude=.git" in rendered
+    assert "--exclude=executable" in rendered
+    assert rendered.count("--exclude=.git") >= 2
     archive = tmp_path / "submission.tar.gz"
     (root / "main.c").write_text("int main(void){return 0;}\n", encoding="utf-8")
     (root / ".git").mkdir()
@@ -459,6 +467,184 @@ def test_live_swe_without_checkout_metadata_does_not_call_the_model(tmp_path, mo
     assert rows[0]["status"] == "blocked"
     assert rows[0]["reason"] == "swe_checkout_metadata_missing"
     assert rows[0]["sandbox_image"] == swebench_instance_image("django__django-11583")
+
+
+def _mode_only_child(path):
+    base = _git_commit(path, "a.py", "print(1)\n")
+    subprocess.check_call(["git", "-C", str(path), "add", "--chmod=+x", "a.py"])
+    (path / "a.py").chmod(0o755)
+    subprocess.check_call(["git", "-C", str(path), "commit", "-q", "-m", "SWE-bench", "--author", "SWE-bench <swe@example.com>"])
+    head = subprocess.check_output(["git", "-C", str(path), "rev-parse", "HEAD"], text=True).strip()
+    return base, head
+
+
+def test_mode_only_parent_is_the_patch_base(tmp_path):
+    from alo_cloud.collect import workspace_patch
+    from alo_cloud.workspace_prep import apply_patch, resolve_image_head
+    repo = tmp_path / "repo"
+    base, head = _mode_only_child(repo)
+    assert head != base
+    assert resolve_image_head(repo, base) == head
+    (repo / "a.py").write_text("print(2)\n", encoding="utf-8")
+    (repo / "a.py").chmod(0o755)
+    against_head = workspace_patch(repo, head)
+    against_base = workspace_patch(repo, base)
+    assert "print(2)" in against_head
+    assert "old mode" not in against_head
+    assert "old mode" in against_base
+    fresh = tmp_path / "fresh"
+    shutil_copy_repo(repo, fresh)
+    subprocess.check_call(["git", "-C", str(fresh), "reset", "--hard", "HEAD"])
+    apply_patch(fresh, against_head)
+    assert (fresh / "a.py").read_text(encoding="utf-8") == "print(2)\n"
+    subprocess.check_call(["git", "-C", str(repo), "add", "a.py"])
+    subprocess.check_call(["git", "-C", str(repo), "commit", "-q", "-m", "content"])
+    assert resolve_image_head(repo, base) is None
+
+
+def test_content_commit_on_base_is_rejected(tmp_path):
+    from alo_cloud.workspace_prep import resolve_image_head
+    repo = tmp_path / "repo"
+    base = _git_commit(repo, "a.py", "print(1)\n")
+    (repo / "a.py").write_text("print(2)\n", encoding="utf-8")
+    subprocess.check_call(["git", "-C", str(repo), "add", "a.py"])
+    subprocess.check_call(["git", "-C", str(repo), "commit", "-q", "-m", "content"])
+    assert resolve_image_head(repo, base) is None
+
+
+def test_numstat_content_blocks_a_mode_summary(tmp_path):
+    from types import SimpleNamespace
+    from alo_cloud.workspace_prep import resolve_image_head
+    base = "b" * 40
+    head = "a" * 40
+
+    def git(argv, *, numstat="0\t0\ta.py\n", summary=" mode change 100644 => 100755 a.py\n"):
+        spec = argv[3:]
+        if spec == ["rev-parse", "HEAD"]:
+            stdout = head + "\n"
+        elif spec == ["rev-parse", "HEAD^"]:
+            stdout = base + "\n"
+        elif spec[:2] == ["diff", "--summary"]:
+            stdout = summary
+        elif spec[:2] == ["diff", "--numstat"]:
+            stdout = numstat
+        else:
+            raise AssertionError(spec)
+        return SimpleNamespace(returncode=0, stdout=stdout)
+
+    assert resolve_image_head(tmp_path, base, git=lambda argv: git(argv)) == head
+    assert resolve_image_head(
+        tmp_path, base, git=lambda argv: git(argv, numstat="1\t0\ta.py\n")) is None
+    assert resolve_image_head(
+        tmp_path, base,
+        git=lambda argv: git(argv, summary=" create mode 100755 a.py\n")) is None
+
+
+def _copying_docker(source):
+    from types import SimpleNamespace
+    calls = []
+
+    def docker(argv):
+        calls.append(list(argv))
+        if argv[1] == "cp":
+            shutil_copy_repo(source, Path(argv[-1]))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    return docker, calls
+
+
+def test_schedule_records_mode_only_image_head_and_resume_applies_it(tmp_path, monkeypatch):
+    monkeypatch.setattr("urllib.request.urlopen", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("network")))
+    fixture = tmp_path / "fixture"
+    base, head = _mode_only_child(fixture)
+    docker, _calls = _copying_docker(fixture)
+    data = tmp_path / "data" / "SWE-bench_Lite"
+    data.mkdir(parents=True)
+    (data / "django__django-11583.json").write_text(json.dumps({
+        "repo": "django/django", "base_commit": base, "problem_statement": "public bug",
+    }), encoding="utf-8")
+    units = select_units("m1", arms=("g1-main",), tasks=("django__django-11583",))
+    assert [unit.phase for unit in units] == ["B0", "B1-self"]
+    rows = run_schedule(units[:1], tmp_path / "run", live=False, data_dir=tmp_path / "data",
+                        sender=dry_run_sender, image_seeder=docker)
+    assert rows[0]["status"] == "completed"
+    assert rows[0]["base_commit"] == base
+    assert rows[0]["image_head"] == head
+    unit_id = rows[0]["unit_id"]
+    patch_path = tmp_path / "run" / "checkpoints" / unit_id / "model.patch"
+    assert "old mode" not in patch_path.read_text(encoding="utf-8")
+    meta = json.loads((tmp_path / "run" / "checkpoints" / unit_id / "metadata.json").read_text())
+    assert meta["image_head"] == head and meta["base_commit"] == base
+    edited = tmp_path / "edited"
+    shutil_copy_repo(fixture, edited)
+    (edited / "a.py").write_text("print(2)\n", encoding="utf-8")
+    (edited / "a.py").chmod(0o755)
+    from alo_cloud.collect import workspace_patch
+    patch_path.write_text(workspace_patch(edited, head), encoding="utf-8")
+    again = run_schedule(units, tmp_path / "run", live=False, data_dir=tmp_path / "data",
+                         sender=dry_run_sender, image_seeder=docker)
+    assert again[0]["unit_id"] == unit_id
+    assert again[1]["status"] == "completed"
+    assert again[1]["image_head"] == head
+    resumed = (tmp_path / "run" / "checkpoints" / again[1]["unit_id"] / "model.patch").read_text(encoding="utf-8")
+    assert "print(2)" in resumed
+    assert "old mode" not in resumed
+
+
+def test_blocked_fraction_stops_the_schedule(tmp_path, monkeypatch):
+    from alo_cloud.run import blocked_fraction_exceeded, format_blocked_report, main
+    monkeypatch.setattr("urllib.request.urlopen", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("network")))
+    for name in ("DEEPSEEK_API_KEY", "MIMO_API_KEY", "ZAI_API_KEY"):
+        monkeypatch.setenv(name, "present")
+    one = [{"status": "blocked", "reason": "swe_image_base_commit_mismatch"}]
+    one += [{"status": "completed"}] * 3
+    assert blocked_fraction_exceeded(one) is False
+    one.append({"status": "blocked", "reason": "b0_checkpoint_missing"})
+    text, exceeded = format_blocked_report(one)
+    assert exceeded is True
+    assert "2 swe_image_base_commit_mismatch" not in text
+    assert "1 swe_image_base_commit_mismatch" in text
+    assert "1 b0_checkpoint_missing" in text
+    assert "blocked_fraction_exceeded" in text
+    assert blocked_fraction_exceeded([{"status": "blocked", "reason": "x"}]) is False
+    data = tmp_path / "data" / "SWE-bench_Lite"
+    data.mkdir(parents=True)
+    (data / "scikit-learn__scikit-learn-13584.json").write_text(
+        json.dumps({"problem_statement": "public"}), encoding="utf-8")
+    units = select_units("m1", tasks=("scikit-learn__scikit-learn-13584",))
+    with pytest.raises(PilotStopped, match="blocked_fraction_exceeded"):
+        run_schedule(units, tmp_path / "run", live=True, data_dir=tmp_path / "data")
+    rows = [json.loads(line) for line in (tmp_path / "run" / "records.jsonl").read_text().splitlines()]
+    assert len(rows) == 4
+    assert {row["reason"] for row in rows} == {"swe_checkout_metadata_missing"}
+    assert all(row["phase"] == "B0" for row in rows)
+    assert main(["--blocked-report", "--run-dir", str(tmp_path / "run")]) == 1
+
+
+def test_harness_cwd_is_inside_the_run_dir(tmp_path, monkeypatch):
+    import alo_cloud.evaluate as evaluate
+    seen = []
+
+    def fake_run(argv, **kwargs):
+        seen.append(kwargs.get("cwd"))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(evaluate, "_harness_run", fake_run)
+    monkeypatch.setattr(evaluate, "_git_head", lambda repo: evaluate.PROGRAMBENCH_COMMIT)
+    monkeypatch.setattr(evaluate.shutil, "which", lambda name: "/usr/bin/uv")
+    command = evaluate.swebench_command(
+        tmp_path / "predictions.jsonl", run_id="u1", instance_ids=("django__django-11583",), split="test")
+    cwd = evaluate.harness_cwd(tmp_path / "run")
+    result = evaluate.execute_swebench(command, cwd=cwd)
+    assert result["status"] == "finished"
+    assert seen[-1] == cwd
+    assert cwd == tmp_path / "run" / "eval"
+    unit = tmp_path / "run" / "sealed" / "programbench" / "unit-1" / "task-1"
+    unit.mkdir(parents=True)
+    (unit / "submission.tar.gz").write_bytes(b"")
+    report = evaluate._score_programbench(tmp_path / "run", tmp_path / "programbench-src")
+    assert report["units"][0]["status"] == "finished"
+    assert seen[-1] == tmp_path / "run" / "eval"
 
 
 def test_repository_text_does_not_call_the_model_by_a_snapshot_suffix():

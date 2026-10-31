@@ -2,9 +2,9 @@
 
 日期：2026-10-31。本文件列出付费日程的任务身份、种子、组别、模型和参数。规范载荷在 `alo_cloud.freeze.freeze_payload`。CI 重新计算其 SHA-256，必须与下面这一行一致。
 
-freeze_sha256: ddf2187bfba33dc94a931c92634c908a48e939a26bff2e1b88b27721ece9ddc8
+freeze_sha256: cd136ed5288a416467ba312f153ac83f4f54c9c801e7774969f5c4f9f15f024b
 
-上一版哈希是 `fd667624ac990fb16044a8a2e54be1d1a20329e1d9f03f101008c3be5262dd10`。题单、种子、组别和标价没有改。这次改哈希是因为工作区合同变了：SWE 从实例镜像的 `/testbed` 拷出（含已编译扩展，并核对 `HEAD` 等于 `base_commit`），挂载点只剩 `/testbed`，`PATH` 把 `/opt/miniconda3/envs/testbed/bin` 放在最前；ProgramBench 从镜像的 `/workspace` 拷出，execute-only 的 `executable` 留在镜像里；检查点和封存只留补丁或 `submission.tar.gz`（不含 `.git` 和 `executable`），每个单元同时只留一份活工作区，封存后删除。
+上一版哈希是 `ddf2187bfba33dc94a931c92634c908a48e939a26bff2e1b88b27721ece9ddc8`。题单、种子、组别和标价没有改。这次改哈希是因为官方 SWE 镜像的 `/testbed` HEAD 比 `base_commit` 多一个只改文件模式（100644 到 100755）的提交：接受 `HEAD` 等于 `base_commit`，或 `HEAD^` 等于 `base_commit` 且 `git diff --summary HEAD^ HEAD` 与 `--numstat` 只有模式变化、没有内容变化；否则该单元 blocked。计分补丁相对镜像 HEAD 生成，单元记录和检查点同时写下 image HEAD 与 `base_commit`，恢复时补丁打在镜像 HEAD 上。ProgramBench 每个命令往返同步时排除 `.git` 和 `executable`。评分进程的工作目录是运行目录下的 `eval`。已结束单元达到 4 个且 blocked 比例超过 0.25 时，调度停止，并在 M2 之前打印 blocked 原因直方图。
 
 检查：`python -m alo_cloud.freeze --check`
 

@@ -40,6 +40,8 @@ CALL_CAPS = {
     "m2_g2_probe": 4,
 }
 M1_CONDITIONS = ("g1-main", "g1-strong", "g2", "g3")
+MAX_BLOCKED_FRACTION = 0.25
+BLOCKED_FRACTION_MIN_UNITS = 4
 SCHEDULE_RULE = (
     "m1-track-rotation-v1; m2-all-learning-then-references-then-probes-v1; "
     "probe prior alternates by sequence index plus probe position"
@@ -218,7 +220,9 @@ def freeze_payload():
             "probe_seeds": list(row["probe_seeds"]),
         })
     return {
-        "schema": "alo-protocol-freeze-v3",
+        "schema": "alo-protocol-freeze-v4",
+        "max_blocked_fraction": MAX_BLOCKED_FRACTION,
+        "blocked_fraction_min_units": BLOCKED_FRACTION_MIN_UNITS,
         "price_retrieved_on": RETRIEVED_ON,
         "models": {
             "pool": list(MODEL_POOL),
@@ -265,6 +269,7 @@ def freeze_payload():
             "swe_path_prefix": "/opt/miniconda3/envs/testbed/bin",
             "programbench_seed": "image:/workspace",
             "programbench_submission_excludes": [".git", "executable"],
+            "programbench_sync_excludes": [".git", "executable"],
             "persistence": "patch_or_submission_tarball",
             "live_workspace": "one_deleted_after_seal",
         },
@@ -272,7 +277,11 @@ def freeze_payload():
             "swe_model_name_or_path": "unit_id",
             "swe_one_command_per_unit": True,
             "programbench_layout": "sealed/programbench/<unit_id>/<instance_id>/submission.tar.gz",
-            "swe_patch": "gitignore_respected_diff_against_base_commit",
+            "swe_patch": "gitignore_respected_diff_against_image_head",
+            "swe_image_head_rule": (
+                "accept HEAD==base_commit or HEAD^==base_commit when the parent diff is mode-only"
+            ),
+            "harness_cwd": "run_dir/eval",
         },
     }
 

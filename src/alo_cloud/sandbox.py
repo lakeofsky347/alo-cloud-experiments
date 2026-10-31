@@ -314,7 +314,12 @@ class DockerSandbox:
         if self.merge_image_workspace:
             command.extend([
                 image, "sh", "-c",
-                'if [ -n "$(ls -A /agent 2>/dev/null)" ]; then cp -a /agent/. /workspace/; fi; '
+                # .git objects in the clean-room image are often mode 0444 and
+                # owned by root. cp -a prints Permission denied for every one.
+                # tar excludes .git and the reference executable in both directions.
+                'if [ -n "$(ls -A /agent 2>/dev/null)" ]; then '
+                'tar -C /agent --exclude=.git --exclude=executable -cf - . | tar -C /workspace -xf -; '
+                'fi; '
                 '"$@"; status=$?; '
                 'tar -C /workspace --exclude=executable --exclude=.git -cf - . | tar -C /agent -xf -; '
                 'exit $status',
