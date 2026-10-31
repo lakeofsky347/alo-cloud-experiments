@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 
 from .budget import MICROCNY_PER_CNY, BudgetLedger, BudgetStopped
-from .contracts import MODEL_POOL, PER_MODEL_LIMIT_MICROCNY
+from .contracts import MODEL_POOL, PER_MODEL_LIMIT_MICROCNY, STUDY_TOTAL_LIMIT_MICROCNY
 from .errors import PilotStopped, ProtocolError
 from .providers import (
     OpenAICompatibleTransport, credential_configured, messages_contain_credential, request_body,
@@ -33,6 +33,19 @@ PROTOCOL_UNIT_LIMITS = {
     "m2": {"requests": 32, "tokens": 900_000, "tools": 120, "seconds": 1200,
            "command_seconds": 60, "max_output_tokens": 4096},
 }
+
+
+def _merge_limits(unit, limits):
+    merged = dict(PROTOCOL_UNIT_LIMITS[unit])
+    if limits is None:
+        return merged
+    if not isinstance(limits, dict):
+        raise PilotStopped("unit_limit_outside_protocol")
+    for key, value in limits.items():
+        if key not in merged or type(value) is not int or not 1 <= value <= merged[key]:
+            raise PilotStopped("unit_limit_outside_protocol")
+        merged[key] = value
+    return merged
 
 
 def _digest(body):
@@ -57,7 +70,8 @@ class StudyServices:
     available_models = MODEL_POOL
 
     def __init__(self, state_dir, ledger, *, unit, per_request_microcny_ceiling, charge_microcny,
-                 sender=None, permit_network=False, sandbox=None, clock=None, public_quality=None):
+                 sender=None, permit_network=False, sandbox=None, clock=None, public_quality=None,
+                 unit_id=None, request_ceiling=None, require_credentials=True, limits=None):
         if unit not in PROTOCOL_UNIT_LIMITS:
             raise PilotStopped("unknown_protocol_unit")
         if not isinstance(ledger, BudgetLedger):
@@ -66,13 +80,21 @@ class StudyServices:
             raise PilotStopped("per_request_microcny_ceiling_required")
         if not callable(charge_microcny):
             raise PilotStopped("charge_function_required")
-        self.limits = dict(PROTOCOL_UNIT_LIMITS[unit])
+        if request_ceiling is not None and not callable(request_ceiling):
+            raise PilotStopped("request_ceiling_must_be_callable")
+        if unit_id is not None and (not isinstance(unit_id, str) or not unit_id):
+            raise PilotStopped("unit_id_required")
+        self.limits = _merge_limits(unit, limits)
         self.unit = unit
+        self.unit_id = unit_id
         self.ledger = ledger
         self.per_request_microcny_ceiling = per_request_microcny_ceiling
         self._charge = charge_microcny
-        self.transport = OpenAICompatibleTransport(sender=sender, permit_network=permit_network,
-                                                   timeout_s=self.limits["command_seconds"])
+        self._request_ceiling = request_ceiling
+        self._require_credentials = bool(require_credentials)
+        self.transport = OpenAICompatibleTransport(
+            sender=sender, permit_network=permit_network, timeout_s=self.limits["command_seconds"],
+            require_credentials=require_credentials)
         if sender is None and not permit_network:
             raise PilotStopped("provider_sender_required")
         self.sandbox = sandbox
@@ -98,7 +120,14 @@ class StudyServices:
             raise PilotStopped("ledger_model_pool_mismatch")
         if any(value > PER_MODEL_LIMIT_MICROCNY for value in state["limits_microcny"].values()):
             raise PilotStopped("model_cny_cap_above_protocol")
-        if state["max_requests"] != self.limits["requests"]:
+        if self.unit_id:
+            if any(value != PER_MODEL_LIMIT_MICROCNY for value in state["limits_microcny"].values()):
+                raise PilotStopped("study_model_cap_must_be_50_cny")
+            if state.get("total_limit_microcny") != STUDY_TOTAL_LIMIT_MICROCNY:
+                raise PilotStopped("study_total_cap_required")
+            if state["max_requests"] < self.limits["requests"]:
+                raise PilotStopped("ledger_request_ceiling_below_unit")
+        elif state["max_requests"] != self.limits["requests"]:
             raise PilotStopped("ledger_request_ceiling_does_not_match_unit")
         if state.get("max_tokens") != self.limits["tokens"]:
             raise PilotStopped("ledger_token_ceiling_does_not_match_unit")
@@ -109,7 +138,13 @@ class StudyServices:
 
     def _next_id(self, kind):
         self._seq += 1
-        return f"{kind}-{self.unit}-{self._seq}"
+        label = self.unit_id or self.unit
+        return f"{kind}-{label}-{self._seq}"
+
+    def _resource_kwargs(self):
+        if not self.unit_id:
+            return {}
+        return {"unit_id": self.unit_id, "unit_request_cap": self.limits["requests"]}
 
     def _wall_remaining(self):
         return self.limits["seconds"] - (self._clock() - self._started)
@@ -133,13 +168,14 @@ class StudyServices:
 
     def budget_remaining(self, model=None):
         """Four policy dimensions. Without a model, CNY is the pool minimum."""
+        kwargs = self._resource_kwargs()
         try:
             if model is None:
-                rows = [self.ledger.remaining_resources(name) for name in MODEL_POOL]
+                rows = [self.ledger.remaining_resources(name, **kwargs) for name in MODEL_POOL]
                 remaining = dict(rows[0])
                 remaining["cny"] = min(row["cny"] for row in rows)
             else:
-                remaining = self.ledger.remaining_resources(model)
+                remaining = self.ledger.remaining_resources(model, **kwargs)
         except BudgetStopped as error:
             self._stop(error)
         return self._with_wall(remaining)
@@ -148,8 +184,13 @@ class StudyServices:
         state = self.ledger.snapshot()
         if "max_tokens" not in state or "max_seconds_ms" not in state:
             raise PilotStopped("resource_dimensions_unconfigured")
-        tokens = state["max_tokens"] - state["used_tokens"]
-        accounted_ms = state["max_seconds_ms"] - state["used_seconds_ms"]
+        if self.unit_id:
+            usage = self.ledger.unit_usage(self.unit_id)
+            tokens = state["max_tokens"] - usage["tokens"]
+            accounted_ms = state["max_seconds_ms"] - usage["seconds_ms"]
+        else:
+            tokens = state["max_tokens"] - state["used_tokens"]
+            accounted_ms = state["max_seconds_ms"] - state["used_seconds_ms"]
         wall_ms = int(self._wall_remaining() * 1000)
         seconds_ms = min(accounted_ms, max(wall_ms, 0))
         if tokens < 1 or seconds_ms < 1:
@@ -171,16 +212,26 @@ class StudyServices:
             raise PilotStopped("invalid_model_messages")
         self._ensure_not_blocked()
         self._ensure_wall_clock()
-        if not credential_configured(model):
+        if self._require_credentials and not credential_configured(model):
             raise PilotStopped("provider_credential_missing")
         if messages_contain_credential(model, messages):
             raise PilotStopped("provider_credential_in_prompt")
         body = request_body(model, messages, max_tokens)
+        if self._request_ceiling is None:
+            amount = self.per_request_microcny_ceiling
+        else:
+            try:
+                amount = self._request_ceiling(model, messages, max_tokens)
+            except Exception:
+                raise PilotStopped("per_request_microcny_ceiling_required") from None
+            if type(amount) is not int or not 1 <= amount <= self.per_request_microcny_ceiling:
+                raise PilotStopped("per_request_microcny_ceiling_required")
         token_hold, second_hold = self._worst_case_holds()
         request_id = self._next_id("req")
         try:
-            self.ledger.reserve(request_id, model, self.per_request_microcny_ceiling,
-                                payload_sha256=_digest(body), tokens=token_hold, seconds_ms=second_hold)
+            self.ledger.reserve(request_id, model, amount,
+                                payload_sha256=_digest(body), tokens=token_hold, seconds_ms=second_hold,
+                                **self._resource_kwargs())
         except BudgetStopped as error:
             self._stop(error)
         started = self._clock()
@@ -190,6 +241,7 @@ class StudyServices:
                 charge = self._charge(model, {
                     "input_tokens": parsed["input_tokens"], "output_tokens": parsed["output_tokens"],
                     "reasoning_tokens": parsed["reasoning_tokens"], "total_tokens": parsed["total_tokens"],
+                    "cache_hit_tokens": parsed.get("cache_hit_tokens"),
                 })
             except Exception:
                 raise PilotStopped("provider_outcome_unknown") from None
@@ -260,7 +312,7 @@ class StudyServices:
         del token_hold
         tool_id = self._next_id("tool")
         try:
-            self.ledger.reserve_tool(tool_id, seconds_ms=second_hold)
+            self.ledger.reserve_tool(tool_id, seconds_ms=second_hold, unit_id=self.unit_id or "")
         except BudgetStopped as error:
             self._stop(error)
         started = self._clock()

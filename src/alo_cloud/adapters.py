@@ -488,7 +488,7 @@ class HeterogeneousALO:
 def adapter_for(group, config=None):
     config = dict(config or {})
     if group == "G1":
-        # Main uses G1_MAIN_MODEL; Strong is unselected and must be passed explicitly too.
+        # Pass G1_MAIN_MODEL or G1_STRONG_MODEL explicitly. Pool position is not a role.
         if not config.get("fixed_model"):
             raise PilotStopped("g1_fixed_model_required")
         return FixedSingleAgent(**config)

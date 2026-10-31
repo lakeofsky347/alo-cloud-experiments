@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import urllib.error
 import urllib.request
 
 from .contracts import MODEL_POOL
@@ -132,30 +133,65 @@ def parse_openai_chat_completion(payload, model):
             reasoning = details["reasoning_tokens"]
             if type(reasoning) is not int or reasoning < 0 or reasoning > completion:
                 raise PilotStopped("provider_outcome_unknown")
+    cache_hit = _cache_hit_tokens(usage, prompt)
     return {"text": message["content"], "input_tokens": prompt, "output_tokens": completion,
-            "reasoning_tokens": reasoning, "total_tokens": total}
+            "reasoning_tokens": reasoning, "total_tokens": total, "cache_hit_tokens": cache_hit}
+
+
+def _cache_hit_tokens(usage, prompt):
+    """Return the cache-hit count, or None when the provider sent no split.
+
+    A missing split is not a measured zero. Conflicting DeepSeek hit/miss fields
+    and a cached count above the prompt are unknown.
+    """
+    hit = None
+    details = usage.get("prompt_tokens_details")
+    if isinstance(details, dict) and "cached_tokens" in details:
+        cached = details["cached_tokens"]
+        if type(cached) is not int or cached < 0 or cached > prompt:
+            raise PilotStopped("provider_outcome_unknown")
+        hit = cached
+    has_hit = "prompt_cache_hit_tokens" in usage
+    has_miss = "prompt_cache_miss_tokens" in usage
+    if has_hit or has_miss:
+        if not has_hit or not has_miss:
+            raise PilotStopped("provider_outcome_unknown")
+        explicit_hit = usage["prompt_cache_hit_tokens"]
+        explicit_miss = usage["prompt_cache_miss_tokens"]
+        if (type(explicit_hit) is not int or type(explicit_miss) is not int
+                or explicit_hit < 0 or explicit_miss < 0 or explicit_hit + explicit_miss != prompt):
+            raise PilotStopped("provider_outcome_unknown")
+        if hit is not None and hit != explicit_hit:
+            raise PilotStopped("provider_outcome_unknown")
+        hit = explicit_hit
+    return hit
 
 
 def urllib_send(url, body, headers, *, timeout_s):
-    """Real HTTP POST. Callers must not use this from offline tests."""
+    """Real HTTP POST. Returns ``(payload, status)``. Offline tests must not call this."""
     data = json.dumps(body, ensure_ascii=False).encode()
     request = urllib.request.Request(url, data=data, method="POST", headers=headers)
     with urllib.request.urlopen(request, timeout=timeout_s) as response:
+        status = getattr(response, "status", None)
         raw = response.read()
-    return json.loads(raw.decode())
+    return json.loads(raw.decode()), status
 
 
 class OpenAICompatibleTransport:
     """One injected sender, or an explicit network permit. Never both, never neither at call time."""
 
-    def __init__(self, *, sender=None, permit_network=False, timeout_s=60):
+    def __init__(self, *, sender=None, permit_network=False, timeout_s=60, require_credentials=True):
         if permit_network and sender is not None:
             raise PilotStopped("one_transport_sender")
+        if permit_network and not require_credentials:
+            raise PilotStopped("live_transport_requires_credentials")
         if type(timeout_s) not in (int, float) or isinstance(timeout_s, bool) or not 0 < timeout_s <= 60:
             raise PilotStopped("invalid_provider_timeout")
         self._sender = sender
         self._permit_network = bool(permit_network)
+        self._require_credentials = bool(require_credentials)
         self._timeout_s = float(timeout_s)
+        self.last_http_status = None
 
     def complete_for_model(self, model, messages, *, max_tokens=4096):
         if model not in MODEL_POOL or model not in POOL_ENDPOINTS:
@@ -163,18 +199,28 @@ class OpenAICompatibleTransport:
         env_name, url, auth = POOL_ENDPOINTS[model]
         key = os.environ.get(env_name)
         try:
-            if not _key_ok(key):
-                raise PilotStopped("provider_credential_missing")
             body = request_body(model, messages, max_tokens)
             encoded = json.dumps(body, ensure_ascii=False)
-            if key in encoded:
-                raise PilotStopped("provider_credential_in_prompt")
-            headers = _auth_headers(auth, key)
+            if self._require_credentials:
+                if not _key_ok(key):
+                    raise PilotStopped("provider_credential_missing")
+                if key in encoded:
+                    raise PilotStopped("provider_credential_in_prompt")
+                headers = _auth_headers(auth, key)
+            else:
+                if _key_ok(key) and key in encoded:
+                    raise PilotStopped("provider_credential_in_prompt")
+                headers = {"Content-Type": "application/json", "Accept": "application/json"}
             try:
                 if self._sender is not None:
                     payload = self._sender(url, body, headers)
                 elif self._permit_network:
-                    payload = urllib_send(url, body, headers, timeout_s=self._timeout_s)
+                    try:
+                        payload, status = urllib_send(url, body, headers, timeout_s=self._timeout_s)
+                    except urllib.error.HTTPError as error:
+                        self.last_http_status = getattr(error, "code", None)
+                        raise PilotStopped("provider_outcome_unknown") from None
+                    self.last_http_status = status
                 else:
                     raise PilotStopped("provider_network_not_permitted")
             except PilotStopped:
