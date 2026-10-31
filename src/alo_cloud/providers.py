@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import os
 import socket
+import time
 import urllib.error
 import urllib.request
 
@@ -287,9 +288,37 @@ def parse_sse(text, model):
     return assemble_stream(chunks, model)
 
 
-def _read_sse(response, model):
+def _arm_deadline(response, seconds):
+    """Bound the next socket wait by the remaining wall-clock budget."""
+    fp = getattr(response, "fp", None)
+    raw = getattr(fp, "raw", None) if fp is not None else None
+    sock = None
+    if raw is not None:
+        sock = getattr(raw, "_sock", None)
+        if sock is None:
+            inner = getattr(raw, "raw", None)
+            sock = getattr(inner, "_sock", None) if inner is not None else None
+    if sock is not None and hasattr(sock, "settimeout"):
+        try:
+            sock.settimeout(max(float(seconds), 0.001))
+        except OSError:
+            return
+
+
+def _read_sse(response, model, *, deadline_s, started, clock=None):
+    """Read SSE until ``[DONE]`` or the wall-clock deadline.
+
+    ``deadline_s`` is the whole request, not the gap between bytes. A keepalive
+    or a trickle still counts. The socket timeout is pulled in to whatever time
+    remains so a silent poll cannot outlive the deadline either.
+    """
+    clock = clock or time.monotonic
     chunks = []
     while True:
+        remaining = deadline_s - (clock() - started)
+        if remaining <= 0:
+            raise TimeoutError("provider_wall_clock")
+        _arm_deadline(response, remaining)
         raw = response.readline()
         if not raw:
             break
@@ -316,12 +345,13 @@ def urllib_send(url, body, headers, *, timeout_s, model):
     """
     data = json.dumps(body, ensure_ascii=False).encode()
     request = urllib.request.Request(url, data=data, method="POST", headers=headers)
+    started = time.monotonic()
     try:
         with urllib.request.urlopen(request, timeout=timeout_s) as response:
             status = getattr(response, "status", None)
             if status != 200:
                 return _read_json_body(response.read()), status
-            return _read_sse(response, model), status
+            return _read_sse(response, model, deadline_s=timeout_s, started=started), status
     except urllib.error.HTTPError as error:
         status = getattr(error, "code", None)
         try:

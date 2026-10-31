@@ -71,7 +71,7 @@ def test_archive_with_no_records_starts_an_epoch_and_the_unit_can_rerun(tmp_path
     assert all(not item.startswith(f"req-e1-{UNIT}-r") for item in fresh)
     assert ledger.snapshot()["committed_or_reserved_microcny"]["mimo-v2.6-flash"] >= PRIOR_CHARGE * 3
     assert ledger.unit_usage(UNIT, protocol_epoch=1)["requests"] == len(fresh)
-    assert ledger.unit_usage(UNIT, protocol_epoch=0)["requests"] == len(ids)
+    assert ledger.unit_usage(UNIT, protocol_epoch=0, restart_count=1)["requests"] == 3
     assert ledger.snapshot()["unresolved_request_ids"] == []
 
 
