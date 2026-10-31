@@ -27,7 +27,7 @@ from .freeze import (
     BLOCKED_FRACTION_MIN_UNITS, G2_PLANNER_MODEL, G3_MANAGER_MODEL, G3_ROLES,
     MAX_BLOCKED_FRACTION, MAX_UNKNOWN_OUTCOMES, filter_shard, select_units,
 )
-from .ledger import current_epoch, restart_counts, restart_unit
+from .ledger import current_epoch, infra_generations, restart_counts, restart_unit
 from .progress import publish_timeout_counts
 from .images import resolve_task_image
 from .prices import ceiling_for_messages, charge_microcny
@@ -36,7 +36,7 @@ from .workspace_prep import (
     apply_patch, release_unreadable_executable, resolve_image_head, seed_image_tree,
 )
 from .services import PROTOCOL_UNIT_LIMITS, StudyServices
-from .shardlock import clear_drain, drain_requested, exclusive_lock, halt_reason, set_halt
+from .shardlock import clear_drain, drain_requested, exclusive_lock, halt_record, set_halt
 from .state import export_learning_state, import_learning_state
 
 
@@ -256,19 +256,21 @@ def _done_ids(path):
     return done
 
 
-def _touched(request_id, unit_id, restart_count=0, protocol_epoch=0):
+def _touched(request_id, unit_id, restart_count=0, protocol_epoch=0, infra_generation=0):
     """True when this id belongs to the current epoch's attempt.
 
     Epoch 0 keeps the original ``req-<unit>`` prefix. A later protocol epoch
     uses ``req-e<N>-<unit>``, so settled rows from an archived epoch are not a
     partial retry. Within an epoch, a restart uses a different suffix, and a
-    crash during the current attempt still blocks a silent retry.
+    crash during the current attempt still blocks a silent retry. An infra
+    requeue adds ``-infraN-`` and does not match the attempt it archived.
     """
     generation = f"-r{restart_count}" if restart_count else ""
+    infra = f"-infra{infra_generation}" if infra_generation else ""
     if protocol_epoch:
-        stem = f"e{protocol_epoch}-{unit_id}{generation}-"
+        stem = f"e{protocol_epoch}-{unit_id}{generation}{infra}-"
     else:
-        stem = f"{unit_id}{generation}-"
+        stem = f"{unit_id}{generation}{infra}-"
     return request_id.startswith(f"req-{stem}") or request_id.startswith(f"tool-{stem}")
 
 
@@ -428,9 +430,11 @@ def run_schedule(units, run_dir, *, live, data_dir=None, docker_image=None, send
         for unit in units:
             if drain_requested(run_dir):
                 return results
-            reason = halt_reason(run_dir)
-            if reason:
-                raise PilotStopped(reason)
+            halt = halt_record(run_dir)
+            if halt:
+                if halt["hard"]:
+                    raise PilotStopped(halt["reason"])
+                return results
             if unit.unit_id in done:
                 # The row is terminal, including one that stopped the previous
                 # process with halt_schedule. Resume does not raise that flag again.
@@ -438,7 +442,9 @@ def run_schedule(units, run_dir, *, live, data_dir=None, docker_image=None, send
                 _stop_if_blocked(results)
                 continue
             epoch = current_epoch(run_dir)
-            if any(_touched(request_id, unit.unit_id, restart_counts(run_dir).get(unit.unit_id, 0), epoch)
+            infra_generation = infra_generations(run_dir).get(unit.unit_id, 0)
+            if any(_touched(request_id, unit.unit_id, restart_counts(run_dir).get(unit.unit_id, 0),
+                            epoch, infra_generation)
                    for request_id in known_ids):
                 raise BudgetStopped("partial_unit_not_retried")
             retried = False
@@ -472,13 +478,15 @@ def run_schedule(units, run_dir, *, live, data_dir=None, docker_image=None, send
                 _append_record(records_path, record)
                 known_ids = ledger.request_ids()
                 if ((record.get("charged_unknown") or record.get("charged_timeout")
-                        or record.get("charged_unparseable"))
+                        or record.get("charged_unparseable") or record.get("tool_sandbox_unknown"))
                         and not retried and record.get("restart_count", 0) == 0
                         and not record.get("halt_schedule")):
                     if record.get("charged_timeout"):
                         restart_reason = "charged timeout; restart once"
                     elif record.get("charged_unparseable"):
                         restart_reason = "unparseable charged; restart once"
+                    elif record.get("tool_sandbox_unknown"):
+                        restart_reason = "tool sandbox unknown; restart once"
                     else:
                         restart_reason = "charged unknown; restart once"
                     restart_unit(run_dir, unit.unit_id, reason=restart_reason, ledger=ledger,
@@ -662,8 +670,10 @@ def _execute_unit(unit, run_dir, ledger, *, live, data_dir, docker_image, sender
     }
     state_dir = Path(run_dir) / "units" / unit.unit_id / "state"
     restart_count = restart_counts(run_dir).get(unit.unit_id, 0)
+    infra_generation = infra_generations(run_dir).get(unit.unit_id, 0)
     epoch = current_epoch(run_dir)
     record["restart_count"] = restart_count
+    record["infra_generation"] = infra_generation
     record["protocol_epoch"] = epoch
     services = StudyServices(
         state_dir, ledger, unit=unit.protocol_unit,
@@ -678,6 +688,7 @@ def _execute_unit(unit, run_dir, ledger, *, live, data_dir, docker_image, sender
         restart_count=1 if restart_count >= 1 else 0,
         protocol_epoch=epoch,
         shard_id=shard_id,
+        infra_generation=infra_generation,
     )
     payload = load_public_payload(data_dir, unit.track, unit.task_id)
     repo = _public_field(payload, "repo")
@@ -747,6 +758,12 @@ def _execute_unit(unit, run_dir, ledger, *, live, data_dir, docker_image, sender
                 status = "blocked"
                 reason = "second_unknown_interruption"
             halt = unknown_so_far + 1 > MAX_UNKNOWN_OUTCOMES
+        elif reason == "tool_sandbox_unknown":
+            record["tool_sandbox_unknown"] = True
+            if restart_count >= 1:
+                status = "blocked"
+                reason = "second_tool_sandbox_interruption"
+            halt = False
         elif reason == "provider_outcome_unknown":
             record["unknown_request_id"] = getattr(services, "last_request_id", None)
             if restart_count >= 1:

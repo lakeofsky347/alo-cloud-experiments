@@ -193,7 +193,7 @@ def test_reasoning_tokens_stay_inside_the_completion_total(tmp_path, monkeypatch
     assert services.resources()["observed_reasoning_tokens"] == 4
     assert services.events[-1][1]["reasoning_tokens"] == 4
 
-    oversized = chat("x", "deepseek-flash", prompt=1, completion=2, reasoning=9)
+    oversized = chat("x", "deepseek-flash", prompt=1, completion=2, reasoning=200)
     blocked, blocked_seen, blocked_ledger = build(
         tmp_path / "over", monkeypatch, [oversized, chat("y", "deepseek-flash")])
     with pytest.raises(PilotStopped, match="provider_unparseable_charged"):
@@ -398,11 +398,18 @@ def test_syntax_validator_uses_compile_and_ignores_unattributed_writes(tmp_path,
     daemon_box = DockerSandbox(services.workspace.root, image="example.invalid/alo:test", runner=fail_daemon)
     services.sandbox = daemon_box
     before_tools = services.tools
-    with pytest.raises(PilotStopped, match="tool_outcome_unknown"):
+    with pytest.raises(PilotStopped, match="tool_sandbox_unknown"):
         services.command(["python", "--version"], timeout_s=5)
-    with pytest.raises(PilotStopped, match="unresolved"):
-        services.list_files()
+    assert services.ledger.snapshot()["unresolved_tool_ids"] == []
     assert services.tools == before_tools
+    recorded = next(
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in (services.ledger.path.parent / "diagnostics").glob("tool-*.json")
+        if json.loads(path.read_text(encoding="utf-8"))["vendor_code"] == "SandboxUnknown")
+    assert recorded["cause"] == "tool_exception" and recorded["settled"] is True
+    assert "Traceback" in recorded["vendor_message"]
+    listed = services.list_files()
+    assert isinstance(listed, list)
 
 
 def test_tool_loop_uses_the_metered_service(tmp_path, monkeypatch):

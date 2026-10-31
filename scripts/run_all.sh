@@ -8,7 +8,13 @@ set -eu
 ROOT=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 RUN_DIR=${ALO_RUN_DIR:-"$HOME/alo-m1-m2-run"}
 DATA_DIR=${ALO_DATA_DIR:-"$RUN_DIR/public_tasks"}
-PY=${PYTHON:-python3}
+if [ -n "${PYTHON:-}" ]; then
+  PY=$PYTHON
+elif [ -x "$ROOT/.venv/bin/python" ]; then
+  PY=$ROOT/.venv/bin/python
+else
+  PY=python3
+fi
 cd "$ROOT"
 
 if [ "${NUM_SHARDS:-1}" != "1" ]; then

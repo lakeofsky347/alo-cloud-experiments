@@ -113,7 +113,9 @@ def _reasoning_tokens(usage, completion):
     DeepSeek and MiMo document ``completion_tokens_details.reasoning_tokens``.
     MiMo responses also put the same count on ``usage`` itself. GLM's published
     example has neither field. When both are present they must agree, and the
-    count must already sit inside ``completion_tokens``. A missing split stays
+    count must already sit inside ``completion_tokens``. A count that exceeds
+    completion by at most 64, or by at most one percent of completion, is
+    clamped to completion. A larger gap stays unknown. A missing split stays
     unreported; it is not recorded as a measured zero.
     """
     top = usage["reasoning_tokens"] if "reasoning_tokens" in usage else None
@@ -134,11 +136,22 @@ def _reasoning_tokens(usage, completion):
 
     top = _as_int(top)
     detail = _as_int(detail)
-    for value in (top, detail):
+
+    def _clamp(value):
         if value is None:
-            continue
-        if type(value) is not int or value < 0 or value > completion:
+            return None
+        if type(value) is not int or value < 0:
             raise PilotStopped("provider_outcome_unknown")
+        if value <= completion:
+            return value
+        over = value - completion
+        within = over <= 64 or (completion > 0 and over * 100 <= completion)
+        if not within:
+            raise PilotStopped("provider_outcome_unknown")
+        return completion
+
+    top = _clamp(top)
+    detail = _clamp(detail)
     if top is not None and detail is not None and top != detail:
         raise PilotStopped("provider_outcome_unknown")
     return top if top is not None else detail

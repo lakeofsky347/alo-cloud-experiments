@@ -123,12 +123,23 @@ def test_halt_flag_stops_a_later_schedule(tmp_path, monkeypatch):
         "urllib.request.urlopen", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("network")))
     run = tmp_path / "run"
     set_halt(run, "charged_timeout_rate", "1/4")
+    assert json.loads((run / "schedule_halt.json").read_text(encoding="utf-8"))["hard"] is False
     assert halt_reason(run) == "charged_timeout_rate"
     assert set_halt(run, "other", "2/4") == "charged_timeout_rate"
     units = list(iter_units("m1"))[:1]
-    with pytest.raises(PilotStopped, match="charged_timeout_rate"):
-        run_schedule(units, run, live=False, sender=_completion)
+    assert run_schedule(units, run, live=False, sender=_completion) == []
     assert not (run / "records.jsonl").exists() or (run / "records.jsonl").read_text(encoding="utf-8").strip() == ""
+    hard = tmp_path / "hard"
+    set_halt(hard, "model_cny_cap_exhausted", "0/4")
+    assert json.loads((hard / "schedule_halt.json").read_text(encoding="utf-8"))["hard"] is True
+    with pytest.raises(PilotStopped, match="model_cny_cap_exhausted"):
+        run_schedule(units, hard, live=False, sender=_completion)
+    legacy = tmp_path / "legacy"
+    legacy.mkdir()
+    (legacy / "schedule_halt.json").write_text(
+        json.dumps({"halt": True, "reason": "operator", "shard": "1/4"}) + "\n", encoding="utf-8")
+    with pytest.raises(PilotStopped, match="operator"):
+        run_schedule(units, legacy, live=False, sender=_completion)
 
 
 def test_resume_keeps_epoch_and_skips_finished_units(tmp_path, monkeypatch):

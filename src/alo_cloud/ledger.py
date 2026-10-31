@@ -14,7 +14,7 @@ from pathlib import Path
 import shutil
 
 from .budget import BudgetLedger, BudgetStopped
-from .shardlock import clear_drain, exclusive_lock, set_drain
+from .shardlock import clear_drain, clear_halt, exclusive_lock, set_drain
 
 
 def _restarts_path(run_dir):
@@ -163,6 +163,158 @@ def _restart_unit_locked(run_dir, unit_id, *, reason, ledger):
             "archived_records": removed, "archive": str(dest)}
 
 
+# Terminal rows left by another shard's halt, a valve, or an operator stop.
+# A real budget cap or a unit that used its own resource cap is not in this set.
+INFRA_STOP_REASONS = frozenset({
+    "unknown_outcome_threshold",
+    "tool_outcome_unknown",
+    "schedule_halted",
+    "blocked_fraction_exceeded",
+    "charged_timeout_rate",
+    "charged_timeout_cny",
+    "charged_unparseable_rate",
+    "charged_unparseable_cny",
+    "operator",
+    "operator_halt",
+})
+
+
+def _infra_log(run_dir):
+    return Path(run_dir) / "progress" / "infra_requeues.jsonl"
+
+
+def _infra_generations_unlocked(run_dir):
+    path = _infra_log(run_dir)
+    counts = {}
+    if not path.is_file():
+        return counts
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        unit_id = row.get("unit_id") if isinstance(row, dict) else None
+        if isinstance(unit_id, str) and unit_id:
+            counts[unit_id] = counts.get(unit_id, 0) + 1
+    return counts
+
+
+def infra_generations(run_dir):
+    """How many times each unit was requeued without using its protocol restart."""
+    with exclusive_lock(run_dir, "infra_requeues"):
+        return _infra_generations_unlocked(run_dir)
+
+
+def _load_record_rows(run_dir):
+    path = Path(run_dir) / "records.jsonl"
+    rows = []
+    if not path.is_file():
+        return rows
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        if isinstance(row, dict) and isinstance(row.get("unit_id"), str) and row["unit_id"]:
+            rows.append(row)
+    return rows
+
+
+def _catalog_parents():
+    from .freeze import iter_units
+    parents = {}
+    for study in ("m1", "m2"):
+        for unit in iter_units(study):
+            if unit.parent_unit_id:
+                parents[unit.unit_id] = unit.parent_unit_id
+    return parents
+
+
+def _check_unit_id(unit_id):
+    if not isinstance(unit_id, str) or not unit_id or "/" in unit_id or "\\" in unit_id:
+        raise ValueError("restart_unit_id_rejected")
+
+
+def requeue_interrupted(run_dir, unit_ids=()):
+    """Archive interrupted units so they can run again without a protocol restart.
+
+    Automatic selection is a terminal ``stopped`` row whose reason is an infra
+    halt (another shard's unknown threshold or valve, ``tool_outcome_unknown``,
+    or an operator stop). ``--unit`` adds a recorded unit even when its reason
+    is different. Requeueing a unit also requeues recorded dependents that used
+    it: the same task and arm's B1-self, and an M2 persist or learned-probe
+    chain that hangs off it. ``unit_restarts.json`` is not modified. Request
+    ids of the next attempt use ``-infraN-`` so they do not collide with the
+    archived attempt and do not consume the one protocol restart.
+    """
+    run_dir = Path(run_dir)
+    explicit = []
+    for unit_id in unit_ids or ():
+        _check_unit_id(unit_id)
+        explicit.append(unit_id)
+    by_id = {}
+    for row in _load_record_rows(run_dir):
+        by_id[row["unit_id"]] = row
+    selected = {}
+    for unit_id, row in by_id.items():
+        if row.get("status") == "stopped" and row.get("reason") in INFRA_STOP_REASONS:
+            selected[unit_id] = "reason"
+    for unit_id in explicit:
+        if unit_id in by_id:
+            selected[unit_id] = "explicit" if unit_id not in selected else selected[unit_id]
+    parents = _catalog_parents()
+    changed = True
+    while changed:
+        changed = False
+        for unit_id, row in by_id.items():
+            if unit_id in selected:
+                continue
+            parent = parents.get(unit_id) or ""
+            if not parent and isinstance(row.get("parent_unit_id"), str):
+                parent = row["parent_unit_id"]
+            if parent and parent in selected:
+                selected[unit_id] = parent
+                changed = True
+    before = restart_counts(run_dir) if (run_dir / "unit_restarts.json").is_file() else {}
+    if not selected:
+        return {"requeued": [], "count": 0, "restart_counts_unchanged": True}
+    ledger_path = run_dir / "budget.sqlite3"
+    tool_ledger = BudgetLedger(ledger_path) if ledger_path.is_file() else None
+    epoch = current_epoch(run_dir)
+    requeued = []
+    for unit_id in sorted(selected):
+        _check_unit_id(unit_id)
+        dest = _unused_path(run_dir / "archive" / "restarts" / f"epoch-{epoch}" / unit_id / "infra")
+        dest.mkdir(parents=True, exist_ok=False)
+        _safe_move(run_dir / "checkpoints" / unit_id, dest / "checkpoint")
+        _safe_move(run_dir / "units" / unit_id, dest / "unit")
+        _safe_move(run_dir / "sealed" / "swe_units" / f"{unit_id}.jsonl", dest / "swe_unit.jsonl")
+        _safe_move(run_dir / "sealed" / "programbench" / unit_id, dest / "programbench")
+        with exclusive_lock(run_dir, "records"):
+            removed = _archive_records(run_dir, unit_id, dest)
+        if tool_ledger is not None:
+            tool_ledger.release_unsettled_tools(unit_id)
+        source = selected[unit_id]
+        cascaded_from = None if source in {"reason", "explicit"} else source
+        entry = {
+            "unit_id": unit_id,
+            "status": by_id[unit_id].get("status"),
+            "reason": by_id[unit_id].get("reason") or "",
+            "protocol_epoch": epoch,
+            "archive": str(dest),
+            "source": "cascade" if cascaded_from else source,
+            "cascaded_from": cascaded_from,
+            "explicit": unit_id in explicit,
+            "archived_records": removed,
+            "unit_restarts_incremented": False,
+        }
+        with exclusive_lock(run_dir, "infra_requeues"):
+            _append_text(_infra_log(run_dir), json.dumps(entry, ensure_ascii=False, sort_keys=True) + "\n")
+        requeued.append(unit_id)
+    after = restart_counts(run_dir) if (run_dir / "unit_restarts.json").is_file() else {}
+    if after != before:
+        raise RuntimeError("unit_restarts_changed")
+    return {"requeued": requeued, "count": len(requeued), "restart_counts_unchanged": True}
+
+
 def _epoch_path(run_dir):
     return Path(run_dir) / "protocol_epoch.json"
 
@@ -271,7 +423,8 @@ def archive_finished(run_dir, *, reason):
 
 def _parser():
     parser = argparse.ArgumentParser(description="Resolve an unknown hold or restart one unit.")
-    parser.add_argument("command", choices=("resolve", "archive-finished", "new-epoch", "drain"))
+    parser.add_argument("command", choices=(
+        "resolve", "archive-finished", "new-epoch", "drain", "requeue-interrupted", "clear-halt"))
     parser.add_argument("--run-dir", required=True)
     parser.add_argument("--request-id", default=None)
     parser.add_argument("--charge-microcny", type=int, default=None)
@@ -279,6 +432,7 @@ def _parser():
     parser.add_argument("--reason", default=None)
     parser.add_argument("--clear", action="store_true")
     parser.add_argument("--restart-unit", default=None)
+    parser.add_argument("--unit", action="append", default=[])
     return parser
 
 
@@ -292,6 +446,18 @@ def main(argv=None):
         else:
             path = set_drain(args.run_dir)
             print(json.dumps({"drain": True, "path": path}, sort_keys=True))
+        return 0
+    if args.command == "clear-halt":
+        removed = clear_halt(args.run_dir)
+        print(json.dumps({"halt_cleared": removed}, sort_keys=True))
+        return 0
+    if args.command == "requeue-interrupted":
+        try:
+            result = requeue_interrupted(args.run_dir, args.unit)
+        except ValueError as error:
+            print(str(error))
+            return 2
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
         return 0
     if args.command in {"archive-finished", "new-epoch"}:
         if not args.reason:

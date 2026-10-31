@@ -82,6 +82,36 @@ def test_vendor_usage_shapes_and_empty_mimo_completion_are_billed(tmp_path, monk
     assert reserved == ceiling_for_messages("mimo-v2.6-flash", messages(), 16384)
 
 
+def test_reasoning_within_64_or_one_percent_clamps_to_completion(tmp_path, monkeypatch):
+    monkeypatch.delenv("ALO_RUN_DIR", raising=False)
+    usage = _usage(10, 16384, reasoning=16389, where="both")
+    usage["completion_tokens_details"]["reasoning_tokens"] = 16385
+    services, _seen, ledger = build(
+        tmp_path, monkeypatch,
+        [_body("mimo-v2.6-pro", "", usage, finish_reason="length")],
+        charge=charge_microcny, ceiling=2_000_000, request_ceiling=ceiling_for_messages)
+    result = services.complete_for_model("mimo-v2.6-pro", messages(), max_tokens=4096)
+    assert result["text"] == "" and result["length_stop"] is True
+    assert result["reasoning_tokens"] == 16384
+    assert result["cost_microcny"] == charge_microcny(
+        "mimo-v2.6-pro", {"input_tokens": 10, "output_tokens": 16384, "cache_hit_tokens": None})
+    record = _diag(tmp_path, "req-m1_b0-1")
+    assert record["cause"] == "empty_completion" and record["settled"] is True
+    assert ledger.snapshot()["unresolved_request_ids"] == []
+    from alo_cloud.providers import parse_openai_chat_completion
+    exact = _usage(1, 10000, reasoning=10100, where="top")
+    parsed = parse_openai_chat_completion(
+        _body("mimo-v2.6-pro", "", exact, finish_reason="length"), "mimo-v2.6-pro")
+    assert parsed["reasoning_tokens"] == 10000
+    over = _usage(1, 10000, reasoning=10101, where="top")
+    with pytest.raises(PilotStopped, match="provider_outcome_unknown"):
+        parse_openai_chat_completion(_body("mimo-v2.6-pro", "", over), "mimo-v2.6-pro")
+    disagreed = _usage(10, 16384, reasoning=16380, where="both")
+    disagreed["completion_tokens_details"]["reasoning_tokens"] = 16389
+    with pytest.raises(PilotStopped, match="provider_outcome_unknown"):
+        parse_openai_chat_completion(_body("mimo-v2.6-pro", "", disagreed), "mimo-v2.6-pro")
+
+
 def test_disagreed_reasoning_counts_stay_unknown(tmp_path, monkeypatch):
     monkeypatch.delenv("ALO_RUN_DIR", raising=False)
     usage = _usage(4, 4, reasoning=1, where="both")

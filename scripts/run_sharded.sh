@@ -1,14 +1,22 @@
 #!/bin/sh
 # M1 then M2 as N task shards on one shared ledger.
 # NUM_SHARDS defaults to 4. Completed units in records.jsonl are skipped.
-# A halt written by any shard stops the others before their next unit.
+# A global CNY halt stops other shards before the next model call.
+# Any other halt lets them finish the current unit, then exit. M2 does not start.
+# CLEAR_HALT=1 removes a stale schedule_halt.json. Launch does not clear it otherwise.
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 RUN_DIR=${ALO_RUN_DIR:-"$HOME/alo-m1-m2-run"}
 DATA_DIR=${ALO_DATA_DIR:-"$RUN_DIR/public_tasks"}
 N=${NUM_SHARDS:-4}
-PY=${PYTHON:-python3}
+if [ -n "${PYTHON:-}" ]; then
+  PY=$PYTHON
+elif [ -x "$ROOT/.venv/bin/python" ]; then
+  PY=$ROOT/.venv/bin/python
+else
+  PY=python3
+fi
 cd "$ROOT"
 
 case "$N" in
@@ -20,6 +28,10 @@ if [ "$N" -lt 1 ]; then
 fi
 
 "$PY" -m alo_cloud.freeze --check
+if [ "${CLEAR_HALT:-}" = "1" ]; then
+  "$PY" -m alo_cloud.ledger clear-halt --run-dir "$RUN_DIR"
+  echo "Cleared schedule_halt.json because CLEAR_HALT=1."
+fi
 if [ -f "$RUN_DIR/drain.json" ]; then
   "$PY" -m alo_cloud.ledger drain --run-dir "$RUN_DIR" --clear
   echo "Cleared drain.json from the previous stop."
@@ -57,6 +69,10 @@ echo "M1 blocked-reason histogram"
 "$PY" -m alo_cloud.run --blocked-report --run-dir "$RUN_DIR"
 report_status=$?
 set -e
+if [ -f "$RUN_DIR/schedule_halt.json" ]; then
+  echo "Schedule halt is set. M2 was not started."
+  exit 1
+fi
 if [ -f "$RUN_DIR/drain.json" ]; then
   echo "Drain requested. M2 was not started. Shards finished the current unit and exited."
   exit 0

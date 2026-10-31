@@ -2,9 +2,9 @@
 
 日期：2026-10-31。本文件列出付费日程的任务身份、种子、组别、模型和参数。规范载荷在 `alo_cloud.freeze.freeze_payload`。CI 重新计算其 SHA-256，必须与下面这一行一致。
 
-freeze_sha256: 9ee9ccf36dc80f535f6f42a7821bc694d5aa553147c32d3445d2bc7a10eee42d
+freeze_sha256: 9d9ea4e2bb5756a730e01c70d2b445e45cebcd8279d959a344fa4ca690387852
 
-上一版哈希是 `154458dde567c0037d7b00113d9302455dfed895342799c8349d8b3581a8c242`。题单、种子、组别、模型、标价、超时和计费都没有改。这次改哈希是因为：HTTP 成功但无法按用量解析、且已按预留最坏金额结算的结果改为 `provider_unparseable_charged`，走与超时相同的 40 次 25% 或本代 10 CNY 阀门，不再计入 3 次未知上限。未结算的结果仍计入未知上限。
+上一版哈希是 `9ee9ccf36dc80f535f6f42a7821bc694d5aa553147c32d3445d2bc7a10eee42d`。题单、种子、组别、模型、标价、超时和计费都没有改。这次改哈希是因为：`reasoning_tokens` 超出 `completion_tokens` 不超过 64 或不大于 completion 的 1% 时钳到 completion，按报告用量结算；能结算的工具异常交回代理，沙箱状态不明只重启该单元一次；只有全局 CNY 上限是硬停止；基础设施截断用 `requeue-interrupted` 重新入队且不增加 `unit_restarts`。
 
 检查：`python -m alo_cloud.freeze --check`
 

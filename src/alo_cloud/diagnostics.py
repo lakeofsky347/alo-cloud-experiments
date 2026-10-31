@@ -22,6 +22,7 @@ CAUSES = frozenset({
     "unparseable_success",
     "transport_error",
     "charge_rejected",
+    "tool_exception",
 })
 _SECRET_FIELDS = frozenset({
     "authorization", "api-key", "api_key", "apikey", "access_token", "refresh_token",
