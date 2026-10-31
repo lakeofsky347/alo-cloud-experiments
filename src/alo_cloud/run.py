@@ -29,7 +29,7 @@ from .freeze import (
 )
 from .diagnostics import write_diagnostic
 from .ledger import current_epoch, infra_generations, restart_counts, restart_unit, track_generations
-from .programbench_prompt import PROGRAMBENCH_SUBMISSION_CONTRACT
+from .programbench_prompt import PROGRAMBENCH_BUDGET_NOTICE, PROGRAMBENCH_SUBMISSION_CONTRACT
 from .progress import publish_timeout_counts
 from .images import resolve_task_image
 from .prices import ceiling_for_messages, charge_microcny
@@ -699,6 +699,7 @@ def _execute_unit(unit, run_dir, ledger, *, live, data_dir, docker_image, sender
         shard_id=shard_id,
         infra_generation=infra_generation,
         track_generation=track_generation,
+        budget_notice=PROGRAMBENCH_BUDGET_NOTICE if unit.track == "ProgramBench" else None,
     )
     payload = load_public_payload(data_dir, unit.track, unit.task_id)
     repo = _public_field(payload, "repo")
@@ -861,6 +862,7 @@ def _persist_compact(unit, services, adapter, run_dir, record):
         compile_sh = workspace / "compile.sh"
         present = compile_sh.is_file()
         record["programbench_compile_sh_present"] = present
+        record["programbench_budget_notice"] = bool(getattr(services, "budget_notice_sent", False))
         try:
             write_diagnostic(
                 services.ledger, f"submission-{unit.unit_id}",

@@ -42,6 +42,18 @@ CALL_CAPS = {
     "m2_g3_reference": 8,
     "m2_g2_probe": 6,
 }
+# ProgramBench only. The pinned scorer has no agent turn budget. The published
+# mini-swe-agent baseline uses 1000 steps, which does not fit the 50 CNY cap.
+# 16/10 is the largest pilot-shaped pair whose expected mimo-pro total, including
+# the 15 CNY already spent, stays at or under 45 CNY. Token and second ceilings
+# stay the protocol values sized for 32/16 requests.
+PB_REQUEST_CAPS = {
+    "b0": 16,
+    "b1": 10,
+    "learning": 16,
+    "reference": 16,
+    "probe": 10,
+}
 M1_CONDITIONS = ("g1-main", "g1-strong", "g2", "g3")
 MAX_BLOCKED_FRACTION = 0.25
 BLOCKED_FRACTION_MIN_UNITS = 4
@@ -332,6 +344,8 @@ def freeze_payload():
             "programbench_submission": "compile_sh_builds_executable",
             "programbench_docker_cpus": "PROGRAMBENCH_DOCKER_CPUS_or_min_10_nproc",
             "programbench_track_requeue": "same_epoch_pbv_marker",
+            "programbench_request_caps": dict(PB_REQUEST_CAPS),
+            "programbench_m2_orders": "separate_shards",
         },
     }
 
@@ -353,7 +367,9 @@ def all_task_ids():
     return tuple(found)
 
 
-def _m1_cap(arm, phase):
+def _m1_cap(arm, phase, track=None):
+    if track == "ProgramBench":
+        return PB_REQUEST_CAPS["b0" if phase == "B0" else "b1"]
     kind = "g1" if arm.startswith("g1-") else arm
     slot = "b0" if phase == "B0" else "b1"
     return CALL_CAPS[f"m1_{kind}_{slot}"]
@@ -430,11 +446,29 @@ def shard_for_task(track, task_id, num_shards):
     raise KeyError((track, task_id))
 
 
+def shard_for_unit(unit, num_shards):
+    """Shard index for one unit.
+
+    ProgramBench M2 orders do not share a checkpoint, so each order is its own
+    group and the two orders can run on different shards. Every other chain
+    still follows ``shard_for_task``.
+    """
+    if type(num_shards) is not int or num_shards < 1:
+        raise ValueError("invalid_shard_count")
+    if getattr(unit, "track", None) == "ProgramBench" and getattr(unit, "order_id", ""):
+        orders = []
+        for sequence in M2_SEQUENCES:
+            if sequence["track"] == "ProgramBench" and sequence["id"] not in orders:
+                orders.append(sequence["id"])
+        return (len(task_groups()) + orders.index(unit.order_id)) % num_shards
+    return shard_for_task(unit.track, unit.task_id, num_shards)
+
+
 def filter_shard(units, index, num_shards):
     """Units for shard ``index`` of ``num_shards``, in the original schedule order."""
     if type(index) is not int or type(num_shards) is not int or num_shards < 1 or not 0 <= index < num_shards:
         raise ValueError("invalid_shard")
-    return tuple(unit for unit in units if shard_for_task(unit.track, unit.task_id, num_shards) == index)
+    return tuple(unit for unit in units if shard_for_unit(unit, num_shards) == index)
 
 
 def iter_m1_units():
@@ -453,7 +487,7 @@ def iter_m1_units():
                     yield PlannedUnit(
                         study="m1", arm=arm, track=track, task_id=task_id, stratum=stratum,
                         phase=phase, position=index, seed=G2_BASE_SEED + index,
-                        request_cap=_m1_cap(arm, phase), parent_unit_id=parent,
+                        request_cap=_m1_cap(arm, phase, track), parent_unit_id=parent,
                     )
 
 
@@ -478,7 +512,9 @@ def iter_m2_units():
                 unit = PlannedUnit(
                     study="m2", arm="g2", track=sequence["track"], task_id=task_id,
                     stratum=stratum, phase="learning", position=position,
-                    seed=sequence["seeds"][position], request_cap=CALL_CAPS["m2_g2_learning"],
+                    seed=sequence["seeds"][position],
+                    request_cap=(PB_REQUEST_CAPS["learning"] if sequence["track"] == "ProgramBench"
+                                 else CALL_CAPS["m2_g2_learning"]),
                     order_id=sequence["id"], m2_condition=condition, parent_unit_id=parent,
                 )
                 learning.append(unit)
@@ -495,10 +531,11 @@ def iter_m2_units():
                 ("g1-strong", "m2_g1_reference"),
                 ("g3", "m2_g3_reference"),
             ):
+                cap = PB_REQUEST_CAPS["reference"] if track == "ProgramBench" else CALL_CAPS[cap_name]
                 yield PlannedUnit(
                     study="m2", arm=arm, track=track, task_id=task_id, stratum=stratum,
                     phase="reference", position=index, seed=G2_BASE_SEED + 100 + index,
-                    request_cap=CALL_CAPS[cap_name],
+                    request_cap=cap,
                 )
     for sequence_index, sequence in enumerate(M2_SEQUENCES):
         for probe_position, task_id in enumerate(sequence["probe_ids"]):
@@ -515,7 +552,9 @@ def iter_m2_units():
                     study="m2", arm="g2", track=sequence["track"], task_id=task_id,
                     stratum=stratum, phase="probe", position=probe_position,
                     seed=sequence["probe_seeds"][probe_position] + (0 if condition == "learned" else 17),
-                    request_cap=CALL_CAPS["m2_g2_probe"], order_id=sequence["id"],
+                    request_cap=(PB_REQUEST_CAPS["probe"] if sequence["track"] == "ProgramBench"
+                                 else CALL_CAPS["m2_g2_probe"]),
+                    order_id=sequence["id"],
                     m2_condition=condition, parent_unit_id=parent,
                 )
 

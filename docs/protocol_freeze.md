@@ -2,9 +2,9 @@
 
 日期：2026-10-31。本文件列出付费日程的任务身份、种子、组别、模型和参数。规范载荷在 `alo_cloud.freeze.freeze_payload`。CI 重新计算其 SHA-256，必须与下面这一行一致。
 
-freeze_sha256: bc3ada9783a3d18af9b0c90f4f939a3190766f7a96331227f573d31fe32616ce
+freeze_sha256: d64e3a9277e7852c6fa319b7a69fabaf375d73fa1f93d87df878f647b1e7a440
 
-上一版哈希是 `9d9ea4e2bb5756a730e01c70d2b445e45cebcd8279d959a344fa4ca690387852`。题单、种子、组别、模型、标价、超时和计费都没有改。这次改哈希是因为：ProgramBench 题面补上官方 `compile.sh` / `./executable` 契约；评分容器核数默认 `min(10, nproc)`；题面无效时用 `requeue-track` 在同一代重跑，请求号带 `-pbvN-`。
+上一版哈希是 `bc3ada9783a3d18af9b0c90f4f939a3190766f7a96331227f573d31fe32616ce`。题单、种子、组别、模型、标价和超时没有改。这次改哈希是因为：ProgramBench 的请求上限改为 B0／学习／参考 16 次、B1／probe 10 次；两条 M2 顺序分到不同分片。SWE-bench 的 12／8 未变。每模型 50 CNY 和合计 200 CNY 未变。
 
 检查：`python -m alo_cloud.freeze --check`
 
