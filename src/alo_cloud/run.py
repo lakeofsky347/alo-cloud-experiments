@@ -25,7 +25,8 @@ from .contracts import (
 from .errors import PilotStopped
 from .freeze import (
     BLOCKED_FRACTION_MIN_UNITS, G2_PLANNER_MODEL, G3_MANAGER_MODEL, G3_ROLES,
-    MAX_BLOCKED_FRACTION, MAX_UNKNOWN_OUTCOMES, filter_shard, select_units,
+    MAX_BLOCKED_FRACTION, MAX_UNKNOWN_OUTCOMES, filter_benchmarks, filter_shard,
+    requested_benchmarks, select_units,
 )
 from .diagnostics import write_diagnostic
 from .ledger import current_epoch, infra_generations, restart_counts, restart_unit, track_generations
@@ -405,8 +406,13 @@ def reclassify_charged_unparseable(run_dir):
 
 def run_schedule(units, run_dir, *, live, data_dir=None, docker_image=None, sender=None,
                  git_runner=None, sandbox_memory=None, sandbox_pids=None, image_seeder=None,
-                 shard=None):
-    """Execute units in order. Completed JSONL rows are skipped on resume."""
+                 shard=None, benchmarks=None):
+    """Execute units in order. Completed JSONL rows are skipped on resume.
+
+    ``benchmarks`` limits the schedule to those tracks. Excluded units are not
+    opened: no record, ledger row, requeue, or restart. An empty included set
+    returns before the ledger is created.
+    """
     run_dir = Path(run_dir)
     mode = "live" if live else "dry-run"
     if live and sender is not None:
@@ -416,6 +422,9 @@ def run_schedule(units, run_dir, *, live, data_dir=None, docker_image=None, send
     shard_label = "" if shard is None else f"{shard[0]}/{shard[1]}"
     if shard is not None:
         units = filter_shard(units, shard[0], shard[1])
+    units, _skipped = filter_benchmarks(units, benchmarks)
+    if benchmarks and not units:
+        return []
     ledger = open_run_ledger(run_dir / "budget.sqlite3", mode)
     if live:
         missing = [name for name in KEY_ENVS if not os.environ.get(name)]
@@ -445,7 +454,7 @@ def run_schedule(units, run_dir, *, live, data_dir=None, docker_image=None, send
                 # The row is terminal, including one that stopped the previous
                 # process with halt_schedule. Resume does not raise that flag again.
                 results.append(done[unit.unit_id])
-                _stop_if_blocked(results)
+                _stop_if_blocked(results, benchmarks=benchmarks)
                 continue
             epoch = current_epoch(run_dir)
             infra_generation = infra_generations(run_dir).get(unit.unit_id, 0)
@@ -502,7 +511,7 @@ def run_schedule(units, run_dir, *, live, data_dir=None, docker_image=None, send
                     continue
                 break
             results.append(record)
-            _stop_if_blocked(results, run_dir=run_dir, shard=shard_label)
+            _stop_if_blocked(results, run_dir=run_dir, shard=shard_label, benchmarks=benchmarks)
             if record.get("halt_schedule"):
                 reason = record.get("reason") or "schedule_stopped"
                 set_halt(run_dir, reason, shard_label)
@@ -535,8 +544,17 @@ def _max_blocked_fraction(maximum):
     return value
 
 
-def blocked_fraction_exceeded(records, *, maximum=None):
+def _rows_for_benchmarks(records, benchmarks):
+    """Records that count toward a gate. An empty filter keeps every row."""
+    if not benchmarks:
+        return records
+    allowed = set(benchmarks)
+    return [row for row in records if isinstance(row, dict) and row.get("track") in allowed]
+
+
+def blocked_fraction_exceeded(records, *, maximum=None, benchmarks=None):
     """True when blocked units are more than the allowed share of a large enough sample."""
+    records = _rows_for_benchmarks(records, benchmarks)
     finished = [row for row in records if isinstance(row, dict) and row.get("status")]
     if len(finished) < BLOCKED_FRACTION_MIN_UNITS:
         return False
@@ -544,8 +562,9 @@ def blocked_fraction_exceeded(records, *, maximum=None):
     return blocked / len(finished) > _max_blocked_fraction(maximum)
 
 
-def format_blocked_report(records, *, maximum=None):
+def format_blocked_report(records, *, maximum=None, benchmarks=None):
     """One histogram line per blocked reason, then whether the schedule must stop."""
+    records = _rows_for_benchmarks(records, benchmarks)
     counts = {}
     finished = 0
     blocked = 0
@@ -567,14 +586,14 @@ def format_blocked_report(records, *, maximum=None):
     return "\n".join(lines), exceeded
 
 
-def _stop_if_blocked(records, run_dir=None, shard=""):
+def _stop_if_blocked(records, run_dir=None, shard="", benchmarks=None):
     if run_dir is not None:
         with exclusive_lock(run_dir, "records"):
             records = list(_done_ids(Path(run_dir) / "records.jsonl").values())
-    exceeded = blocked_fraction_exceeded(records)
+    exceeded = blocked_fraction_exceeded(records, benchmarks=benchmarks)
     if not exceeded:
         return
-    text, _exceeded = format_blocked_report(records)
+    text, _exceeded = format_blocked_report(records, benchmarks=benchmarks)
     print(text)
     if run_dir is not None:
         set_halt(run_dir, "blocked_fraction_exceeded", shard)
@@ -907,18 +926,39 @@ def _parser():
                         help="Print the blocked-reason histogram and exit 1 if the fraction is too high.")
     parser.add_argument("--shard", default=None,
                         help="Task shard i/N (0-based). Whole tasks stay on one shard.")
+    parser.add_argument("--benchmarks", default=None,
+                        help="Comma-separated tracks to run (SWE-bench, ProgramBench). "
+                             "Default is ALO_BENCHMARKS, or every track when that is unset.")
     parser.add_argument("--run-dir", required=True)
     parser.add_argument("--data-dir", default=None)
     parser.add_argument("--docker-image", default=os.environ.get("ALO_SANDBOX_IMAGE") or None)
     return parser
 
 
+def _schedule_status(study, results, skipped, spent, benchmarks):
+    body = {
+        "study": study,
+        "units": len(results),
+        "skipped_by_filter": skipped,
+        "charged_microcny": spent,
+        "charged_cny": spent / MICROCNY_PER_CNY,
+    }
+    if benchmarks:
+        body["benchmarks"] = list(benchmarks)
+    print(json.dumps(body, sort_keys=True))
+
+
 def main(argv=None):
     parser = _parser()
     args = parser.parse_args(argv)
+    try:
+        benchmarks = requested_benchmarks(args.benchmarks)
+    except ValueError:
+        parser.error(
+            "--benchmarks must be a comma-separated list of SWE-bench, SWE-bench_Lite, ProgramBench")
     if args.blocked_report:
         records = list(_done_ids(Path(args.run_dir) / "records.jsonl").values())
-        text, exceeded = format_blocked_report(records)
+        text, exceeded = format_blocked_report(records, benchmarks=benchmarks)
         print(text)
         return 1 if exceeded else 0
     if args.study not in {"m1", "m2"}:
@@ -932,9 +972,16 @@ def main(argv=None):
         shard = _parse_shard(args.shard)
     except PilotStopped:
         parser.error("--shard must be i/N with 0 <= i < N")
+    scoped = filter_shard(units, shard[0], shard[1]) if shard is not None else tuple(units)
+    _included, skipped_units = filter_benchmarks(scoped, benchmarks)
+    # A shard whose units are all outside the filter is finished. Do not open
+    # the ledger or write a record for the excluded tracks.
+    if benchmarks and not _included:
+        _schedule_status(args.study, [], len(skipped_units), 0, benchmarks)
+        return 0
     try:
         results = run_schedule(units, args.run_dir, live=args.live, data_dir=args.data_dir,
-                               docker_image=args.docker_image, shard=shard)
+                               docker_image=args.docker_image, shard=shard, benchmarks=benchmarks)
     except (PilotStopped, BudgetStopped) as error:
         print(str(error))
         return 2
@@ -942,9 +989,7 @@ def main(argv=None):
     for row in results:
         for amount in (row.get("charged_microcny") or {}).values():
             spent += amount
-    print(json.dumps({"study": args.study, "units": len(results),
-                      "charged_microcny": spent,
-                      "charged_cny": spent / MICROCNY_PER_CNY}, sort_keys=True))
+    _schedule_status(args.study, results, len(skipped_units), spent, benchmarks)
     return 0
 
 

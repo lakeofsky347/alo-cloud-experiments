@@ -1,6 +1,9 @@
 #!/bin/sh
 # M1 then M2 as N task shards on one shared ledger.
 # NUM_SHARDS defaults to 4. Completed units in records.jsonl are skipped.
+# ALO_BENCHMARKS is a comma list (SWE-bench, ProgramBench). Unset runs every track.
+# Excluded units stay queued: no record, ledger row, requeue, or restart.
+# A shard exits 0 once its included units are done, then starts its included M2.
 # A global CNY halt stops other shards before the next model call.
 # Any other halt lets them finish the current unit, then exit. M2 does not start.
 # CLEAR_HALT=1 removes a stale schedule_halt.json. Launch does not clear it otherwise.
@@ -46,10 +49,23 @@ fi
 # Each shard runs its own M1 units, then its own M2 units.
 # SWE M2 orders stay one group. ProgramBench M2 orders are separate shards
 # because they do not share a checkpoint. M1 ProgramBench still uses every shard.
+# With ALO_BENCHMARKS set, M2 waits only for included M1 units on this shard.
+# M2 SWE chains depend on M1 SWE prerequisites, not on queued ProgramBench.
+run_study() {
+  study=$1
+  index=$2
+  if [ -n "${ALO_BENCHMARKS:-}" ]; then
+    "$PY" -m alo_cloud.run --study "$study" --live --run-dir "$RUN_DIR" \
+      --data-dir "$DATA_DIR" --shard "$index/$N" --benchmarks "$ALO_BENCHMARKS"
+  else
+    "$PY" -m alo_cloud.run --study "$study" --live --run-dir "$RUN_DIR" \
+      --data-dir "$DATA_DIR" --shard "$index/$N"
+  fi
+}
+
 run_shard() {
   i=$1
-  "$PY" -m alo_cloud.run --study m1 --live --run-dir "$RUN_DIR" \
-    --data-dir "$DATA_DIR" --shard "$i/$N"
+  run_study m1 "$i"
   m1_status=$?
   if [ -f "$RUN_DIR/schedule_halt.json" ]; then
     return 1
@@ -60,9 +76,13 @@ run_shard() {
   if [ "$m1_status" -ne 0 ]; then
     return "$m1_status"
   fi
-  "$PY" -m alo_cloud.run --blocked-report --run-dir "$RUN_DIR" || return 1
-  "$PY" -m alo_cloud.run --study m2 --live --run-dir "$RUN_DIR" \
-    --data-dir "$DATA_DIR" --shard "$i/$N"
+  if [ -n "${ALO_BENCHMARKS:-}" ]; then
+    "$PY" -m alo_cloud.run --blocked-report --run-dir "$RUN_DIR" \
+      --benchmarks "$ALO_BENCHMARKS" || return 1
+  else
+    "$PY" -m alo_cloud.run --blocked-report --run-dir "$RUN_DIR" || return 1
+  fi
+  run_study m2 "$i"
 }
 
 set +e
@@ -97,8 +117,15 @@ fi
 
 export PROGRAMBENCH_HF_REVISION=de0ddfb637590c7ecb54fa0b5301f6dc7dfbcee5
 export PROGRAMBENCH_REPO="${PROGRAMBENCH_REPO:-}"
-"$PY" -m alo_cloud.evaluate --run-dir "$RUN_DIR" --execute \
-  --dataset-revision 6ec7bb89b9342f664a54a6e0a6ea6501d3437cc2 \
-  --programbench-hf-revision de0ddfb637590c7ecb54fa0b5301f6dc7dfbcee5
+if [ -n "${ALO_BENCHMARKS:-}" ]; then
+  "$PY" -m alo_cloud.evaluate --run-dir "$RUN_DIR" --execute \
+    --dataset-revision 6ec7bb89b9342f664a54a6e0a6ea6501d3437cc2 \
+    --programbench-hf-revision de0ddfb637590c7ecb54fa0b5301f6dc7dfbcee5 \
+    --benchmarks "$ALO_BENCHMARKS"
+else
+  "$PY" -m alo_cloud.evaluate --run-dir "$RUN_DIR" --execute \
+    --dataset-revision 6ec7bb89b9342f664a54a6e0a6ea6501d3437cc2 \
+    --programbench-hf-revision de0ddfb637590c7ecb54fa0b5301f6dc7dfbcee5
+fi
 
 echo "Resume by re-running this script. Shards: $N. State: $RUN_DIR"

@@ -36,6 +36,8 @@ def test_program_bench_prompt_states_the_official_contract_and_swe_does_not():
     assert "./executable" in PROGRAMBENCH_SUBMISSION_CONTRACT
     assert "task_cleanroom_v6" in PROGRAMBENCH_SUBMISSION_CONTRACT
     assert "no network" in PROGRAMBENCH_SUBMISSION_CONTRACT
+    assert "Python 3.10.12" in PROGRAMBENCH_SUBMISSION_CONTRACT
+    assert "Python 3.12" not in PROGRAMBENCH_SUBMISSION_CONTRACT
     for arm in ("g1-main", "g1-strong", "g2", "g3"):
         unit = _pb_unit(arm)
         stage = stage_for(unit, {"problem_statement": "Rebuild the program from scratch."}, dry_run=True)
@@ -252,5 +254,5 @@ def test_m1_program_bench_uses_every_shard_and_m2_orders_split():
     assert all(len(shards) == 1 for shards in by_order.values())
     assert len({next(iter(shards)) for shards in by_order.values()}) == 2
     text = Path("scripts/run_sharded.sh").read_text(encoding="utf-8")
-    assert text.index("--study m2") < text.index('wait "$pid"')
+    assert text.index("run_study m2") < text.index('wait "$pid"')
     assert "ProgramBench M2 orders are separate shards" in text

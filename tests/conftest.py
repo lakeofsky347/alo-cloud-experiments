@@ -8,6 +8,7 @@ import pytest
 def isolate_run_directory(monkeypatch):
     """Tests must not inherit a live run directory from the process environment."""
     monkeypatch.delenv("ALO_RUN_DIR", raising=False)
+    monkeypatch.delenv("ALO_BENCHMARKS", raising=False)
 
 
 @pytest.fixture(autouse=True)

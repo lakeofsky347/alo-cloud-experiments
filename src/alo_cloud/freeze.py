@@ -8,6 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
+import os
 from pathlib import Path
 import sys
 
@@ -578,6 +579,59 @@ def select_units(study, *, arms=(), tasks=()):
             continue
         chosen.append(unit)
     return tuple(chosen)
+
+
+# Operator schedule filter. ``SWE-bench`` is the name used on the box; the
+# catalog track is ``SWE-bench_Lite``. This map is not part of the freeze payload.
+BENCHMARK_ALIASES = {
+    "SWE-bench": "SWE-bench_Lite",
+    "SWE-bench_Lite": "SWE-bench_Lite",
+    "ProgramBench": "ProgramBench",
+}
+
+
+def parse_benchmarks(text):
+    """Canonical tracks for a comma list. ``None`` or blank means every track."""
+    if text is None:
+        return None
+    if not isinstance(text, str):
+        raise ValueError("unknown_benchmark")
+    chosen = []
+    for part in text.split(","):
+        name = part.strip()
+        if not name:
+            continue
+        track = BENCHMARK_ALIASES.get(name)
+        if track is None:
+            raise ValueError("unknown_benchmark")
+        if track not in chosen:
+            chosen.append(track)
+    if not chosen:
+        return None
+    return tuple(chosen)
+
+
+def requested_benchmarks(flag, environ=None):
+    """``--benchmarks`` wins. Otherwise read ``ALO_BENCHMARKS``. Unset means all."""
+    source = os.environ if environ is None else environ
+    if flag is None and "ALO_BENCHMARKS" not in source:
+        return None
+    text = flag if flag is not None else source.get("ALO_BENCHMARKS") or ""
+    return parse_benchmarks(text)
+
+
+def filter_benchmarks(units, benchmarks):
+    """Split units into included and excluded. An empty filter includes every unit."""
+    if not benchmarks:
+        return tuple(units), ()
+    allowed = set(benchmarks)
+    included, skipped = [], []
+    for unit in units:
+        if unit.track in allowed:
+            included.append(unit)
+        else:
+            skipped.append(unit)
+    return tuple(included), tuple(skipped)
 
 
 def main(argv=None):
