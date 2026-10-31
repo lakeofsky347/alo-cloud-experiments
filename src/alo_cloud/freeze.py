@@ -218,7 +218,7 @@ def freeze_payload():
             "probe_seeds": list(row["probe_seeds"]),
         })
     return {
-        "schema": "alo-protocol-freeze-v1",
+        "schema": "alo-protocol-freeze-v2",
         "price_retrieved_on": RETRIEVED_ON,
         "models": {
             "pool": list(MODEL_POOL),
@@ -248,8 +248,25 @@ def freeze_payload():
         "development_tasks": "not_in_paid_schedule",
         "program_bench_source_commit": "895f65916bc5ba34a915d36da321fde0301125ad",
         "program_bench_tests_revision": "de0ddfb637590c7ecb54fa0b5301f6dc7dfbcee5",
+        "program_bench_hf_revision_env": "PROGRAMBENCH_HF_REVISION",
         "swebench_lite_revision": "6ec7bb89b9342f664a54a6e0a6ea6501d3437cc2",
         "swebench_package": "4.1.0",
+        "swebench_dataset_name": "princeton-nlp/SWE-bench_Lite",
+        "sandbox": {
+            "network": "none",
+            "memory": "4g",
+            "pids_limit": "512",
+            "tmpfs": "1g",
+            "fallback_image_env": "ALO_SANDBOX_IMAGE",
+            "swebench_image": "swebench/sweb.eval.x86_64.<id>:latest (__ rewritten to _1776_)",
+            "programbench_image": "programbench/<id>:task_cleanroom_v6 (__ rewritten to _1776_)",
+            "swe_mounts": ["/workspace", "/testbed"],
+        },
+        "scoring": {
+            "swe_model_name_or_path": "unit_id",
+            "swe_one_command_per_unit": True,
+            "programbench_layout": "sealed/programbench/<unit_id>/<instance_id>/submission.tar.gz",
+        },
     }
 
 

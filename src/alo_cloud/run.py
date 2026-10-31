@@ -18,6 +18,7 @@ import tarfile
 
 from .adapters import adapter_for
 from .budget import MICROCNY_PER_CNY, BudgetLedger, BudgetStopped
+from .collect import collect_sealed
 from .contracts import (
     G1_MAIN_MODEL, G1_STRONG_MODEL, MODEL_POOL, PER_MODEL_LIMIT_MICROCNY, STUDY_TOTAL_LIMIT_MICROCNY,
 )
@@ -25,8 +26,10 @@ from .errors import PilotStopped
 from .freeze import (
     G2_PLANNER_MODEL, G3_MANAGER_MODEL, G3_ROLES, select_units,
 )
+from .images import resolve_task_image
 from .prices import ceiling_for_messages, charge_microcny
 from .sandbox import DockerSandbox
+from .workspace_prep import prepare_swe_checkout
 from .services import PROTOCOL_UNIT_LIMITS, StudyServices
 from .state import export_learning_state, import_learning_state
 
@@ -285,7 +288,8 @@ def missing_payloads(units, data_dir):
     return missing
 
 
-def run_schedule(units, run_dir, *, live, data_dir=None, docker_image=None, sender=None):
+def run_schedule(units, run_dir, *, live, data_dir=None, docker_image=None, sender=None,
+                 git_runner=None, sandbox_memory=None, sandbox_pids=None):
     """Execute units in order. Completed JSONL rows are skipped on resume."""
     run_dir = Path(run_dir)
     mode = "live" if live else "dry-run"
@@ -308,23 +312,54 @@ def run_schedule(units, run_dir, *, live, data_dir=None, docker_image=None, send
     done = _done_ids(records_path)
     known_ids = ledger.request_ids()
     results = []
-    for unit in units:
-        if unit.unit_id in done:
-            results.append(done[unit.unit_id])
-            continue
-        if any(_touched(request_id, unit.unit_id) for request_id in known_ids):
-            raise BudgetStopped("partial_unit_not_retried")
-        record = _execute_unit(unit, run_dir, ledger, live=live, data_dir=data_dir,
-                               docker_image=docker_image, sender=sender)
-        _append_record(records_path, record)
-        results.append(record)
-        known_ids = ledger.request_ids()
-        if record["status"] == "stopped" and record.get("halt_schedule"):
-            raise PilotStopped(record.get("reason") or "schedule_stopped")
+    try:
+        for unit in units:
+            if unit.unit_id in done:
+                results.append(done[unit.unit_id])
+                continue
+            if any(_touched(request_id, unit.unit_id) for request_id in known_ids):
+                raise BudgetStopped("partial_unit_not_retried")
+            record = _execute_unit(unit, run_dir, ledger, live=live, data_dir=data_dir,
+                                   docker_image=docker_image, sender=sender, git_runner=git_runner,
+                                   sandbox_memory=sandbox_memory, sandbox_pids=sandbox_pids)
+            _append_record(records_path, record)
+            results.append(record)
+            known_ids = ledger.request_ids()
+            if record["status"] == "stopped" and record.get("halt_schedule"):
+                raise PilotStopped(record.get("reason") or "schedule_stopped")
+    finally:
+        collect_sealed(run_dir)
     return results
 
 
-def _execute_unit(unit, run_dir, ledger, *, live, data_dir, docker_image, sender):
+def _prepare_workspace(unit, services, *, live, repo, base_commit, git_runner):
+    """SWE units start from the task repo at base_commit. B1 keeps the B0 tree."""
+    if unit.track != "SWE-bench_Lite":
+        return None
+    if unit.phase == "B1-self":
+        if live and not (services.workspace.root / ".git").is_dir():
+            return "swe_checkout_missing"
+        return None
+    if not repo or not base_commit:
+        if live:
+            return "swe_checkout_metadata_missing"
+        return None
+    try:
+        prepare_swe_checkout(services.workspace.root, repo, base_commit, runner=git_runner)
+    except PilotStopped as error:
+        return str(error)
+    return None
+
+
+def _public_field(payload, key):
+    if not isinstance(payload, dict):
+        return None
+    value = payload.get(key)
+    return value if isinstance(value, str) and value else None
+
+
+def _execute_unit(unit, run_dir, ledger, *, live, data_dir, docker_image, sender,
+                  git_runner=None, sandbox_memory=None, sandbox_pids=None):
     record = {
         "schema": "alo-paid-unit-v1",
         "unit_id": unit.unit_id,
@@ -352,8 +387,21 @@ def _execute_unit(unit, run_dir, ledger, *, live, data_dir, docker_image, sender
         unit_id=unit.unit_id,
         limits={"requests": unit.request_cap},
     )
-    if docker_image:
-        services.sandbox = DockerSandbox(services.workspace.root, image=docker_image, permit_execution=live)
+    payload = load_public_payload(data_dir, unit.track, unit.task_id)
+    repo = _public_field(payload, "repo")
+    base_commit = _public_field(payload, "base_commit")
+    if repo:
+        record["repo"] = repo
+    if base_commit:
+        record["base_commit"] = base_commit
+    image = resolve_task_image(unit.track, unit.task_id, fallback=docker_image)
+    record["sandbox_image"] = image
+    if image:
+        extra_mounts = ("/testbed",) if unit.track == "SWE-bench_Lite" else ()
+        services.sandbox = DockerSandbox(
+            services.workspace.root, image_resolver=lambda image=image: image,
+            permit_execution=live, memory=sandbox_memory, pids_limit=sandbox_pids,
+            extra_mounts=extra_mounts)
     adapter = _build_adapter(unit)
     parent_note = _apply_parent(unit, adapter, services, run_dir)
     if parent_note == "b0_checkpoint_missing":
@@ -361,7 +409,11 @@ def _execute_unit(unit, run_dir, ledger, *, live, data_dir, docker_image, sender
         return record
     if parent_note:
         record["parent_note"] = parent_note
-    payload = load_public_payload(data_dir, unit.track, unit.task_id)
+    prepare_note = _prepare_workspace(unit, services, live=live, repo=repo, base_commit=base_commit,
+                                      git_runner=git_runner)
+    if prepare_note:
+        record.update(status="blocked", reason=prepare_note, charged_microcny={}, sealed_files=0)
+        return record
     stage = stage_for(unit, payload, dry_run=not live)
     status, reason, halt = "completed", "", False
     try:
