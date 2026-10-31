@@ -58,11 +58,16 @@ def _charged_match(row, diagnostic, causes):
 def _assess_charged(ledger, *, protocol_epoch, causes, rate_name, cny_name, count_key, micro_key, window_key):
     """Per-model rate and epoch CNY for one settled diagnostic cause."""
     directory = Path(ledger.path).parent / "diagnostics"
+    from .ledger import track_generations
+    generations = track_generations(ledger.path.parent)
     by_model = {}
     charged_microcny = 0
     charged_count = 0
     for row in ledger.request_rows():
         if not _in_epoch(row["id"], protocol_epoch):
+            continue
+        generation = generations.get(row.get("unit_id") or "", 0)
+        if generation and f"-pbv{generation}-" not in row["id"]:
             continue
         diagnostic = _read_diagnostic(directory, row["id"])
         bucket = by_model.setdefault(row["model"], {"rows": []})

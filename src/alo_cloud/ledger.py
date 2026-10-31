@@ -204,6 +204,31 @@ def infra_generations(run_dir):
         return _infra_generations_unlocked(run_dir)
 
 
+def _track_log(run_dir):
+    return Path(run_dir) / "progress" / "track_requeues.jsonl"
+
+
+def _track_generations_unlocked(run_dir):
+    path = _track_log(run_dir)
+    counts = {}
+    if not path.is_file():
+        return counts
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        unit_id = row.get("unit_id") if isinstance(row, dict) else None
+        if isinstance(unit_id, str) and unit_id:
+            counts[unit_id] = counts.get(unit_id, 0) + 1
+    return counts
+
+
+def track_generations(run_dir):
+    """How many times each unit was invalidated and rerun inside the same epoch."""
+    with exclusive_lock(run_dir, "track_requeues"):
+        return _track_generations_unlocked(run_dir)
+
+
 def _load_record_rows(run_dir):
     path = Path(run_dir) / "records.jsonl"
     rows = []
@@ -421,10 +446,165 @@ def archive_finished(run_dir, *, reason):
     return {"archived_units": archived_units, "checkpoints": moved, "archive": archive, **epoch}
 
 
+def _program_bench_unit_ids():
+    from .freeze import iter_units
+    found = []
+    for study in ("m1", "m2"):
+        for unit in iter_units(study):
+            if unit.track == "ProgramBench":
+                found.append(unit.unit_id)
+    return found
+
+
+def _invalidation_dirs(run_dir, epoch):
+    parent = Path(run_dir) / "archive" / "invalidated" / f"epoch-{epoch}"
+    if not parent.is_dir():
+        return []
+    return [path for path in sorted(parent.iterdir())
+            if path.is_dir() and (path.name == "programbench" or path.name.startswith("programbench-dup"))]
+
+
+def _archived_track_units(run_dir, epoch):
+    found = set()
+    for directory in _invalidation_dirs(run_dir, epoch):
+        records = directory / "records.jsonl"
+        if records.is_file():
+            for line in records.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                unit_id = row.get("unit_id") if isinstance(row, dict) else None
+                if isinstance(unit_id, str) and unit_id:
+                    found.add(unit_id)
+        for child in directory.iterdir():
+            if child.is_dir():
+                found.add(child.name)
+    return found
+
+
+def _current_epoch_record(row, epoch):
+    recorded = row.get("protocol_epoch")
+    return not isinstance(recorded, int) or recorded == epoch
+
+
+def requeue_track(run_dir, benchmark, *, reason):
+    """Archive one benchmark's current-epoch units and let them run again.
+
+    This is the pre-registered harness-prompt deviation. Spend already in the
+    ledger stays there. Restart counts, unknown-outcome lines, and the timeout
+    valve contribution of these units are cleared. The next attempt uses
+    ``-pbvN-`` so it does not collide with the archived attempt. SWE-bench
+    records are not selected when ``benchmark`` is ProgramBench.
+    """
+    if benchmark != "ProgramBench":
+        raise ValueError("requeue_track_benchmark_rejected")
+    if not isinstance(reason, str) or not reason.strip():
+        raise ValueError("resolve_reason_required")
+    run_dir = Path(run_dir)
+    epoch = current_epoch(run_dir)
+    catalog = _program_bench_unit_ids()
+    catalog_set = set(catalog)
+    selected = set()
+    for row in _load_record_rows(run_dir):
+        unit_id = row.get("unit_id")
+        if unit_id in catalog_set and _current_epoch_record(row, epoch):
+            selected.add(unit_id)
+    for unit_id in catalog:
+        if ((run_dir / "checkpoints" / unit_id).exists()
+                or (run_dir / "units" / unit_id).exists()
+                or (run_dir / "sealed" / "programbench" / unit_id).exists()):
+            selected.add(unit_id)
+    dest = None
+    if selected:
+        base = run_dir / "archive" / "invalidated" / f"epoch-{epoch}" / "programbench"
+        dest = base if not base.exists() else _unused_path(base)
+        dest.mkdir(parents=True, exist_ok=False)
+        for unit_id in sorted(selected):
+            _check_unit_id(unit_id)
+            unit_dest = dest / unit_id
+            unit_dest.mkdir(parents=True, exist_ok=False)
+            _safe_move(run_dir / "checkpoints" / unit_id, unit_dest / "checkpoint")
+            _safe_move(run_dir / "units" / unit_id, unit_dest / "unit")
+            _safe_move(run_dir / "sealed" / "programbench" / unit_id, unit_dest / "programbench")
+        with exclusive_lock(run_dir, "records"):
+            path = run_dir / "records.jsonl"
+            kept, removed = [], []
+            if path.is_file():
+                for line in path.read_text(encoding="utf-8").splitlines():
+                    if not line.strip():
+                        continue
+                    row = json.loads(line)
+                    unit_id = row.get("unit_id") if isinstance(row, dict) else None
+                    if (isinstance(row, dict) and unit_id in selected
+                            and _current_epoch_record(row, epoch)):
+                        removed.append(line)
+                    else:
+                        kept.append(line)
+            if removed:
+                _append_text(dest / "records.jsonl", "".join(line + "\n" for line in removed))
+                path.write_text(("\n".join(kept) + "\n") if kept else "", encoding="utf-8")
+    prior = _track_generations_unlocked(run_dir)
+    repair = [unit_id for unit_id in sorted(_archived_track_units(run_dir, epoch))
+              if unit_id in catalog_set and prior.get(unit_id, 0) == 0 and unit_id not in selected]
+    audited = sorted(selected) + repair
+    if not audited:
+        return {"requeued": [], "count": 0, "benchmark": benchmark, "protocol_epoch": epoch,
+                "restart_counts_reset": True}
+    entries = []
+    with exclusive_lock(run_dir, "track_requeues"):
+        counts = _track_generations_unlocked(run_dir)
+        for unit_id in audited:
+            generation = counts.get(unit_id, 0) + 1
+            counts[unit_id] = generation
+            entry = {
+                "unit_id": unit_id,
+                "benchmark": benchmark,
+                "reason": reason.strip(),
+                "protocol_epoch": epoch,
+                "archive": str(dest) if dest is not None else "",
+                "request_id_marker": f"-pbv{generation}-",
+                "restart_counts_reset": True,
+                "deviation": "harness_prompt_bug",
+            }
+            _append_text(_track_log(run_dir), json.dumps(entry, ensure_ascii=False, sort_keys=True) + "\n")
+            entries.append(entry)
+    audited_set = set(audited)
+    if (run_dir / "unit_restarts.json").is_file():
+        with exclusive_lock(run_dir, "unit_restarts"):
+            counts = _read_counts(run_dir)
+            for unit_id in audited_set:
+                counts.pop(unit_id, None)
+            _write_counts(run_dir, counts)
+    unknown = run_dir / "unknown_outcomes.jsonl"
+    if unknown.is_file():
+        with exclusive_lock(run_dir, "unknown"):
+            kept = []
+            for line in unknown.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                if isinstance(row, dict) and row.get("unit_id") in audited_set:
+                    continue
+                kept.append(line)
+            unknown.write_text(("\n".join(kept) + "\n") if kept else "", encoding="utf-8")
+    ledger_path = run_dir / "budget.sqlite3"
+    if ledger_path.is_file():
+        from .progress import publish_timeout_counts, publish_unparseable_counts
+        ledger = BudgetLedger(ledger_path)
+        for unit_id in audited:
+            ledger.release_unsettled_tools(unit_id)
+        publish_timeout_counts(run_dir, ledger, protocol_epoch=epoch)
+        publish_unparseable_counts(run_dir, ledger, protocol_epoch=epoch)
+    return {"requeued": [entry["unit_id"] for entry in entries], "count": len(entries),
+            "benchmark": benchmark, "protocol_epoch": epoch, "restart_counts_reset": True,
+            "archive": str(dest) if dest is not None else ""}
+
+
 def _parser():
     parser = argparse.ArgumentParser(description="Resolve an unknown hold or restart one unit.")
     parser.add_argument("command", choices=(
-        "resolve", "archive-finished", "new-epoch", "drain", "requeue-interrupted", "clear-halt"))
+        "resolve", "archive-finished", "new-epoch", "drain", "requeue-interrupted",
+        "requeue-track", "clear-halt"))
     parser.add_argument("--run-dir", required=True)
     parser.add_argument("--request-id", default=None)
     parser.add_argument("--charge-microcny", type=int, default=None)
@@ -433,6 +613,7 @@ def _parser():
     parser.add_argument("--clear", action="store_true")
     parser.add_argument("--restart-unit", default=None)
     parser.add_argument("--unit", action="append", default=[])
+    parser.add_argument("--benchmark", default=None)
     return parser
 
 
@@ -454,6 +635,18 @@ def main(argv=None):
     if args.command == "requeue-interrupted":
         try:
             result = requeue_interrupted(args.run_dir, args.unit)
+        except ValueError as error:
+            print(str(error))
+            return 2
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        return 0
+    if args.command == "requeue-track":
+        if args.benchmark != "ProgramBench":
+            parser.error("--benchmark ProgramBench is required")
+        if not args.reason:
+            parser.error("--reason is required")
+        try:
+            result = requeue_track(args.run_dir, args.benchmark, reason=args.reason)
         except ValueError as error:
             print(str(error))
             return 2

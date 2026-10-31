@@ -2,9 +2,9 @@
 
 日期：2026-10-31。本文件列出付费日程的任务身份、种子、组别、模型和参数。规范载荷在 `alo_cloud.freeze.freeze_payload`。CI 重新计算其 SHA-256，必须与下面这一行一致。
 
-freeze_sha256: 9d9ea4e2bb5756a730e01c70d2b445e45cebcd8279d959a344fa4ca690387852
+freeze_sha256: bc3ada9783a3d18af9b0c90f4f939a3190766f7a96331227f573d31fe32616ce
 
-上一版哈希是 `9ee9ccf36dc80f535f6f42a7821bc694d5aa553147c32d3445d2bc7a10eee42d`。题单、种子、组别、模型、标价、超时和计费都没有改。这次改哈希是因为：`reasoning_tokens` 超出 `completion_tokens` 不超过 64 或不大于 completion 的 1% 时钳到 completion，按报告用量结算；能结算的工具异常交回代理，沙箱状态不明只重启该单元一次；只有全局 CNY 上限是硬停止；基础设施截断用 `requeue-interrupted` 重新入队且不增加 `unit_restarts`。
+上一版哈希是 `9d9ea4e2bb5756a730e01c70d2b445e45cebcd8279d959a344fa4ca690387852`。题单、种子、组别、模型、标价、超时和计费都没有改。这次改哈希是因为：ProgramBench 题面补上官方 `compile.sh` / `./executable` 契约；评分容器核数默认 `min(10, nproc)`；题面无效时用 `requeue-track` 在同一代重跑，请求号带 `-pbvN-`。
 
 检查：`python -m alo_cloud.freeze --check`
 

@@ -78,7 +78,8 @@ class StudyServices:
     def __init__(self, state_dir, ledger, *, unit, per_request_microcny_ceiling, charge_microcny,
                  sender=None, permit_network=False, sandbox=None, clock=None, public_quality=None,
                  unit_id=None, request_ceiling=None, require_credentials=True, limits=None,
-                 restart_count=0, protocol_epoch=0, shard_id="", infra_generation=0):
+                 restart_count=0, protocol_epoch=0, shard_id="", infra_generation=0,
+                 track_generation=0):
         if unit not in PROTOCOL_UNIT_LIMITS:
             raise PilotStopped("unknown_protocol_unit")
         if not isinstance(ledger, BudgetLedger):
@@ -95,6 +96,8 @@ class StudyServices:
             raise PilotStopped("invalid_restart_count")
         if type(infra_generation) is not int or not 0 <= infra_generation <= 99:
             raise PilotStopped("invalid_infra_generation")
+        if type(track_generation) is not int or not 0 <= track_generation <= 99:
+            raise PilotStopped("invalid_track_generation")
         if type(protocol_epoch) is not int or protocol_epoch < 0:
             raise PilotStopped("invalid_protocol_epoch")
         if not isinstance(shard_id, str) or (shard_id and "/" not in shard_id):
@@ -103,6 +106,7 @@ class StudyServices:
         self.shard_id = shard_id
         self.restart_count = restart_count
         self.infra_generation = infra_generation
+        self.track_generation = track_generation
         self.protocol_epoch = protocol_epoch
         self.unit = unit
         self.unit_id = unit_id
@@ -161,7 +165,8 @@ class StudyServices:
         epoch = f"e{self.protocol_epoch}-" if self.protocol_epoch else ""
         restart = f"-r{self.restart_count}" if self.restart_count else ""
         infra = f"-infra{self.infra_generation}" if self.infra_generation else ""
-        return f"{kind}-{epoch}{label}{restart}{infra}-{self._seq}"
+        track = f"-pbv{self.track_generation}" if self.track_generation else ""
+        return f"{kind}-{epoch}{label}{restart}{infra}{track}-{self._seq}"
 
     def _resource_kwargs(self):
         fields = {"shard_id": self.shard_id} if self.shard_id else {}
@@ -169,7 +174,7 @@ class StudyServices:
             return fields
         fields.update(unit_id=self.unit_id, unit_request_cap=self.limits["requests"],
                       protocol_epoch=self.protocol_epoch, restart_count=self.restart_count,
-                      infra_generation=self.infra_generation)
+                      infra_generation=self.infra_generation, track_generation=self.track_generation)
         return fields
 
     def _wall_remaining(self):
@@ -215,7 +220,7 @@ class StudyServices:
         if self.unit_id:
             usage = self.ledger.unit_usage(
                 self.unit_id, protocol_epoch=self.protocol_epoch, restart_count=self.restart_count,
-                infra_generation=self.infra_generation)
+                infra_generation=self.infra_generation, track_generation=self.track_generation)
             tokens = state["max_tokens"] - usage["tokens"]
             accounted_ms = state["max_seconds_ms"] - usage["seconds_ms"]
         else:
@@ -501,7 +506,8 @@ class StudyServices:
             self.ledger.reserve_tool(
                 tool_id, seconds_ms=second_hold, unit_id=self.unit_id or "",
                 protocol_epoch=self.protocol_epoch, restart_count=self.restart_count,
-                shard_id=self.shard_id, infra_generation=self.infra_generation)
+                shard_id=self.shard_id, infra_generation=self.infra_generation,
+                track_generation=self.track_generation)
         except BudgetStopped as error:
             self._stop(error)
         started = self._clock()
