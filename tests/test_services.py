@@ -260,7 +260,7 @@ def test_unit_caps_stop_dispatch_without_a_further_send(tmp_path, monkeypatch):
     services, seen, _ledger = build(tmp_path, monkeypatch, replies, unit="m1_b1")
     for index in range(16):
         services.complete_for_model("mimo-v2.6-flash", messages(str(index)))
-    with pytest.raises(PilotStopped, match="cumulative_request_or_model_limit"):
+    with pytest.raises(PilotStopped, match="unit_resource_exhausted"):
         services.complete_for_model("mimo-v2.6-flash", messages("overflow"))
     assert len(seen) == 16
     with pytest.raises(PilotStopped, match="output_token_parameter"):
@@ -286,14 +286,14 @@ def test_unit_caps_stop_dispatch_without_a_further_send(tmp_path, monkeypatch):
     poor_opening["glm-5.3-flash"] = PER_MODEL_LIMIT_MICROCNY - 500
     poor, poor_seen, _ledger = build(tmp_path / "poor", monkeypatch, [chat("x", "glm-5.3-flash")],
                                      opening=poor_opening, ceiling=1000)
-    with pytest.raises(PilotStopped, match="cumulative_request_or_model_limit"):
+    with pytest.raises(PilotStopped, match="model_cny_cap_exhausted"):
         poor.complete_for_model("glm-5.3-flash", messages())
     assert poor_seen == []
 
     tools, _seen, _ledger = build(tmp_path / "tools", monkeypatch, [])
     for _ in range(120):
         assert tools.list_files() == []
-    with pytest.raises(PilotStopped, match="cumulative_request_or_model_limit"):
+    with pytest.raises(PilotStopped, match="unit_resource_exhausted"):
         tools.list_files()
     assert tools.tools == 120
 

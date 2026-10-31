@@ -249,6 +249,121 @@ def test_trickling_keepalive_hits_the_wall_clock():
     assert clock["t"] <= 1.4
 
 
+def test_hold_settles_inside_the_wall_clock_margin(tmp_path, monkeypatch):
+    from alo_cloud.providers import _read_sse
+    state = {"t": 0.0}
+
+    def now():
+        return state["t"]
+
+    def fake_send(url, body, headers, *, timeout_s, model, started=None, clock=None):
+        del url, body, headers
+        assert started == 0.0
+        assert timeout_s == 300
+
+        class Tick:
+            def readline(self):
+                state["t"] += 30
+                return b": keepalive\n"
+
+        return _read_sse(Tick(), model, deadline_s=timeout_s, started=started, clock=clock), 200
+
+    monkeypatch.setattr("alo_cloud.providers.urllib_send", fake_send)
+    services, _seen, ledger = build(
+        tmp_path, monkeypatch, [], permit_network=True, clock=now)
+    with pytest.raises(PilotStopped, match="provider_outcome_charged"):
+        services.complete_for_model("mimo-v2.6-flash", messages(), max_tokens=16)
+    assert state["t"] <= 300 + 30
+    assert ledger.snapshot()["unresolved_request_ids"] == []
+    record = _diag(tmp_path, "req-m1_b0-1")
+    assert record["cause"] == "timeout"
+    assert record["settled"] is True
+    assert record["latency_ms"] <= (300 + 30) * 1000
+
+
+def test_blocking_close_cannot_keep_the_hold_open(tmp_path, monkeypatch):
+    import time
+    import urllib.request
+
+    from alo_cloud.freeze import PROVIDER_TIMEOUT_S
+
+    deadline = 0.3
+    monkeypatch.setitem(PROVIDER_TIMEOUT_S, "mimo-v2.6-flash", deadline)
+    closed = {"n": 0}
+
+    class Sock:
+        def settimeout(self, value):
+            return None
+
+        def shutdown(self, how):
+            return None
+
+        def close(self):
+            return None
+
+    class Response:
+        status = 200
+        _sock = Sock()
+
+        def readline(self):
+            time.sleep(5)
+            return b": keepalive\n"
+
+        def close(self):
+            closed["n"] += 1
+            time.sleep(5)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.close()
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *args, **kwargs: Response())
+    services, _seen, ledger = build(tmp_path, monkeypatch, [], permit_network=True)
+    started = time.monotonic()
+    with pytest.raises(PilotStopped, match="provider_outcome_charged"):
+        services.complete_for_model("mimo-v2.6-flash", messages(), max_tokens=16)
+    elapsed = time.monotonic() - started
+    assert elapsed <= deadline + 1.0
+    assert closed["n"] == 0
+    assert ledger.snapshot()["unresolved_request_ids"] == []
+    record = _diag(tmp_path, "req-m1_b0-1")
+    assert record["cause"] == "timeout"
+    assert record["settled"] is True
+    assert record["latency_ms"] <= 1000
+
+
+def test_unit_request_cap_does_not_halt_the_schedule(tmp_path, monkeypatch):
+    from alo_cloud.adapters import HeterogeneousALO
+    monkeypatch.setattr(
+        "urllib.request.urlopen", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("network")))
+    calls = {"n": 0}
+
+    def stop_unit(self, stage, services):
+        del self, stage, services
+        calls["n"] += 1
+        raise PilotStopped("unit_resource_exhausted")
+
+    monkeypatch.setattr(HeterogeneousALO, "run_stage", stop_unit)
+    units = select_units("m1", arms=("g2",), tasks=("scikit-learn__scikit-learn-13584",))
+    rows = run_schedule(units[:2], tmp_path / "run", live=False, sender=lambda *args: (_ for _ in ()).throw(AssertionError("send")))
+    assert calls["n"] == 2
+    assert [row["reason"] for row in rows] == ["unit_resource_exhausted", "unit_resource_exhausted"]
+    assert all(row["halt_schedule"] is False for row in rows)
+
+    def stop_study(self, stage, services):
+        del self, stage, services
+        raise PilotStopped("budget_infeasible_all_models")
+
+    monkeypatch.setattr(HeterogeneousALO, "run_stage", stop_study)
+    with pytest.raises(PilotStopped, match="budget_infeasible_all_models"):
+        run_schedule(units[:2], tmp_path / "global", live=False, sender=lambda *args: (_ for _ in ()).throw(AssertionError("send")))
+    halted = [json.loads(line) for line in (tmp_path / "global" / "records.jsonl").read_text().splitlines() if line.strip()]
+    assert len(halted) == 1
+    assert halted[0]["halt_schedule"] is True
+
+
 def test_restart_after_cap_minus_one_gets_a_fresh_request_cap(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "urllib.request.urlopen", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("network")))

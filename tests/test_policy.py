@@ -40,8 +40,12 @@ def test_select_rejects_unknown_budget_and_infeasible_pool():
     with pytest.raises(PilotStopped, match="unknown_remaining_budget"):
         policy.select(org, {}, ["one"], CELL, (), "user", random.Random(0))
     blocked = ConstrainedThompsonPolicy({}, lambda model: {key: 0 for key in RESOURCE_FIELDS})
-    with pytest.raises(PilotStopped, match="budget_infeasible_all_models"):
+    with pytest.raises(PilotStopped, match="unit_resource_exhausted"):
         blocked.select(org, {}, ["one", "two"], CELL, (), "user", random.Random(0))
+    money = ConstrainedThompsonPolicy({}, lambda model: {
+        "requests": 100, "tokens": 10_000_000, "seconds": 10_000, "cny": 0})
+    with pytest.raises(PilotStopped, match="budget_infeasible_all_models"):
+        money.select(org, {}, ["one", "two"], CELL, (), "user", random.Random(0))
     org.conn.close()
 
 

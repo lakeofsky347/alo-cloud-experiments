@@ -343,7 +343,7 @@ class BudgetLedger:
             if model not in state["remaining_microcny"]:
                 raise BudgetStopped("model_not_in_frozen_pool")
             if amount_microcny > state["remaining_microcny"][model]:
-                raise BudgetStopped("cumulative_request_or_model_limit")
+                raise BudgetStopped("model_cny_cap_exhausted")
             if ("total_limit_microcny" in state
                     and state["total_committed_microcny"] + amount_microcny > state["total_limit_microcny"]):
                 raise BudgetStopped("cumulative_total_cny_limit")
@@ -351,17 +351,17 @@ class BudgetLedger:
                 usage = self._unit_usage(conn, unit_id, protocol_epoch, restart_count)
                 request_cap = unit_request_cap if unit_request_cap is not None else state["max_requests"]
                 if usage["requests"] >= request_cap:
-                    raise BudgetStopped("cumulative_request_or_model_limit")
+                    raise BudgetStopped("unit_resource_exhausted")
                 used_tokens, used_seconds = usage["tokens"], usage["seconds_ms"]
             else:
                 if state["requests"] >= state["max_requests"]:
-                    raise BudgetStopped("cumulative_request_or_model_limit")
+                    raise BudgetStopped("unit_resource_exhausted")
                 used_tokens, used_seconds = state["used_tokens"], state["used_seconds_ms"]
             if tokens or seconds_ms or "max_tokens" in state or "max_seconds_ms" in state:
                 if "max_tokens" not in state or "max_seconds_ms" not in state:
                     raise BudgetStopped("resource_dimensions_unconfigured")
                 if used_tokens + tokens > state["max_tokens"] or used_seconds + seconds_ms > state["max_seconds_ms"]:
-                    raise BudgetStopped("cumulative_request_or_model_limit")
+                    raise BudgetStopped("unit_resource_exhausted")
             conn.execute(
                 """INSERT INTO requests
                    (id, model, reserved, held, status, payload_sha256,
@@ -499,7 +499,7 @@ class BudgetLedger:
             else:
                 used_tools, used_seconds = state["used_tools"], state["used_seconds_ms"]
             if used_tools >= state["max_tools"] or used_seconds + seconds_ms > state["max_seconds_ms"]:
-                raise BudgetStopped("cumulative_request_or_model_limit")
+                raise BudgetStopped("unit_resource_exhausted")
             conn.execute(
                 """INSERT INTO tool_calls
                    (id, status, reserved_seconds_ms, held_seconds_ms, unit_id) VALUES (?,?,?,?,?)""",

@@ -17,6 +17,7 @@ from .errors import PilotStopped
 
 POLICY_VERSION = "constrained-ts-quality-v1"
 RESOURCE_FIELDS = ("requests", "tokens", "seconds", "cny")
+UNIT_LOCAL_FIELDS = frozenset({"requests", "tokens", "seconds"})
 DEFAULT_PRIOR = {"requests": 2.0, "tokens": 8192.0, "seconds": 90.0, "cny": 0.1}
 
 
@@ -94,6 +95,12 @@ class ConstrainedThompsonPolicy:
             if not violated:
                 feasible.append(model)
         if not feasible:
+            # Requests, tokens and seconds are the unit's shared caps. CNY is the
+            # model and study total. A unit that has spent its own allowance must
+            # not stop the other units.
+            if all(set(scores[model]["violated_resources"]) & UNIT_LOCAL_FIELDS
+                   for model in worker_ids):
+                raise PilotStopped("unit_resource_exhausted")
             raise PilotStopped("budget_infeasible_all_models")
         # Stable pool order is the preregistered exact-tie rule.
         selected = max(feasible, key=lambda model: scores[model]["quality_draw"])

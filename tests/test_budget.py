@@ -41,7 +41,7 @@ def test_known_usage_releases_only_its_excess_and_never_replays(tmp_path):
     assert value.snapshot()["remaining_microcny"]["one"] == 53
     with pytest.raises(BudgetStopped, match="identity_consumed"):
         value.reserve("request-1", "one", 20, payload_sha256="a" * 64)
-    with pytest.raises(BudgetStopped, match="model_limit"):
+    with pytest.raises(BudgetStopped, match="model_cny_cap_exhausted"):
         value.reserve("request-2", "one", 54, payload_sha256="b" * 64)
 
 

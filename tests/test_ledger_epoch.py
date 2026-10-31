@@ -87,5 +87,28 @@ def test_archive_finished_resets_restart_counts_for_archived_units(tmp_path):
     ]) == 0
     assert current_epoch(run) == 1
     assert json.loads((run / "unit_restarts.json").read_text(encoding="utf-8")) == {}
-    assert (run / "archive" / "protocol-rerun" / UNIT / "checkpoint" / "model.patch").is_file()
+    assert (run / "archive" / "protocol-rerun" / "epoch-0" / UNIT / "checkpoint" / "model.patch").is_file()
+    assert UNIT in (run / "archive" / "protocol-rerun" / "records.jsonl").read_text(encoding="utf-8")
     assert (run / "records.jsonl").read_text(encoding="utf-8") == ""
+
+
+def test_archive_finished_appends_per_epoch(tmp_path):
+    run = tmp_path / "run"
+    run.mkdir()
+    kept = run / "archive" / "protocol-rerun"
+    (kept / "epoch-0").mkdir(parents=True)
+    (kept / "epoch-0" / "records.jsonl").write_text('{"unit_id":"kept"}\n', encoding="utf-8")
+    (kept / "records.jsonl").write_text('{"unit_id":"kept"}\n', encoding="utf-8")
+    (run / "records.jsonl").write_text('{"unit_id":"added"}\n', encoding="utf-8")
+    assert main(["archive-finished", "--run-dir", str(run), "--reason", "append"]) == 0
+    epoch = (kept / "epoch-0" / "records.jsonl").read_text(encoding="utf-8")
+    assert "kept" in epoch and "added" in epoch
+    combined = (kept / "records.jsonl").read_text(encoding="utf-8")
+    assert "kept" in combined and "added" in combined
+    assert combined.index("kept") < combined.index("added")
+    (run / "records.jsonl").write_text('{"unit_id":"later"}\n', encoding="utf-8")
+    assert main(["archive-finished", "--run-dir", str(run), "--reason", "next"]) == 0
+    assert "later" not in (kept / "epoch-0" / "records.jsonl").read_text(encoding="utf-8")
+    assert "later" in (kept / "epoch-1" / "records.jsonl").read_text(encoding="utf-8")
+    combined = (kept / "records.jsonl").read_text(encoding="utf-8")
+    assert "kept" in combined and "added" in combined and "later" in combined
