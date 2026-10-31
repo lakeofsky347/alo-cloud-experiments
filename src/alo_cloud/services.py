@@ -11,20 +11,21 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+import traceback
 from pathlib import Path
 
 from .budget import MICROCNY_PER_CNY, BudgetLedger, BudgetStopped
 from .contracts import MODEL_POOL, PER_MODEL_LIMIT_MICROCNY, STUDY_TOTAL_LIMIT_MICROCNY
 from .diagnostics import write_diagnostic
 from .errors import PilotStopped, ProtocolError
-from .shardlock import halt_reason
+from .shardlock import halt_record
 from .progress import append_provider_outcome, publish_timeout_counts
 from .freeze import MIMO_MAX_COMPLETION_TOKENS, PROVIDER_TIMEOUT_S
 from .providers import (
     DEADLINE_EPSILON_S, MIMO_MODELS, OpenAICompatibleTransport, credential_configured,
     messages_contain_credential, request_body,
 )
-from .sandbox import DockerSandbox, Workspace, python_syntax_evidence
+from .sandbox import DockerSandbox, SandboxUnknown, Workspace, python_syntax_evidence
 
 
 # protocol.md 资源、未知与停止. Enforcement table, not a collection freeze.
@@ -77,7 +78,7 @@ class StudyServices:
     def __init__(self, state_dir, ledger, *, unit, per_request_microcny_ceiling, charge_microcny,
                  sender=None, permit_network=False, sandbox=None, clock=None, public_quality=None,
                  unit_id=None, request_ceiling=None, require_credentials=True, limits=None,
-                 restart_count=0, protocol_epoch=0, shard_id=""):
+                 restart_count=0, protocol_epoch=0, shard_id="", infra_generation=0):
         if unit not in PROTOCOL_UNIT_LIMITS:
             raise PilotStopped("unknown_protocol_unit")
         if not isinstance(ledger, BudgetLedger):
@@ -92,6 +93,8 @@ class StudyServices:
             raise PilotStopped("unit_id_required")
         if type(restart_count) is not int or restart_count not in {0, 1}:
             raise PilotStopped("invalid_restart_count")
+        if type(infra_generation) is not int or not 0 <= infra_generation <= 99:
+            raise PilotStopped("invalid_infra_generation")
         if type(protocol_epoch) is not int or protocol_epoch < 0:
             raise PilotStopped("invalid_protocol_epoch")
         if not isinstance(shard_id, str) or (shard_id and "/" not in shard_id):
@@ -99,6 +102,7 @@ class StudyServices:
         self.limits = _merge_limits(unit, limits)
         self.shard_id = shard_id
         self.restart_count = restart_count
+        self.infra_generation = infra_generation
         self.protocol_epoch = protocol_epoch
         self.unit = unit
         self.unit_id = unit_id
@@ -156,14 +160,16 @@ class StudyServices:
         label = self.unit_id or self.unit
         epoch = f"e{self.protocol_epoch}-" if self.protocol_epoch else ""
         restart = f"-r{self.restart_count}" if self.restart_count else ""
-        return f"{kind}-{epoch}{label}{restart}-{self._seq}"
+        infra = f"-infra{self.infra_generation}" if self.infra_generation else ""
+        return f"{kind}-{epoch}{label}{restart}{infra}-{self._seq}"
 
     def _resource_kwargs(self):
         fields = {"shard_id": self.shard_id} if self.shard_id else {}
         if not self.unit_id:
             return fields
         fields.update(unit_id=self.unit_id, unit_request_cap=self.limits["requests"],
-                      protocol_epoch=self.protocol_epoch, restart_count=self.restart_count)
+                      protocol_epoch=self.protocol_epoch, restart_count=self.restart_count,
+                      infra_generation=self.infra_generation)
         return fields
 
     def _wall_remaining(self):
@@ -174,9 +180,9 @@ class StudyServices:
             raise PilotStopped("unit_seconds_exhausted")
 
     def _ensure_not_blocked(self):
-        reason = halt_reason(self.ledger.path.parent)
-        if reason:
-            raise PilotStopped(reason)
+        record = halt_record(self.ledger.path.parent)
+        if record and record["hard"]:
+            raise PilotStopped(record["reason"])
         if self.ledger.blocks_dispatch(self.shard_id):
             raise PilotStopped("unresolved_request_blocks_subsequent_dispatch")
 
@@ -208,7 +214,8 @@ class StudyServices:
             raise PilotStopped("resource_dimensions_unconfigured")
         if self.unit_id:
             usage = self.ledger.unit_usage(
-                self.unit_id, protocol_epoch=self.protocol_epoch, restart_count=self.restart_count)
+                self.unit_id, protocol_epoch=self.protocol_epoch, restart_count=self.restart_count,
+                infra_generation=self.infra_generation)
             tokens = state["max_tokens"] - usage["tokens"]
             accounted_ms = state["max_seconds_ms"] - usage["seconds_ms"]
         else:
@@ -459,6 +466,31 @@ class StudyServices:
         if timeout_s > self._wall_remaining():
             raise PilotStopped("command_timeout_exceeds_remaining_unit_seconds")
 
+    def _close_tool(self, tool_id, started, error, *, sandbox_unknown):
+        """Settle the time hold and store a redacted traceback. Return whether it settled.
+
+        Tool calls cost no CNY. An elapsed time past the reservation is capped
+        so the row can close. Only a ledger that cannot settle the row stays unknown.
+        """
+        elapsed_ms = max(0, int(round((self._clock() - started) * 1000)))
+        settled = False
+        try:
+            self.ledger.settle_tool(tool_id, seconds_ms=elapsed_ms, cap_to_reservation=True)
+            settled = True
+        except BudgetStopped:
+            try:
+                self.ledger.mark_tool_unknown(tool_id)
+            except BudgetStopped:
+                pass
+        self._diagnose(
+            tool_id, "tool",
+            {"cause": "tool_exception", "vendor_code": type(error).__name__,
+             "vendor_message": traceback.format_exc(),
+             "response": {"exception_type": type(error).__name__, "sandbox_unknown": sandbox_unknown},
+             "http_status": None, "finish_reason": None},
+            latency_ms=elapsed_ms, settled=settled, cause="tool_exception")
+        return settled
+
     def _use_tool(self, action):
         self._ensure_not_blocked()
         self._ensure_wall_clock()
@@ -469,26 +501,26 @@ class StudyServices:
             self.ledger.reserve_tool(
                 tool_id, seconds_ms=second_hold, unit_id=self.unit_id or "",
                 protocol_epoch=self.protocol_epoch, restart_count=self.restart_count,
-                shard_id=self.shard_id)
+                shard_id=self.shard_id, infra_generation=self.infra_generation)
         except BudgetStopped as error:
             self._stop(error)
         started = self._clock()
         try:
             result = action()
-        except ProtocolError:
-            elapsed_ms = max(0, int(round((self._clock() - started) * 1000)))
-            try:
-                self.ledger.settle_tool(tool_id, seconds_ms=elapsed_ms)
-            except BudgetStopped:
+        except ProtocolError as error:
+            if not self._close_tool(tool_id, started, error, sandbox_unknown=False):
                 raise PilotStopped("tool_outcome_unknown") from None
             self.tools += 1
             raise
-        except Exception:
-            try:
-                self.ledger.mark_tool_unknown(tool_id)
-            except BudgetStopped as error:
-                self._stop(error)
-            raise PilotStopped("tool_outcome_unknown") from None
+        except SandboxUnknown as error:
+            if not self._close_tool(tool_id, started, error, sandbox_unknown=True):
+                raise PilotStopped("tool_outcome_unknown") from None
+            raise PilotStopped("tool_sandbox_unknown") from None
+        except Exception as error:
+            if not self._close_tool(tool_id, started, error, sandbox_unknown=False):
+                raise PilotStopped("tool_outcome_unknown") from None
+            self.tools += 1
+            raise ProtocolError(f"tool_failed:{type(error).__name__}") from None
         elapsed_ms = max(0, int(round((self._clock() - started) * 1000)))
         try:
             self.ledger.settle_tool(tool_id, seconds_ms=elapsed_ms)

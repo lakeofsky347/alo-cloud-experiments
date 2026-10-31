@@ -58,8 +58,15 @@ def _restart(value):
     return value
 
 
-def _attempt_query(table, unit_id, protocol_epoch, restart_count, kind):
-    """Count one attempt. The marker ``-r1-`` separates the restarted attempt."""
+def _attempt_query(table, unit_id, protocol_epoch, restart_count, kind, infra_generation=0):
+    """Count one attempt. ``-r1-`` is the protocol restart; ``-infraN-`` is a requeue.
+
+    A requeue does not consume the one protocol restart. Its ids are a separate
+    generation so the archived attempt's tokens and tool seconds do not fill
+    the new attempt's cap. Generation 0 is every id without an ``-infra`` marker.
+    """
+    if type(infra_generation) is not int or infra_generation < 0:
+        raise ValueError("invalid_infra_generation")
     if table == "requests":
         select = """SELECT COUNT(*), COALESCE(SUM(held_tokens),0), COALESCE(SUM(held_seconds_ms),0)
                     FROM requests WHERE unit_id=?"""
@@ -76,6 +83,11 @@ def _attempt_query(table, unit_id, protocol_epoch, restart_count, kind):
         params.append(f"%-r{restart_count}-%")
     else:
         clauses.append("id NOT LIKE '%-r1-%'")
+    if infra_generation:
+        clauses.append("id LIKE ?")
+        params.append(f"%-infra{infra_generation}-%")
+    else:
+        clauses.append("id NOT LIKE '%-infra%'")
     if clauses:
         select += " AND " + " AND ".join(clauses)
     return select, tuple(params)
@@ -288,33 +300,34 @@ class BudgetLedger:
         return [{"id": row[0], "model": row[1], "held_microcny": int(row[2]), "status": row[3]}
                 for row in rows]
 
-    def unit_usage(self, unit_id, protocol_epoch=0, restart_count=0):
+    def unit_usage(self, unit_id, protocol_epoch=0, restart_count=0, infra_generation=0):
         """Resource counters for one attempt. CNY is not included; it stays global.
 
         A positive ``protocol_epoch`` ignores older epochs. ``restart_count``
         selects the attempt inside that epoch: 0 is the first attempt, 1 is the
-        single restart. The other attempt's requests, tokens, and tools do not
+        single restart. ``infra_generation`` selects a requeue that did not use
+        that restart. The other attempt's requests, tokens, and tools do not
         consume this attempt's cap.
         """
         _id(unit_id)
         _epoch(protocol_epoch)
         _restart(restart_count)
         with self._transaction() as conn:
-            return self._unit_usage(conn, unit_id, protocol_epoch, restart_count)
+            return self._unit_usage(conn, unit_id, protocol_epoch, restart_count, infra_generation)
 
     @staticmethod
-    def _unit_usage(conn, unit_id, protocol_epoch=0, restart_count=0):
+    def _unit_usage(conn, unit_id, protocol_epoch=0, restart_count=0, infra_generation=0):
         request_sql, request_params = _attempt_query(
-            "requests", unit_id, protocol_epoch, restart_count, "req")
+            "requests", unit_id, protocol_epoch, restart_count, "req", infra_generation)
         tool_sql, tool_params = _attempt_query(
-            "tool_calls", unit_id, protocol_epoch, restart_count, "tool")
+            "tool_calls", unit_id, protocol_epoch, restart_count, "tool", infra_generation)
         requests = conn.execute(request_sql, request_params).fetchone()
         tools = conn.execute(tool_sql, tool_params).fetchone()
         return {"requests": int(requests[0]), "tokens": int(requests[1]),
                 "seconds_ms": int(requests[2]) + int(tools[1]), "tools": int(tools[0])}
 
     def remaining_resources(self, model, *, unit_id=None, unit_request_cap=None, protocol_epoch=0,
-                            restart_count=0, shard_id=""):
+                            restart_count=0, shard_id="", infra_generation=0):
         """Policy view: shared unit remainder plus that model's remaining CNY.
 
         ``requests``, ``tokens`` and ``seconds`` are the active unit's shared
@@ -333,7 +346,8 @@ class BudgetLedger:
         _restart(restart_count)
         with self._transaction() as conn:
             state = self._snapshot(conn)
-            usage = self._unit_usage(conn, unit_id, protocol_epoch, restart_count) if unit_id else None
+            usage = self._unit_usage(
+                conn, unit_id, protocol_epoch, restart_count, infra_generation) if unit_id else None
         if model not in state["remaining_microcny"]:
             raise BudgetStopped("model_not_in_frozen_pool")
         if any(key not in state for key in ("max_tokens", "max_seconds_ms")):
@@ -370,7 +384,8 @@ class BudgetLedger:
             raise BudgetStopped("unresolved_request_blocks_subsequent_dispatch")
 
     def reserve(self, request_id, model, amount_microcny, *, payload_sha256, tokens=0, seconds_ms=0,
-                unit_id="", unit_request_cap=None, protocol_epoch=0, restart_count=0, shard_id=""):
+                unit_id="", unit_request_cap=None, protocol_epoch=0, restart_count=0, shard_id="",
+                infra_generation=0):
         """Persist a unique worst-case hold before any separately permitted send."""
         _id(request_id)
         _id(model)
@@ -400,7 +415,7 @@ class BudgetLedger:
                     and state["total_committed_microcny"] + amount_microcny > state["total_limit_microcny"]):
                 raise BudgetStopped("cumulative_total_cny_limit")
             if unit_id:
-                usage = self._unit_usage(conn, unit_id, protocol_epoch, restart_count)
+                usage = self._unit_usage(conn, unit_id, protocol_epoch, restart_count, infra_generation)
                 request_cap = unit_request_cap if unit_request_cap is not None else state["max_requests"]
                 if usage["requests"] >= request_cap:
                     raise BudgetStopped("unit_resource_exhausted")
@@ -545,7 +560,8 @@ class BudgetLedger:
                  "charge_microcny": row[3], "reserved_microcny": row[4],
                  "released_tokens": row[5], "released_seconds_ms": row[6]} for row in rows]
 
-    def reserve_tool(self, tool_id, *, seconds_ms, unit_id="", protocol_epoch=0, restart_count=0, shard_id=""):
+    def reserve_tool(self, tool_id, *, seconds_ms, unit_id="", protocol_epoch=0, restart_count=0,
+                     shard_id="", infra_generation=0):
         """Hold one tool call and its worst-case seconds before execution."""
         _id(tool_id)
         if unit_id:
@@ -563,7 +579,7 @@ class BudgetLedger:
             if "max_tools" not in state or "max_seconds_ms" not in state:
                 raise BudgetStopped("resource_dimensions_unconfigured")
             if unit_id:
-                usage = self._unit_usage(conn, unit_id, protocol_epoch, restart_count)
+                usage = self._unit_usage(conn, unit_id, protocol_epoch, restart_count, infra_generation)
                 used_tools, used_seconds = usage["tools"], usage["seconds_ms"]
             else:
                 used_tools, used_seconds = state["used_tools"], state["used_seconds_ms"]
@@ -575,8 +591,14 @@ class BudgetLedger:
                 (tool_id, "reserved", seconds_ms, seconds_ms, unit_id, shard_id))
         return {"tool_id": tool_id, "is_execution_permit": False}
 
-    def settle_tool(self, tool_id, *, seconds_ms):
-        """Release unused tool seconds after a known local or sandbox result."""
+    def settle_tool(self, tool_id, *, seconds_ms, cap_to_reservation=False):
+        """Release unused tool seconds after a known local or sandbox result.
+
+        Tool calls have no CNY. ``cap_to_reservation`` settles at the reserved
+        seconds when the clock ran past the hold, so a tool exception can close
+        the row instead of leaving it unknown. A charge above a model reservation
+        is a different path and still stays unknown.
+        """
         _integer(seconds_ms)
         breach = False
         with self._transaction() as conn:
@@ -584,10 +606,13 @@ class BudgetLedger:
                 "SELECT status, reserved_seconds_ms FROM tool_calls WHERE id=?", (tool_id,)).fetchone()
             if row is None or row[0] != "reserved":
                 raise BudgetStopped("only_pending_reservation_may_be_settled")
-            breach = seconds_ms > row[1]
+            reserved = row[1]
+            if seconds_ms > reserved and cap_to_reservation:
+                seconds_ms = reserved
+            breach = seconds_ms > reserved
             conn.execute(
                 "UPDATE tool_calls SET held_seconds_ms=?, status=? WHERE id=?",
-                (max(seconds_ms, row[1]) if breach else seconds_ms,
+                (max(seconds_ms, reserved) if breach else seconds_ms,
                  "unknown" if breach else "settled", tool_id))
         if breach:
             raise BudgetStopped("observed_charge_exceeded_frozen_bound")
@@ -599,3 +624,19 @@ class BudgetLedger:
             if row is None or row[0] != "reserved":
                 raise BudgetStopped("only_pending_reservation_may_be_marked_unknown")
             conn.execute("UPDATE tool_calls SET status='unknown' WHERE id=?", (tool_id,))
+
+    def release_unsettled_tools(self, unit_id):
+        """Close tool rows for one archived unit. Tool calls have no CNY.
+
+        The held seconds stay in the ledger. Only the status changes, so a
+        tool exception left unknown by an older build does not keep blocking
+        the shard after an infra requeue. Model-request holds are not touched.
+        """
+        _id(unit_id)
+        with self._transaction() as conn:
+            rows = conn.execute(
+                "SELECT id FROM tool_calls WHERE unit_id=? AND status!='settled'", (unit_id,)).fetchall()
+            conn.execute(
+                "UPDATE tool_calls SET status='settled' WHERE unit_id=? AND status!='settled'",
+                (unit_id,))
+        return [row[0] for row in rows]
