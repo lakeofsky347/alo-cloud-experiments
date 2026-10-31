@@ -350,6 +350,10 @@ class BudgetLedger:
             requests_left = request_cap - usage["requests"]
             tokens_left = state["max_tokens"] - usage["tokens"]
             seconds_left = (state["max_seconds_ms"] - usage["seconds_ms"]) / 1000
+        # A known receipt may record more tokens or seconds than the unit cap.
+        # Later dispatch sees an exhausted unit, not a negative ledger.
+        tokens_left = max(0, tokens_left)
+        seconds_left = max(0.0, seconds_left)
         remaining = {
             "requests": requests_left,
             "tokens": tokens_left,
@@ -420,13 +424,21 @@ class BudgetLedger:
         return {"request_id": request_id, "reserved_microcny": amount_microcny, "is_execution_permit": False}
 
     def settle_known(self, request_id, charge_microcny, *, tokens=None, seconds_ms=None):
-        """Only resolve a known receipt once; an exceeded bound remains halted."""
+        """Settle one known receipt.
+
+        CNY above the reservation stays unknown: that hold was the worst case
+        already checked against the model and study caps. Token or second counts
+        above the unit remainder are still a known receipt. They settle at the
+        actual charge and report ``unit_resource_exhausted`` so only that unit
+        stops.
+        """
         _integer(charge_microcny)
         if tokens is not None:
             _integer(tokens)
         if seconds_ms is not None:
             _integer(seconds_ms)
-        breach = False
+        cny_breach = False
+        unit_over = False
         with self._transaction() as conn:
             row = conn.execute(
                 "SELECT reserved,status,reserved_tokens,reserved_seconds_ms FROM requests WHERE id=?",
@@ -434,25 +446,32 @@ class BudgetLedger:
             if row is None or row[1] != "reserved":
                 raise BudgetStopped("only_pending_reservation_may_be_settled")
             reserved_cny, _, reserved_tokens, reserved_seconds = row
+            cny_breach = charge_microcny > reserved_cny
             held_tokens, held_seconds = reserved_tokens, reserved_seconds
-            breach = charge_microcny > reserved_cny
             dimensioned = any((reserved_tokens, reserved_seconds, tokens is not None, seconds_ms is not None))
             if dimensioned:
                 if tokens is None or seconds_ms is None:
-                    breach = True
+                    cny_breach = True
                 else:
                     if tokens > reserved_tokens or seconds_ms > reserved_seconds:
-                        breach = True
-                    held_tokens = max(tokens, reserved_tokens) if tokens > reserved_tokens else tokens
-                    held_seconds = max(seconds_ms, reserved_seconds) if seconds_ms > reserved_seconds else seconds_ms
+                        unit_over = True
+                    held_tokens = tokens
+                    held_seconds = seconds_ms
+            if cny_breach:
+                held_cny = max(charge_microcny, reserved_cny)
+                status = "unknown"
+            else:
+                held_cny = charge_microcny
+                status = "settled"
             conn.execute(
                 """UPDATE requests
                    SET held=?, held_tokens=?, held_seconds_ms=?, status=?
                    WHERE id=?""",
-                (max(charge_microcny, reserved_cny) if charge_microcny > reserved_cny else charge_microcny,
-                 held_tokens, held_seconds, "unknown" if breach else "settled", request_id))
-        if breach:
+                (held_cny, held_tokens, held_seconds, status, request_id))
+        if cny_breach:
             raise BudgetStopped("observed_charge_exceeded_frozen_bound")
+        return {"status": "settled", "charge_microcny": charge_microcny,
+                "unit_resource_exhausted": unit_over}
 
     def mark_unknown(self, request_id):
         """Keep the full hold across reopen/cancellation; there is no reset API."""
