@@ -44,6 +44,39 @@ def halt_reason(run_dir):
     return None
 
 
+def _drain_path(run_dir):
+    return Path(run_dir) / "drain.json"
+
+
+def drain_requested(run_dir):
+    """True when an operator asked shards to stop after the current unit."""
+    path = _drain_path(run_dir)
+    if not path.is_file():
+        return False
+    try:
+        body = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return True
+    if isinstance(body, dict) and body.get("drain") is False:
+        return False
+    return True
+
+
+def set_drain(run_dir):
+    path = _drain_path(run_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"drain": True}, sort_keys=True) + "\n", encoding="utf-8")
+    return str(path)
+
+
+def clear_drain(run_dir):
+    path = _drain_path(run_dir)
+    if path.is_file():
+        path.unlink()
+        return True
+    return False
+
+
 def set_halt(run_dir, reason, shard=""):
     """Record the first halt. Later writers leave that reason in place."""
     if not isinstance(reason, str) or not reason.strip():

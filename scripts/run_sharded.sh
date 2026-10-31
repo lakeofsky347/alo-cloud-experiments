@@ -20,6 +20,10 @@ if [ "$N" -lt 1 ]; then
 fi
 
 "$PY" -m alo_cloud.freeze --check
+if [ -f "$RUN_DIR/drain.json" ]; then
+  "$PY" -m alo_cloud.ledger drain --run-dir "$RUN_DIR" --clear
+  echo "Cleared drain.json from the previous stop."
+fi
 "$PY" scripts/smoke_test.py --live --run-dir "$RUN_DIR"
 
 if [ ! -d "$DATA_DIR/SWE-bench_Lite" ] || [ ! -d "$DATA_DIR/ProgramBench" ]; then
@@ -53,6 +57,10 @@ echo "M1 blocked-reason histogram"
 "$PY" -m alo_cloud.run --blocked-report --run-dir "$RUN_DIR"
 report_status=$?
 set -e
+if [ -f "$RUN_DIR/drain.json" ]; then
+  echo "Drain requested. M2 was not started. Shards finished the current unit and exited."
+  exit 0
+fi
 if [ "$m1_status" -ne 0 ] || [ "$report_status" -ne 0 ]; then
   echo "M1 stopped (run=$m1_status, blocked_report=$report_status). M2 was not started."
   exit 1

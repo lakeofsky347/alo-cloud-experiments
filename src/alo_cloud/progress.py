@@ -47,16 +47,16 @@ def _read_diagnostic(directory, request_id):
     return body if isinstance(body, dict) else None
 
 
-def _charged_timeout(row, diagnostic):
+def _charged_match(row, diagnostic, causes):
     if row["status"] != "settled" or diagnostic is None:
         return False
-    if diagnostic.get("cause") not in CHARGED_TIMEOUT_CAUSES:
+    if diagnostic.get("cause") not in causes:
         return False
     return diagnostic.get("settled") is True
 
 
-def assess_charged_timeouts(ledger, *, protocol_epoch):
-    """Rate and epoch CNY for charged deadline timeouts. This does not halt."""
+def _assess_charged(ledger, *, protocol_epoch, causes, rate_name, cny_name, count_key, micro_key, window_key):
+    """Per-model rate and epoch CNY for one settled diagnostic cause."""
     directory = Path(ledger.path).parent / "diagnostics"
     by_model = {}
     charged_microcny = 0
@@ -66,29 +66,29 @@ def assess_charged_timeouts(ledger, *, protocol_epoch):
             continue
         diagnostic = _read_diagnostic(directory, row["id"])
         bucket = by_model.setdefault(row["model"], {"rows": []})
-        timeout = _charged_timeout(row, diagnostic)
-        bucket["rows"].append(timeout)
-        if timeout:
+        matched = _charged_match(row, diagnostic, causes)
+        bucket["rows"].append(matched)
+        if matched:
             charged_count += 1
             charged_microcny += row["held_microcny"]
     models = {}
     rate_reason = None
     for model, bucket in sorted(by_model.items()):
         window_rows = bucket["rows"][-CHARGED_TIMEOUT_WINDOW:]
-        timeouts = sum(1 for item in window_rows if item)
+        hits = sum(1 for item in window_rows if item)
         full = len(window_rows) >= CHARGED_TIMEOUT_WINDOW
-        rate = (timeouts / len(window_rows)) if window_rows else 0.0
+        rate = (hits / len(window_rows)) if window_rows else 0.0
         models[model] = {
             "requests_in_epoch": len(bucket["rows"]),
             "window": len(window_rows),
             "window_full": full,
-            "charged_timeouts_in_window": timeouts,
+            window_key: hits,
             "rate": round(rate, 4),
         }
-        if full and timeouts > len(window_rows) * CHARGED_TIMEOUT_RATE and rate_reason is None:
-            rate_reason = "charged_timeout_rate"
+        if full and hits > len(window_rows) * CHARGED_TIMEOUT_RATE and rate_reason is None:
+            rate_reason = rate_name
     cap_microcny = CHARGED_TIMEOUT_EPOCH_CNY * MICROCNY_PER_CNY
-    cny_reason = "charged_timeout_cny" if charged_microcny > cap_microcny else None
+    cny_reason = cny_name if charged_microcny > cap_microcny else None
     return {
         "schema": SNAPSHOT_SCHEMA,
         "epoch": protocol_epoch,
@@ -96,22 +96,37 @@ def assess_charged_timeouts(ledger, *, protocol_epoch):
         "rate_limit": CHARGED_TIMEOUT_RATE,
         "rate_applies_after_requests": CHARGED_TIMEOUT_WINDOW,
         "epoch_cny_cap": CHARGED_TIMEOUT_EPOCH_CNY,
-        "charged_timeouts": charged_count,
-        "charged_timeout_microcny": charged_microcny,
+        count_key: charged_count,
+        micro_key: charged_microcny,
         "halt_reason": rate_reason or cny_reason,
         "by_model": models,
     }
 
 
-def publish_timeout_counts(run_dir, ledger, *, protocol_epoch):
-    """Rewrite the snapshot from the ledger and diagnostics."""
-    with exclusive_lock(run_dir, "timeout_counts"):
-        return _publish_timeout_counts(run_dir, ledger, protocol_epoch=protocol_epoch)
+def assess_charged_timeouts(ledger, *, protocol_epoch):
+    """Rate and epoch CNY for charged deadline timeouts. This does not halt."""
+    body = _assess_charged(
+        ledger, protocol_epoch=protocol_epoch, causes=CHARGED_TIMEOUT_CAUSES,
+        rate_name="charged_timeout_rate", cny_name="charged_timeout_cny",
+        count_key="charged_timeouts", micro_key="charged_timeout_microcny",
+        window_key="charged_timeouts_in_window")
+    return body
 
 
-def _publish_timeout_counts(run_dir, ledger, *, protocol_epoch):
-    body = assess_charged_timeouts(ledger, protocol_epoch=protocol_epoch)
-    path = Path(run_dir) / "progress" / "timeout_counts.json"
+UNPARSEABLE_CAUSES = frozenset({"unparseable_success"})
+
+
+def assess_unparseable(ledger, *, protocol_epoch):
+    """Same window and CNY cap as charged timeouts, for settled unparseable bodies."""
+    return _assess_charged(
+        ledger, protocol_epoch=protocol_epoch, causes=UNPARSEABLE_CAUSES,
+        rate_name="charged_unparseable_rate", cny_name="charged_unparseable_cny",
+        count_key="charged_unparseable", micro_key="charged_unparseable_microcny",
+        window_key="charged_unparseable_in_window")
+
+
+def _write_snapshot(run_dir, name, body):
+    path = Path(run_dir) / "progress" / name
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(".json.tmp")
     temporary.write_text(json.dumps(body, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
@@ -119,6 +134,19 @@ def _publish_timeout_counts(run_dir, ledger, *, protocol_epoch):
     os.chmod(temporary, 0o600)
     temporary.replace(path)
     return body
+
+
+def publish_timeout_counts(run_dir, ledger, *, protocol_epoch):
+    """Rewrite the snapshot from the ledger and diagnostics."""
+    with exclusive_lock(run_dir, "timeout_counts"):
+        body = assess_charged_timeouts(ledger, protocol_epoch=protocol_epoch)
+        return _write_snapshot(run_dir, "timeout_counts.json", body)
+
+
+def publish_unparseable_counts(run_dir, ledger, *, protocol_epoch):
+    with exclusive_lock(run_dir, "unparseable_counts"):
+        body = assess_unparseable(ledger, protocol_epoch=protocol_epoch)
+        return _write_snapshot(run_dir, "unparseable_counts.json", body)
 
 
 def append_provider_outcome(ledger, *, epoch, model, request_id, outcome, charge_microcny):

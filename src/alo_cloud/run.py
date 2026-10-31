@@ -36,7 +36,7 @@ from .workspace_prep import (
     apply_patch, release_unreadable_executable, resolve_image_head, seed_image_tree,
 )
 from .services import PROTOCOL_UNIT_LIMITS, StudyServices
-from .shardlock import exclusive_lock, halt_reason, set_halt
+from .shardlock import clear_drain, drain_requested, exclusive_lock, halt_reason, set_halt
 from .state import export_learning_state, import_learning_state
 
 
@@ -306,6 +306,95 @@ def _note_unknown(run_dir, record):
         return _unknown_count(run_dir)
 
 
+def reclassify_charged_unparseable(run_dir):
+    """Drop settled unparseable rows from the unknown counter. Idempotent.
+
+    Epoch-4 rows were written as ``provider_outcome_charged`` with a null
+    request id. A diagnostic with ``cause=unparseable_success`` and
+    ``settled=true`` is a known worst-case charge, not an unsettled cost.
+    Moved rows are listed in ``progress/reclassified_unparseable.jsonl``.
+    """
+    run_dir = Path(run_dir)
+    unknown = _unknown_log(run_dir)
+    audit = run_dir / "progress" / "reclassified_unparseable.jsonl"
+    with exclusive_lock(run_dir, "unknown"):
+        already = set()
+        if audit.is_file():
+            for line in audit.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(row, dict) and isinstance(row.get("request_id"), str):
+                    already.add(row["request_id"])
+        diagnostics = []
+        directory = run_dir / "diagnostics"
+        if directory.is_dir():
+            for path in sorted(directory.glob("*.json")):
+                try:
+                    body = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    continue
+                if not isinstance(body, dict):
+                    continue
+                if body.get("cause") != "unparseable_success" or body.get("settled") is not True:
+                    continue
+                request_id = body.get("request_id")
+                if not isinstance(request_id, str) or not request_id or request_id in already:
+                    continue
+                diagnostics.append(body)
+        if not unknown.is_file():
+            return {"reclassified": 0}
+        lines = [line for line in unknown.read_text(encoding="utf-8").splitlines() if line.strip()]
+        kept, moved = [], []
+        used = set()
+        for line in lines:
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                kept.append(line)
+                continue
+            match = None
+            if isinstance(row, dict) and row.get("reason") == "provider_outcome_charged":
+                for body in diagnostics:
+                    request_id = body["request_id"]
+                    if request_id in used:
+                        continue
+                    row_request = row.get("request_id")
+                    if row_request not in (None, "") and row_request != request_id:
+                        continue
+                    row_unit = row.get("unit_id")
+                    diag_unit = body.get("unit_id") or ""
+                    if row_unit not in (None, "") and diag_unit and row_unit != diag_unit:
+                        continue
+                    match = body
+                    break
+            if match is None:
+                kept.append(line)
+                continue
+            used.add(match["request_id"])
+            moved.append({
+                "request_id": match["request_id"],
+                "unit_id": row.get("unit_id") or match.get("unit_id") or "",
+                "previous_reason": "provider_outcome_charged",
+                "diagnostic_cause": "unparseable_success",
+                "model": match.get("model"),
+            })
+        if not moved:
+            return {"reclassified": 0}
+        body = "".join(line + "\n" for line in kept)
+        unknown.write_text(body, encoding="utf-8")
+        audit.parent.mkdir(parents=True, exist_ok=True)
+        with audit.open("a", encoding="utf-8") as handle:
+            for row in moved:
+                handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        return {"reclassified": len(moved)}
+
+
 def run_schedule(units, run_dir, *, live, data_dir=None, docker_image=None, sender=None,
                  git_runner=None, sandbox_memory=None, sandbox_pids=None, image_seeder=None,
                  shard=None):
@@ -333,9 +422,12 @@ def run_schedule(units, run_dir, *, live, data_dir=None, docker_image=None, send
     done = _done_ids(records_path)
     known_ids = ledger.request_ids()
     publish_timeout_counts(run_dir, ledger, protocol_epoch=current_epoch(run_dir))
+    reclassify_charged_unparseable(run_dir)
     results = []
     try:
         for unit in units:
+            if drain_requested(run_dir):
+                return results
             reason = halt_reason(run_dir)
             if reason:
                 raise PilotStopped(reason)
@@ -364,6 +456,14 @@ def run_schedule(units, run_dir, *, live, data_dir=None, docker_image=None, send
                     if verdict["halt_reason"]:
                         record["halt_schedule"] = True
                         record["reason"] = verdict["halt_reason"]
+                if record.get("charged_unparseable"):
+                    from .progress import publish_unparseable_counts
+                    verdict = publish_unparseable_counts(
+                        run_dir, ledger, protocol_epoch=current_epoch(run_dir))
+                    record["charged_unparseable_epoch_microcny"] = verdict["charged_unparseable_microcny"]
+                    if verdict["halt_reason"]:
+                        record["halt_schedule"] = True
+                        record["reason"] = verdict["halt_reason"]
                 if record.get("charged_unknown"):
                     count = _note_unknown(run_dir, record)
                     if count > MAX_UNKNOWN_OUTCOMES:
@@ -371,12 +471,16 @@ def run_schedule(units, run_dir, *, live, data_dir=None, docker_image=None, send
                         record["reason"] = "unknown_outcome_threshold"
                 _append_record(records_path, record)
                 known_ids = ledger.request_ids()
-                if ((record.get("charged_unknown") or record.get("charged_timeout"))
+                if ((record.get("charged_unknown") or record.get("charged_timeout")
+                        or record.get("charged_unparseable"))
                         and not retried and record.get("restart_count", 0) == 0
                         and not record.get("halt_schedule")):
-                    restart_reason = (
-                        "charged timeout; restart once" if record.get("charged_timeout")
-                        else "charged unknown; restart once")
+                    if record.get("charged_timeout"):
+                        restart_reason = "charged timeout; restart once"
+                    elif record.get("charged_unparseable"):
+                        restart_reason = "unparseable charged; restart once"
+                    else:
+                        restart_reason = "charged unknown; restart once"
                     restart_unit(run_dir, unit.unit_id, reason=restart_reason, ledger=ledger,
                                  shard_id=shard_label)
                     retried = True
@@ -621,6 +725,7 @@ def _execute_unit(unit, run_dir, ledger, *, live, data_dir, docker_image, sender
         halt = reason not in {
             "cumulative_request_or_model_limit", "unit_resource_exhausted",
             "unit_seconds_exhausted", "provider_outcome_charged", "provider_deadline_charged",
+            "provider_unparseable_charged",
         }
         if reason == "provider_deadline_charged":
             record["charged_timeout"] = True
@@ -628,16 +733,26 @@ def _execute_unit(unit, run_dir, ledger, *, live, data_dir, docker_image, sender
                 status = "blocked"
                 reason = "second_timeout_interruption"
             halt = False
+        elif reason == "provider_unparseable_charged":
+            record["charged_unparseable"] = True
+            record["unknown_request_id"] = getattr(services, "last_request_id", None)
+            if restart_count >= 1:
+                status = "blocked"
+                reason = "second_unparseable_interruption"
+            halt = False
         elif reason == "provider_outcome_charged":
             record["charged_unknown"] = True
+            record["unknown_request_id"] = getattr(services, "last_request_id", None)
             if restart_count >= 1:
                 status = "blocked"
                 reason = "second_unknown_interruption"
             halt = unknown_so_far + 1 > MAX_UNKNOWN_OUTCOMES
-        elif reason == "provider_outcome_unknown" and restart_count >= 1:
-            status = "blocked"
-            reason = "second_unknown_interruption"
-            halt = True
+        elif reason == "provider_outcome_unknown":
+            record["unknown_request_id"] = getattr(services, "last_request_id", None)
+            if restart_count >= 1:
+                status = "blocked"
+                reason = "second_unknown_interruption"
+                halt = True
     except BudgetStopped as error:
         reason = str(error)
         status, halt = "stopped", True

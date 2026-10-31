@@ -309,6 +309,7 @@ class StudyServices:
                 raise PilotStopped("per_request_microcny_ceiling_required")
         token_hold, second_hold = self._worst_case_holds()
         request_id = self._next_id("req")
+        self.last_request_id = request_id
         deadline_s = PROVIDER_TIMEOUT_S[model]
         try:
             self.ledger.reserve(request_id, model, amount,
@@ -385,11 +386,16 @@ class StudyServices:
                 self._diagnose(request_id, model, outcome, latency_ms=elapsed_ms, settled=False)
                 raise PilotStopped("provider_outcome_unknown") from None
             charged_timeout = cause == "deadline_timeout"
+            charged_unparseable = cause == "unparseable_success"
             self._diagnose(request_id, model, outcome, latency_ms=elapsed_ms, settled=True,
                            charged_timeout=charged_timeout)
-            self._note_outcome(
-                request_id, model,
-                "deadline_timeout" if charged_timeout else "unknown", amount)
+            if charged_timeout:
+                outcome_name = "deadline_timeout"
+            elif charged_unparseable:
+                outcome_name = "unparseable_charged"
+            else:
+                outcome_name = "unknown"
+            self._note_outcome(request_id, model, outcome_name, amount)
             if charged_timeout:
                 try:
                     publish_timeout_counts(
@@ -398,11 +404,20 @@ class StudyServices:
                 except OSError:
                     pass
                 raise PilotStopped("provider_deadline_charged")
+            if charged_unparseable:
+                try:
+                    from .progress import publish_unparseable_counts
+                    publish_unparseable_counts(
+                        Path(self.ledger.path).parent, self.ledger,
+                        protocol_epoch=self.protocol_epoch)
+                except OSError:
+                    pass
+                raise PilotStopped("provider_unparseable_charged")
             raise PilotStopped("provider_outcome_charged")
         except PilotStopped as error:
             if str(error) in {
                 "provider_outcome_unknown", "provider_outcome_charged", "provider_deadline_charged",
-                "unit_resource_exhausted",
+                "provider_unparseable_charged", "unit_resource_exhausted",
             }:
                 raise
             self._diagnose(request_id, model, {"cause": "transport_error"}, latency_ms=0, settled=False)

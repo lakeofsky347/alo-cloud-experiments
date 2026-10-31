@@ -196,7 +196,7 @@ def test_reasoning_tokens_stay_inside_the_completion_total(tmp_path, monkeypatch
     oversized = chat("x", "deepseek-flash", prompt=1, completion=2, reasoning=9)
     blocked, blocked_seen, blocked_ledger = build(
         tmp_path / "over", monkeypatch, [oversized, chat("y", "deepseek-flash")])
-    with pytest.raises(PilotStopped, match="provider_outcome_charged"):
+    with pytest.raises(PilotStopped, match="provider_unparseable_charged"):
         blocked.complete_for_model("deepseek-flash", messages())
     assert blocked.complete_for_model("deepseek-flash", messages())["text"] == "y"
     assert blocked_ledger.snapshot()["unresolved_request_ids"] == []
@@ -226,7 +226,7 @@ def test_missing_key_bad_usage_and_over_charge_stop_before_another_send(tmp_path
     assert ledger.snapshot()["requests"] == 0
 
     blocked, blocked_seen, blocked_ledger = build(tmp_path / "bad", monkeypatch, [{"choices": []}])
-    with pytest.raises(PilotStopped, match="provider_outcome_charged"):
+    with pytest.raises(PilotStopped, match="provider_unparseable_charged"):
         blocked.complete_for_model("glm-5.3-flash", messages())
     assert blocked_ledger.snapshot()["unresolved_request_ids"] == []
     assert len(blocked_seen) == 1
@@ -234,7 +234,7 @@ def test_missing_key_bad_usage_and_over_charge_stop_before_another_send(tmp_path
     mismatch, mismatch_seen, _ledger = build(tmp_path / "mismatch", monkeypatch, [
         chat("x", "other-model"),
     ])
-    with pytest.raises(PilotStopped, match="provider_outcome_charged"):
+    with pytest.raises(PilotStopped, match="provider_unparseable_charged"):
         mismatch.complete_for_model("glm-5.3-flash", messages())
     assert mismatch_seen[0]["body"]["model"] == "glm-5.3-flash"
 
@@ -243,7 +243,7 @@ def test_missing_key_bad_usage_and_over_charge_stop_before_another_send(tmp_path
         "choices": [{"message": {"content": "x"}}],
         "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 3},
     }])
-    with pytest.raises(PilotStopped, match="provider_outcome_charged"):
+    with pytest.raises(PilotStopped, match="provider_unparseable_charged"):
         inconsistent.complete_for_model("deepseek-flash", messages())
     assert inconsistent_ledger.snapshot()["unresolved_request_ids"] == []
 
@@ -316,7 +316,7 @@ def test_policy_reads_service_remaining_and_skips_an_exhausted_model(tmp_path, m
     assert trace["scores"]["deepseek-flash"]["feasible"] is False
     assert "cny" in trace["scores"]["deepseek-flash"]["violated_resources"]
     services, seen, ledger = build(tmp_path / "unknown", monkeypatch, [{"nope": True}])
-    with pytest.raises(PilotStopped, match="provider_outcome_charged"):
+    with pytest.raises(PilotStopped, match="provider_unparseable_charged"):
         services.complete_for_model("mimo-v2.6-flash", messages())
     assert ledger.snapshot()["unresolved_request_ids"] == []
     blocked = Organization(":memory:")
