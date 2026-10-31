@@ -43,46 +43,56 @@ if [ ! -d "$DATA_DIR/SWE-bench_Lite" ] || [ ! -d "$DATA_DIR/ProgramBench" ]; the
   exit 2
 fi
 
-run_study() {
-  study=$1
-  i=0
-  pids=""
-  while [ "$i" -lt "$N" ]; do
-    "$PY" -m alo_cloud.run --study "$study" --live --run-dir "$RUN_DIR" \
-      --data-dir "$DATA_DIR" --shard "$i/$N" &
-    pids="$pids $!"
-    i=$((i + 1))
-  done
-  failed=0
-  for pid in $pids; do
-    if ! wait "$pid"; then
-      failed=1
-    fi
-  done
-  return "$failed"
+# Each shard runs its own M1 units, then its own M2 units. M2 task groups stay
+# intact, so the ProgramBench chain stays on one shard while the other shards
+# can still be inside M1 ProgramBench.
+run_shard() {
+  i=$1
+  "$PY" -m alo_cloud.run --study m1 --live --run-dir "$RUN_DIR" \
+    --data-dir "$DATA_DIR" --shard "$i/$N"
+  m1_status=$?
+  if [ -f "$RUN_DIR/schedule_halt.json" ]; then
+    return 1
+  fi
+  if [ -f "$RUN_DIR/drain.json" ]; then
+    return 0
+  fi
+  if [ "$m1_status" -ne 0 ]; then
+    return "$m1_status"
+  fi
+  "$PY" -m alo_cloud.run --blocked-report --run-dir "$RUN_DIR" || return 1
+  "$PY" -m alo_cloud.run --study m2 --live --run-dir "$RUN_DIR" \
+    --data-dir "$DATA_DIR" --shard "$i/$N"
 }
 
 set +e
-run_study m1
-m1_status=$?
-echo "M1 blocked-reason histogram"
-"$PY" -m alo_cloud.run --blocked-report --run-dir "$RUN_DIR"
-report_status=$?
+i=0
+pids=""
+while [ "$i" -lt "$N" ]; do
+  run_shard "$i" &
+  pids="$pids $!"
+  i=$((i + 1))
+done
+failed=0
+for pid in $pids; do
+  if ! wait "$pid"; then
+    failed=1
+  fi
+done
 set -e
 if [ -f "$RUN_DIR/schedule_halt.json" ]; then
-  echo "Schedule halt is set. M2 was not started."
+  echo "Schedule halt is set. Collect was not started."
   exit 1
 fi
 if [ -f "$RUN_DIR/drain.json" ]; then
-  echo "Drain requested. M2 was not started. Shards finished the current unit and exited."
+  echo "Drain requested. Shards finished the current unit and exited."
   exit 0
 fi
-if [ "$m1_status" -ne 0 ] || [ "$report_status" -ne 0 ]; then
-  echo "M1 stopped (run=$m1_status, blocked_report=$report_status). M2 was not started."
+if [ "$failed" -ne 0 ]; then
+  echo "A shard stopped. Collect was not started."
   exit 1
 fi
 
-run_study m2
 "$PY" -m alo_cloud.collect --run-dir "$RUN_DIR"
 
 export PROGRAMBENCH_HF_REVISION=de0ddfb637590c7ecb54fa0b5301f6dc7dfbcee5

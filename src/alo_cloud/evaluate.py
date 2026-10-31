@@ -66,17 +66,41 @@ def swebench_command(predictions_path, *, run_id, instance_ids, split, dataset_r
     return command
 
 
-def programbench_command(repo, submissions_dir):
-    return ["uv", "run", "--project", str(repo), "programbench", "eval", str(submissions_dir)]
+def programbench_docker_cpus(base=None):
+    """Cores per scoring container. An explicit ``PROGRAMBENCH_DOCKER_CPUS`` wins.
+
+    The harness default is 10. On a smaller box that quota can keep the
+    container from starting, so an unset value is ``min(10, nproc)``.
+    """
+    source = os.environ if base is None else base
+    raw = source.get("PROGRAMBENCH_DOCKER_CPUS") if source is not None else None
+    if isinstance(raw, str) and raw.strip():
+        if not raw.strip().isdigit() or int(raw) < 1:
+            raise ValueError("invalid_programbench_docker_cpus")
+        return int(raw)
+    return min(10, os.cpu_count() or 1)
+
+
+def programbench_command(repo, submissions_dir, *, docker_cpus=None):
+    cpus = programbench_docker_cpus() if docker_cpus is None else docker_cpus
+    return ["uv", "run", "--project", str(repo), "programbench", "eval", str(submissions_dir),
+            "--docker-cpus", str(cpus)]
 
 
 def programbench_env(base=None):
     """Pin the test-asset revision in the child environment. Do not inherit provider keys."""
     env = dict(os.environ if base is None else base)
     env["PROGRAMBENCH_HF_REVISION"] = PROGRAMBENCH_TESTS_REVISION
+    if not str(env.get("PROGRAMBENCH_DOCKER_CPUS") or "").strip():
+        env["PROGRAMBENCH_DOCKER_CPUS"] = str(programbench_docker_cpus(env))
     for name in ("DEEPSEEK_API_KEY", "MIMO_API_KEY", "ZAI_API_KEY"):
         env.pop(name, None)
     return env
+
+
+def _container_start_failed(completed):
+    text = f"{completed.stdout or ''}\n{completed.stderr or ''}"
+    return "Failed to start container" in text
 
 
 def _read_jsonl(path):
@@ -311,7 +335,11 @@ def _score_programbench(run_dir, repo):
         completed = _harness_run(item["command"], cwd=cwd, env=env)
         item = dict(item)
         item["returncode"] = completed.returncode
-        item["status"] = "finished" if completed.returncode == 0 else "harness_failed"
+        start_failed = _container_start_failed(completed)
+        item["container_start_failed"] = start_failed
+        if completed.stderr:
+            item["stderr_excerpt"] = completed.stderr[:2000]
+        item["status"] = "finished" if completed.returncode == 0 and not start_failed else "harness_failed"
         result["units"].append(item)
         if item["status"] != "finished":
             failed = True

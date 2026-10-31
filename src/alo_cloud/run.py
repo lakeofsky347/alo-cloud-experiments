@@ -27,7 +27,9 @@ from .freeze import (
     BLOCKED_FRACTION_MIN_UNITS, G2_PLANNER_MODEL, G3_MANAGER_MODEL, G3_ROLES,
     MAX_BLOCKED_FRACTION, MAX_UNKNOWN_OUTCOMES, filter_shard, select_units,
 )
-from .ledger import current_epoch, infra_generations, restart_counts, restart_unit
+from .diagnostics import write_diagnostic
+from .ledger import current_epoch, infra_generations, restart_counts, restart_unit, track_generations
+from .programbench_prompt import PROGRAMBENCH_SUBMISSION_CONTRACT
 from .progress import publish_timeout_counts
 from .images import resolve_task_image
 from .prices import ceiling_for_messages, charge_microcny
@@ -128,7 +130,9 @@ def stage_for(unit, payload, *, dry_run):
         public = {"task_id": unit.task_id, "track": unit.track,
                   "note": "dry-run placeholder; benchmark text is not loaded"}
     else:
-        public = payload
+        public = dict(payload)
+    if unit.track == "ProgramBench":
+        public["submission_contract"] = PROGRAMBENCH_SUBMISSION_CONTRACT
     return {"task_id": unit.task_id, "track": unit.track, "phase": unit.phase,
             "arm": unit.arm, "stratum": unit.stratum, "public": public}
 
@@ -256,7 +260,8 @@ def _done_ids(path):
     return done
 
 
-def _touched(request_id, unit_id, restart_count=0, protocol_epoch=0, infra_generation=0):
+def _touched(request_id, unit_id, restart_count=0, protocol_epoch=0, infra_generation=0,
+             track_generation=0):
     """True when this id belongs to the current epoch's attempt.
 
     Epoch 0 keeps the original ``req-<unit>`` prefix. A later protocol epoch
@@ -267,10 +272,11 @@ def _touched(request_id, unit_id, restart_count=0, protocol_epoch=0, infra_gener
     """
     generation = f"-r{restart_count}" if restart_count else ""
     infra = f"-infra{infra_generation}" if infra_generation else ""
+    track = f"-pbv{track_generation}" if track_generation else ""
     if protocol_epoch:
-        stem = f"e{protocol_epoch}-{unit_id}{generation}{infra}-"
+        stem = f"e{protocol_epoch}-{unit_id}{generation}{infra}{track}-"
     else:
-        stem = f"{unit_id}{generation}{infra}-"
+        stem = f"{unit_id}{generation}{infra}{track}-"
     return request_id.startswith(f"req-{stem}") or request_id.startswith(f"tool-{stem}")
 
 
@@ -443,8 +449,9 @@ def run_schedule(units, run_dir, *, live, data_dir=None, docker_image=None, send
                 continue
             epoch = current_epoch(run_dir)
             infra_generation = infra_generations(run_dir).get(unit.unit_id, 0)
+            track_generation = track_generations(run_dir).get(unit.unit_id, 0)
             if any(_touched(request_id, unit.unit_id, restart_counts(run_dir).get(unit.unit_id, 0),
-                            epoch, infra_generation)
+                            epoch, infra_generation, track_generation)
                    for request_id in known_ids):
                 raise BudgetStopped("partial_unit_not_retried")
             retried = False
@@ -671,9 +678,11 @@ def _execute_unit(unit, run_dir, ledger, *, live, data_dir, docker_image, sender
     state_dir = Path(run_dir) / "units" / unit.unit_id / "state"
     restart_count = restart_counts(run_dir).get(unit.unit_id, 0)
     infra_generation = infra_generations(run_dir).get(unit.unit_id, 0)
+    track_generation = track_generations(run_dir).get(unit.unit_id, 0)
     epoch = current_epoch(run_dir)
     record["restart_count"] = restart_count
     record["infra_generation"] = infra_generation
+    record["track_generation"] = track_generation
     record["protocol_epoch"] = epoch
     services = StudyServices(
         state_dir, ledger, unit=unit.protocol_unit,
@@ -689,6 +698,7 @@ def _execute_unit(unit, run_dir, ledger, *, live, data_dir, docker_image, sender
         protocol_epoch=epoch,
         shard_id=shard_id,
         infra_generation=infra_generation,
+        track_generation=track_generation,
     )
     payload = load_public_payload(data_dir, unit.track, unit.task_id)
     repo = _public_field(payload, "repo")
@@ -848,6 +858,19 @@ def _persist_compact(unit, services, adapter, run_dir, record):
         record["patch_bytes"] = len(patch.encode("utf-8"))
         return 1 if patch else 0
     if unit.track == "ProgramBench":
+        compile_sh = workspace / "compile.sh"
+        present = compile_sh.is_file()
+        record["programbench_compile_sh_present"] = present
+        try:
+            write_diagnostic(
+                services.ledger, f"submission-{unit.unit_id}",
+                cause="submission_check", model="", unit_id=unit.unit_id,
+                http_status=None, vendor_code="compile.sh",
+                vendor_message="present" if present else "missing",
+                response={"compile_sh_present": present, "path": "compile.sh"},
+                finish_reason=None, latency_ms=0, settled=True)
+        except (OSError, ValueError):
+            record["programbench_submission_check_error"] = "diagnostic_not_written"
         dest = (Path(run_dir) / "sealed" / "programbench" / unit.unit_id / unit.task_id
                 / "submission.tar.gz")
         return _pack_submission(workspace, dest)

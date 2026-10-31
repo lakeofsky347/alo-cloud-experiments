@@ -329,6 +329,9 @@ def freeze_payload():
                 "accept HEAD==base_commit or HEAD^==base_commit when the parent diff is mode-only"
             ),
             "harness_cwd": "run_dir/eval",
+            "programbench_submission": "compile_sh_builds_executable",
+            "programbench_docker_cpus": "PROGRAMBENCH_DOCKER_CPUS_or_min_10_nproc",
+            "programbench_track_requeue": "same_epoch_pbv_marker",
         },
     }
 
