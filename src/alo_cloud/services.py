@@ -17,18 +17,13 @@ from .budget import MICROCNY_PER_CNY, BudgetLedger, BudgetStopped
 from .contracts import MODEL_POOL, PER_MODEL_LIMIT_MICROCNY, STUDY_TOTAL_LIMIT_MICROCNY
 from .diagnostics import write_diagnostic
 from .errors import PilotStopped, ProtocolError
-from .progress import append_provider_outcome
+from .progress import append_provider_outcome, publish_timeout_counts
 from .freeze import MIMO_MAX_COMPLETION_TOKENS, PROVIDER_TIMEOUT_S
 from .providers import (
-    MIMO_MODELS, OpenAICompatibleTransport, credential_configured, messages_contain_credential,
-    request_body,
+    DEADLINE_EPSILON_S, MIMO_MODELS, OpenAICompatibleTransport, credential_configured,
+    messages_contain_credential, request_body,
 )
 from .sandbox import DockerSandbox, Workspace, python_syntax_evidence
-
-
-# Settle still runs on the caller after the transport returns. A hold must not
-# stay open past the provider deadline by more than this.
-HOLD_SETTLE_MARGIN_S = 5
 
 
 # protocol.md 资源、未知与停止. Enforcement table, not a collection freeze.
@@ -320,9 +315,11 @@ class StudyServices:
                 model, messages, max_tokens=sent_max_tokens,
                 timeout_s=deadline_s, started=started, clock=self._clock)
             elapsed_s = self._clock() - started
-            # The transport must already have returned. This only refuses to bill
-            # a success that came back after the hold was supposed to be closed.
-            if elapsed_s > deadline_s + HOLD_SETTLE_MARGIN_S:
+            # Monotonic time, same clock as the transport. A return at the deadline
+            # is a charged timeout even when the read looks like a reset, an empty
+            # body, or a partial completion. A VM pause can make wall-clock age
+            # longer than this elapsed time; it does not change the class.
+            if elapsed_s >= deadline_s - DEADLINE_EPSILON_S:
                 outcome = {"kind": "unknown", "cause": "deadline_timeout", "http_status": None,
                            "vendor_code": None, "vendor_message": None, "finish_reason": None,
                            "response": None, "parsed": None}
@@ -382,6 +379,12 @@ class StudyServices:
                 request_id, model,
                 "deadline_timeout" if charged_timeout else "unknown", amount)
             if charged_timeout:
+                try:
+                    publish_timeout_counts(
+                        Path(self.ledger.path).parent, self.ledger,
+                        protocol_epoch=self.protocol_epoch)
+                except OSError:
+                    pass
                 raise PilotStopped("provider_deadline_charged")
             raise PilotStopped("provider_outcome_charged")
         except PilotStopped as error:

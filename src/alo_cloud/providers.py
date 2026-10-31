@@ -292,6 +292,14 @@ def parse_sse(text, model):
 # After the deadline the caller stops waiting. This only covers the socket
 # abort unblocking a read; it is not extra time for the provider.
 _JOIN_SLACK_S = 0.25
+# A read that lands this close to the deadline is the deadline. The abort and
+# the socket timeout fire together, and the read can surface as a reset or an
+# empty body. That is still our timeout.
+DEADLINE_EPSILON_S = 0.05
+
+
+def _past_deadline(started, clock, limit):
+    return clock() - started >= limit - DEADLINE_EPSILON_S
 
 
 def _socket_of(response):
@@ -337,23 +345,39 @@ def _arm_deadline(response, seconds):
             return
 
 
-def _read_sse(response, model, *, deadline_s, started, clock=None):
+def _read_sse(response, model, *, deadline_s, started, clock=None, aborted=None):
     """Read SSE until ``[DONE]`` or the wall-clock deadline.
 
     ``deadline_s`` is the whole request, not the gap between bytes. A keepalive
     or a trickle still counts. The socket timeout is pulled in to whatever time
-    remains so a silent poll cannot outlive the deadline either.
+    remains so a silent poll cannot outlive the deadline either. An empty read
+    after our abort is the deadline, not a completion.
     """
     clock = clock or time.monotonic
     chunks = []
     while True:
+        if aborted is not None and aborted.get("value"):
+            raise TimeoutError("provider_wall_clock")
         remaining = deadline_s - (clock() - started)
-        if remaining <= 0:
+        if remaining <= DEADLINE_EPSILON_S:
+            if aborted is not None:
+                aborted["value"] = True
             _abort_socket(response)
             raise TimeoutError("provider_wall_clock")
         _arm_deadline(response, remaining)
-        raw = response.readline()
+        try:
+            raw = response.readline()
+        except Exception:
+            if aborted is not None and aborted.get("value"):
+                raise TimeoutError("provider_wall_clock") from None
+            if _past_deadline(started, clock, deadline_s):
+                raise TimeoutError("provider_wall_clock") from None
+            raise
+        if aborted is not None and aborted.get("value"):
+            raise TimeoutError("provider_wall_clock")
         if not raw:
+            if _past_deadline(started, clock, deadline_s):
+                raise TimeoutError("provider_wall_clock")
             break
         line = raw.decode("utf-8", errors="replace").strip()
         if not line or line.startswith(":"):
@@ -370,25 +394,26 @@ def _read_sse(response, model, *, deadline_s, started, clock=None):
     return assemble_stream(chunks, model)
 
 
-def _exchange(request, timeout_s, model, started, clock, captured):
+def _exchange(request, timeout_s, model, started, clock, captured, aborted):
     """One attempt. There is no retry or backoff loop."""
     response = None
     try:
-        remaining = timeout_s - (clock() - started)
-        if remaining <= 0:
+        if _past_deadline(started, clock, timeout_s):
             captured["error"] = TimeoutError("provider_wall_clock")
             return
+        remaining = max(timeout_s - (clock() - started), DEADLINE_EPSILON_S)
         response = urllib.request.urlopen(request, timeout=remaining)
         captured["response"] = response
-        status = getattr(response, "status", None)
-        if clock() - started > timeout_s:
+        if aborted.get("value") or _past_deadline(started, clock, timeout_s):
             captured["error"] = TimeoutError("provider_wall_clock")
             return
+        status = getattr(response, "status", None)
         if status != 200:
             captured["result"] = (_read_json_body(response.read()), status)
             return
         captured["result"] = (
-            _read_sse(response, model, deadline_s=timeout_s, started=started, clock=clock),
+            _read_sse(response, model, deadline_s=timeout_s, started=started, clock=clock,
+                      aborted=aborted),
             status)
     except urllib.error.HTTPError as error:
         status = getattr(error, "code", None)
@@ -412,29 +437,35 @@ def _exchange(request, timeout_s, model, started, clock, captured):
 def urllib_send(url, body, headers, *, timeout_s, model, started=None, clock=None):
     """Real HTTP POST. Returns ``(payload, status)``. Offline tests must not call this.
 
-    ``started`` is the moment the ledger hold was taken. Connect, response
-    headers, a non-200 body and the SSE stream share that deadline. The caller
-    stops at the deadline plus a short abort slack and does not wait for
-    ``response.close()``, which can block after the provider has already timed out.
+    ``started`` is the moment the ledger hold was taken, on ``time.monotonic``.
+    Connect, response headers, a non-200 body and the SSE stream share that
+    deadline. A paused machine can make wall-clock age longer than this timer;
+    the class of the result still follows monotonic time. Once the deadline is
+    reached, or this function aborts the socket, the result is
+    ``provider_wall_clock`` even if the read comes back as a reset or an empty
+    body. A partial stream after that abort is not a completion.
     """
     clock = clock or time.monotonic
     started = clock() if started is None else started
-    remaining = timeout_s - (clock() - started)
-    if remaining <= 0:
+    if _past_deadline(started, clock, timeout_s):
         raise TimeoutError("provider_wall_clock")
     data = json.dumps(body, ensure_ascii=False).encode()
     request = urllib.request.Request(url, data=data, method="POST", headers=headers)
     captured = {}
+    aborted = {"value": False}
     worker = threading.Thread(
         target=_exchange,
-        args=(request, timeout_s, model, started, clock, captured),
+        args=(request, timeout_s, model, started, clock, captured, aborted),
         daemon=True)
     worker.start()
+    remaining = max(timeout_s - (clock() - started), 0)
     worker.join(remaining)
-    if worker.is_alive() or clock() - started > timeout_s:
+    if worker.is_alive() or _past_deadline(started, clock, timeout_s):
+        aborted["value"] = True
         _abort_socket(captured.get("response"))
         worker.join(_JOIN_SLACK_S)
-    if worker.is_alive() or clock() - started > timeout_s + _JOIN_SLACK_S:
+    # The deadline wins over whatever the worker stored after the abort.
+    if aborted["value"] or _past_deadline(started, clock, timeout_s):
         raise TimeoutError("provider_wall_clock")
     if "error" in captured:
         raise captured["error"]
@@ -526,7 +557,7 @@ class OpenAICompatibleTransport:
             limit = self._timeout_s if timeout_s is None else timeout_s
             try:
                 if (started is not None and clock is not None
-                        and clock() - started > limit):
+                        and _past_deadline(started, clock, limit)):
                     raise TimeoutError("provider_wall_clock")
                 if self._sender is not None:
                     payload = self._sender(url, body, headers)
@@ -534,7 +565,7 @@ class OpenAICompatibleTransport:
                     if isinstance(payload, tuple) and len(payload) == 2 and type(payload[1]) is int:
                         payload, status = payload
                     if (started is not None and clock is not None
-                            and clock() - started > limit):
+                            and _past_deadline(started, clock, limit)):
                         raise TimeoutError("provider_wall_clock")
                 elif self._permit_network:
                     try:
