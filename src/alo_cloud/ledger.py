@@ -49,6 +49,11 @@ def _archive_tree(source, dest):
     return True
 
 
+def _park_tree(source, dest):
+    """Move a live directory aside. Missing sources are left untouched."""
+    return _archive_tree(source, dest)
+
+
 def _archive_records(run_dir, unit_id, dest_dir):
     path = Path(run_dir) / "records.jsonl"
     if not path.is_file():
@@ -143,7 +148,9 @@ def archive_finished(run_dir, *, reason):
     """Move finished unit records aside and start a new protocol epoch.
 
     An empty or missing records file still bumps the epoch. That is the path
-    for a run directory whose archive was already written. The ledger is not
+    for a run directory whose archive was already written. A leftover ``units``
+    or ``checkpoints`` tree is moved into that epoch's archive either way, so
+    the next epoch does not inherit a partial workspace. The ledger is not
     rewritten. Spending from earlier epochs stays inside the CNY caps.
     """
     if not isinstance(reason, str) or not reason.strip():
@@ -158,10 +165,10 @@ def archive_finished(run_dir, *, reason):
     archived_units = 0
     moved = 0
     archive = ""
+    previous = current_epoch(run_dir)
+    root = run_dir / "archive" / "protocol-rerun"
+    dest = root / f"epoch-{previous}"
     if rows:
-        previous = current_epoch(run_dir)
-        root = run_dir / "archive" / "protocol-rerun"
-        dest = root / f"epoch-{previous}"
         dest.mkdir(parents=True, exist_ok=True)
         body = "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows)
         with (dest / "records.jsonl").open("a", encoding="utf-8") as handle:
@@ -181,6 +188,10 @@ def archive_finished(run_dir, *, reason):
             _archive_tree(run_dir / "sealed" / "swe_units" / f"{unit_id}.jsonl", unit_dest / "swe_unit.jsonl")
         records.write_text("", encoding="utf-8")
         archived_units = len(rows)
+        archive = str(dest)
+    parked_units = _park_tree(run_dir / "units", dest / "units")
+    parked_checkpoints = _park_tree(run_dir / "checkpoints", dest / "checkpoints")
+    if parked_units or parked_checkpoints:
         archive = str(dest)
     epoch = begin_epoch(run_dir, reason=reason)
     return {"archived_units": archived_units, "checkpoints": moved, "archive": archive, **epoch}

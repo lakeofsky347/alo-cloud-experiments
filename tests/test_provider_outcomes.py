@@ -550,3 +550,165 @@ def test_resume_skips_a_halted_terminal_row(tmp_path, monkeypatch):
     ledger = BudgetLedger(run / "budget.sqlite3")
     assert all(halted.unit_id not in request_id for request_id in ledger.request_ids())
     assert any(fresh.unit_id in request_id for request_id in ledger.request_ids())
+
+
+def _racing_response(mode):
+    """A response whose read unblocks when the deadline abort shuts the socket."""
+    import threading
+
+    release = threading.Event()
+
+    class Sock:
+        def __init__(self):
+            self.aborted = False
+
+        def settimeout(self, value):
+            return None
+
+        def shutdown(self, how):
+            self.aborted = True
+            release.set()
+
+        def close(self):
+            self.aborted = True
+            release.set()
+
+    class Response:
+        status = 200
+
+        def __init__(self):
+            self._sock = Sock()
+            self._sent_partial = False
+            self.assembled = False
+
+        def readline(self):
+            if mode == "reset":
+                release.wait(5)
+                raise ConnectionResetError("reset by abort")
+            if mode == "timeout":
+                release.wait(5)
+                raise TimeoutError("timed out")
+            if mode == "empty":
+                if not self._sent_partial:
+                    self._sent_partial = True
+                    return (
+                        b'data: {"choices":[{"delta":{"content":"partial"},'
+                        b'"finish_reason":"stop"}],"usage":{"prompt_tokens":3,'
+                        b'"completion_tokens":1,"total_tokens":4}}\n'
+                    )
+                release.wait(5)
+                return b""
+            raise AssertionError(mode)
+
+        def close(self):
+            self.assembled = True
+
+    return Response()
+
+
+def test_deadline_race_is_a_charged_timeout(tmp_path, monkeypatch):
+    import time
+    import urllib.request
+
+    from alo_cloud.freeze import PROVIDER_TIMEOUT_S
+    from alo_cloud.providers import urllib_send
+
+    monkeypatch.setattr(
+        "socket.create_connection", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("network")))
+
+    def run_mode(mode, deadline):
+        response = _racing_response(mode)
+
+        def open_response(*args, **kwargs):
+            return response
+
+        monkeypatch.setattr(urllib.request, "urlopen", open_response)
+        started = time.monotonic()
+        try:
+            urllib_send(
+                "https://api.xiaomimimo.com/v1/chat/completions", {}, {},
+                timeout_s=deadline, model="mimo-v2.6-flash")
+        except TimeoutError as error:
+            assert str(error) == "provider_wall_clock"
+        else:
+            raise AssertionError("partial body was returned as a completion")
+        assert time.monotonic() - started < deadline + 1.0
+        assert response.assembled is False
+        return response
+
+    run_mode("reset", 0.2)
+    run_mode("timeout", 0.2)
+    run_mode("empty", 0.2)
+
+    monkeypatch.setitem(PROVIDER_TIMEOUT_S, "mimo-v2.6-flash", 0.2)
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *args, **kwargs: _racing_response("reset"))
+    services, _seen, ledger = build(tmp_path, monkeypatch, [], permit_network=True)
+    with pytest.raises(PilotStopped, match="provider_deadline_charged"):
+        services.complete_for_model("mimo-v2.6-flash", messages(), max_tokens=16)
+    record = _diag(tmp_path, "req-m1_b0-1")
+    assert record["cause"] == "deadline_timeout"
+    assert record["charged_timeout"] is True
+    assert record["response"] is None
+    counts = json.loads((tmp_path / "progress" / "timeout_counts.json").read_text(encoding="utf-8"))
+    assert counts["charged_timeouts"] == 1
+    assert counts["by_model"]["mimo-v2.6-flash"]["charged_timeouts_in_window"] == 1
+    assert ledger.snapshot()["unresolved_request_ids"] == []
+
+
+def test_return_at_the_deadline_is_a_charged_timeout_even_as_a_body(tmp_path, monkeypatch):
+    state = {"t": 0.0}
+
+    def now():
+        return state["t"]
+
+    def sender(url, body, headers):
+        del url, headers
+        state["t"] = 600
+        return _body(body["model"], "partial", _usage(4, 2))
+
+    services, seen, ledger = build(tmp_path, monkeypatch, [], clock=now)
+    services.transport._sender = sender
+    with pytest.raises(PilotStopped, match="provider_deadline_charged"):
+        services.complete_for_model("mimo-v2.6-flash", messages(), max_tokens=16)
+    record = _diag(tmp_path, "req-m1_b0-1")
+    assert record["cause"] == "deadline_timeout"
+    assert record["charged_timeout"] is True
+    assert "partial" not in json.dumps(record)
+    assert ledger.snapshot()["unresolved_request_ids"] == []
+    assert len(seen) == 0
+
+
+def test_pre_deadline_reset_stays_unknown(tmp_path, monkeypatch):
+    import urllib.request
+
+    from alo_cloud.providers import urllib_send
+
+    class Response:
+        status = 200
+        _sock = None
+
+        def readline(self):
+            raise ConnectionResetError("peer reset")
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *args, **kwargs: Response())
+    with pytest.raises(ConnectionResetError, match="peer reset"):
+        urllib_send(
+            "https://api.xiaomimimo.com/v1/chat/completions", {}, {},
+            timeout_s=30, model="mimo-v2.6-flash")
+
+    def fail(url, body, headers):
+        del url, body, headers
+        raise ConnectionResetError("peer reset")
+
+    services, _seen, ledger = build(tmp_path, monkeypatch, [])
+    services.transport._sender = fail
+    with pytest.raises(PilotStopped, match="provider_outcome_charged"):
+        services.complete_for_model("deepseek-flash", messages(), max_tokens=16)
+    record = _diag(tmp_path, "req-m1_b0-1")
+    assert record["cause"] == "connection_reset"
+    assert record["charged_timeout"] is False
+    assert not (tmp_path / "progress" / "timeout_counts.json").exists()
+    assert ledger.snapshot()["unresolved_request_ids"] == []

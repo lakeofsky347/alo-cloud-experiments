@@ -112,3 +112,34 @@ def test_archive_finished_appends_per_epoch(tmp_path):
     assert "later" in (kept / "epoch-1" / "records.jsonl").read_text(encoding="utf-8")
     combined = (kept / "records.jsonl").read_text(encoding="utf-8")
     assert "kept" in combined and "added" in combined and "later" in combined
+
+
+def test_empty_archive_from_epoch_three_parks_units_and_bumps(tmp_path):
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "protocol_epoch.json").write_text(
+        json.dumps({"epoch": 3, "reason": "epoch 3"}) + "\n", encoding="utf-8")
+    (run / "records.jsonl").write_text("", encoding="utf-8")
+    (run / "unit_restarts.json").write_text(json.dumps({UNIT: 1}), encoding="utf-8")
+    (run / "unknown_outcomes.jsonl").write_text(
+        '{"unit_id":"m1.x","reason":"provider_outcome_charged"}\n', encoding="utf-8")
+    note = run / "units" / UNIT / "state"
+    note.mkdir(parents=True)
+    (note / "note.txt").write_text("partial", encoding="utf-8")
+    (run / "checkpoints" / UNIT).mkdir(parents=True)
+    (run / "checkpoints" / UNIT / "model.patch").write_text("partial-patch", encoding="utf-8")
+    assert main([
+        "archive-finished", "--run-dir", str(run),
+        "--reason", "epoch 3 had no finished records",
+    ]) == 0
+    assert current_epoch(run) == 4
+    assert json.loads((run / "unit_restarts.json").read_text(encoding="utf-8")) == {}
+    assert not (run / "unknown_outcomes.jsonl").exists()
+    assert not (run / "units").exists()
+    assert not (run / "checkpoints").exists()
+    assert (run / "records.jsonl").read_text(encoding="utf-8") == ""
+    parked = run / "archive" / "protocol-rerun" / "epoch-3"
+    assert (parked / "units" / UNIT / "state" / "note.txt").read_text(encoding="utf-8") == "partial"
+    assert (parked / "checkpoints" / UNIT / "model.patch").read_text(encoding="utf-8") == "partial-patch"
+    unknown = (run / "archive" / "epochs" / "3" / "unknown_outcomes.jsonl").read_text(encoding="utf-8")
+    assert "provider_outcome_charged" in unknown
