@@ -60,6 +60,53 @@ def project():
     }
 
 
+def program_bench_rerun_cost(*, b0=None, b1=None, already_pro_microcny=15_000_000):
+    """Expected CNY for one full ProgramBench pass at the given request caps.
+
+    G1 Main is ``mimo-v2.6-flash`` and G1 Strong is ``mimo-v2.6-pro``. Each G3
+    call is split evenly across the four roles. Half of G2 calls are counted as
+    the planner ``deepseek-flash``; the other half is split evenly across the
+    pool. Token size is the frozen 18000/4096 estimate from the first live
+    slice, not a new measurement of the pilot. ``already_pro_microcny`` is
+    spend already in the ledger for mimo-pro.
+    """
+    from .freeze import PB_REQUEST_CAPS
+    wide = PB_REQUEST_CAPS["b0"] if b0 is None else b0
+    short = PB_REQUEST_CAPS["b1"] if b1 is None else b1
+    prices = {model: call_microcny(model) for model in MODEL_POOL}
+    calls = {model: 0.0 for model in MODEL_POOL}
+    units = 0
+    for unit in tuple(iter_units("m1")) + tuple(iter_units("m2")):
+        if unit.track != "ProgramBench":
+            continue
+        units += 1
+        count = wide if unit.phase in {"B0", "learning", "reference"} else short
+        if unit.arm == "g1-main":
+            calls["mimo-v2.6-flash"] += count
+        elif unit.arm == "g1-strong":
+            calls["mimo-v2.6-pro"] += count
+        elif unit.arm == "g3":
+            for model in MODEL_POOL:
+                calls[model] += count / 4
+        else:
+            calls["deepseek-flash"] += count / 2
+            for model in MODEL_POOL:
+                calls[model] += count / 8
+    by_model = {model: int(calls[model] * prices[model]) for model in MODEL_POOL}
+    pro_new = by_model["mimo-v2.6-pro"]
+    return {
+        "units": units,
+        "b0_requests": wide,
+        "b1_requests": short,
+        "calls": calls,
+        "by_model_microcny": by_model,
+        "total_microcny": sum(by_model.values()),
+        "pro_new_microcny": pro_new,
+        "pro_with_already_microcny": pro_new + already_pro_microcny,
+        "per_call_microcny": prices,
+    }
+
+
 def within_budget(summary=None):
     """True when the routed upper bound keeps at least 20% of the 200 CNY total.
 

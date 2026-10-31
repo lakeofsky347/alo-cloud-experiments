@@ -20,6 +20,8 @@ Rust 1.92.0 (rustc, cargo), Go 1.21.0, Python 3.12, build-essential, cmake, git,
 No task-specific packages are preinstalled. The official compile step also blocks the network,
 so compile.sh cannot download dependencies.
 
+Before deep exploration, write a minimal ./compile.sh at the workspace root that builds ./executable, and run it once. Then iterate on the implementation. Do not spend the request budget only on reading files and probing the reference binary.
+
 Make sure that you have a ./compile.sh file that produces an executable ./executable in the workspace root.
 compile.sh should be executable.
 The official scorer runs: chmod +x ./compile.sh && ./compile.sh
@@ -27,3 +29,9 @@ If compile.sh fails to compile on a fresh checkout, the submission has failed.
 A Makefile or cargo project alone is not enough: compile.sh has to produce ./executable.
 Do not ship a prebuilt ./executable. The scorer deletes ./executable before it runs compile.sh.
 """
+
+PROGRAMBENCH_BUDGET_NOTICE = (
+    "Budget notice: 3 or fewer model requests remain in this unit. "
+    "Stop exploring. Finalize compile.sh and ./executable now. "
+    "compile.sh must sit at the workspace root and must build ./executable."
+)

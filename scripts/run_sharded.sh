@@ -43,9 +43,9 @@ if [ ! -d "$DATA_DIR/SWE-bench_Lite" ] || [ ! -d "$DATA_DIR/ProgramBench" ]; the
   exit 2
 fi
 
-# Each shard runs its own M1 units, then its own M2 units. M2 task groups stay
-# intact, so the ProgramBench chain stays on one shard while the other shards
-# can still be inside M1 ProgramBench.
+# Each shard runs its own M1 units, then its own M2 units.
+# SWE M2 orders stay one group. ProgramBench M2 orders are separate shards
+# because they do not share a checkpoint. M1 ProgramBench still uses every shard.
 run_shard() {
   i=$1
   "$PY" -m alo_cloud.run --study m1 --live --run-dir "$RUN_DIR" \

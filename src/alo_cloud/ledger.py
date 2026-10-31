@@ -514,9 +514,14 @@ def requeue_track(run_dir, benchmark, *, reason):
                 or (run_dir / "units" / unit_id).exists()
                 or (run_dir / "sealed" / "programbench" / unit_id).exists()):
             selected.add(unit_id)
+    prior = _track_generations_unlocked(run_dir)
     dest = None
     if selected:
-        base = run_dir / "archive" / "invalidated" / f"epoch-{epoch}" / "programbench"
+        batch_gen = 1 + max((prior.get(unit_id, 0) for unit_id in selected), default=0)
+        # The first invalidation keeps the name already used on the box.
+        # A later one is programbench-pbvN, or that name plus -dupK if occupied.
+        name = "programbench" if batch_gen == 1 else f"programbench-pbv{batch_gen}"
+        base = run_dir / "archive" / "invalidated" / f"epoch-{epoch}" / name
         dest = base if not base.exists() else _unused_path(base)
         dest.mkdir(parents=True, exist_ok=False)
         for unit_id in sorted(selected):
@@ -543,7 +548,6 @@ def requeue_track(run_dir, benchmark, *, reason):
             if removed:
                 _append_text(dest / "records.jsonl", "".join(line + "\n" for line in removed))
                 path.write_text(("\n".join(kept) + "\n") if kept else "", encoding="utf-8")
-    prior = _track_generations_unlocked(run_dir)
     repair = [unit_id for unit_id in sorted(_archived_track_units(run_dir, epoch))
               if unit_id in catalog_set and prior.get(unit_id, 0) == 0 and unit_id not in selected]
     audited = sorted(selected) + repair

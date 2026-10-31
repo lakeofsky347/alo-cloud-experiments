@@ -79,7 +79,7 @@ class StudyServices:
                  sender=None, permit_network=False, sandbox=None, clock=None, public_quality=None,
                  unit_id=None, request_ceiling=None, require_credentials=True, limits=None,
                  restart_count=0, protocol_epoch=0, shard_id="", infra_generation=0,
-                 track_generation=0):
+                 track_generation=0, budget_notice=None):
         if unit not in PROTOCOL_UNIT_LIMITS:
             raise PilotStopped("unknown_protocol_unit")
         if not isinstance(ledger, BudgetLedger):
@@ -107,6 +107,8 @@ class StudyServices:
         self.restart_count = restart_count
         self.infra_generation = infra_generation
         self.track_generation = track_generation
+        self.budget_notice = budget_notice if isinstance(budget_notice, str) and budget_notice else None
+        self.budget_notice_sent = False
         self.protocol_epoch = protocol_epoch
         self.unit = unit
         self.unit_id = unit_id
@@ -295,6 +297,31 @@ class StudyServices:
             self._observed["reasoning_tokens"] += parsed["reasoning_tokens"]
         self._observed["microcny"] += charge
 
+    def _inject_budget_notice(self, messages):
+        """Tell a ProgramBench agent to finish compile.sh when 3 calls remain.
+
+        The notice is appended once, as a system message, and a diagnostic is
+        written. It does not add a model call.
+        """
+        if self.budget_notice is None or self.budget_notice_sent or not isinstance(messages, list):
+            return
+        remaining = self.limits["requests"] - self._observed["model_requests"]
+        if remaining > 3 or remaining < 1:
+            return
+        messages.append({"role": "system", "content": self.budget_notice})
+        self.budget_notice_sent = True
+        label = self.unit_id or self.unit or "unit"
+        try:
+            write_diagnostic(
+                self.ledger, f"notice-{label}-{self._observed['model_requests']}",
+                cause="budget_notice", model="", unit_id=self.unit_id,
+                http_status=None, vendor_code="requests_remaining",
+                vendor_message=self.budget_notice,
+                response={"requests_remaining": remaining},
+                finish_reason=None, latency_ms=0, settled=True)
+        except (OSError, ValueError):
+            return
+
     def complete_for_model(self, model, messages, *, max_tokens=4096):
         if model not in self.available_models:
             raise PilotStopped("model_outside_pool")
@@ -303,6 +330,7 @@ class StudyServices:
         sent_max_tokens = self._sent_max_tokens(model, max_tokens)
         if not _valid_messages(messages):
             raise PilotStopped("invalid_model_messages")
+        self._inject_budget_notice(messages)
         self._ensure_not_blocked()
         self._ensure_wall_clock()
         if self._require_credentials and not credential_configured(model):

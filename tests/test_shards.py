@@ -8,7 +8,7 @@ import pytest
 from alo_cloud.budget import BudgetLedger, BudgetStopped
 from alo_cloud.collect import collect_sealed
 from alo_cloud.errors import PilotStopped
-from alo_cloud.freeze import filter_shard, iter_units, shard_for_task, task_groups
+from alo_cloud.freeze import filter_shard, iter_units, shard_for_task, shard_for_unit, task_groups
 from alo_cloud.run import _append_record, run_schedule
 from alo_cloud.shardlock import exclusive_lock, halt_reason, set_halt
 
@@ -45,10 +45,16 @@ def test_task_groups_keep_chains_and_cover_every_unit():
         if unit.m2_condition != "persist" or not unit.parent_unit_id:
             continue
         parent = next(item for item in m2 if item.unit_id == unit.parent_unit_id)
-        assert shard_for_task(unit.track, unit.task_id, 4) == shard_for_task(parent.track, parent.task_id, 4)
+        assert shard_for_unit(unit, 4) == shard_for_unit(parent, 4)
         twin = next(item for item in m2 if item.task_id == unit.task_id and item.track == unit.track
                     and item.m2_condition == "reset" and item.order_id == unit.order_id)
-        assert shard_for_task(twin.track, twin.task_id, 4) == shard_for_task(unit.track, unit.task_id, 4)
+        assert shard_for_unit(twin, 4) == shard_for_unit(unit, 4)
+        if unit.track == "ProgramBench":
+            other = next(item for item in m2 if item.task_id == unit.task_id and item.track == unit.track
+                         and item.m2_condition == "persist" and item.order_id != unit.order_id)
+            assert shard_for_unit(other, 4) != shard_for_unit(unit, 4)
+        else:
+            assert shard_for_task(unit.track, unit.task_id, 4) == shard_for_task(parent.track, parent.task_id, 4)
 
 
 def _reserve_capped(path, index, queue):

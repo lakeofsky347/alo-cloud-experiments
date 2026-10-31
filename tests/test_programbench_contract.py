@@ -148,6 +148,13 @@ def test_requeue_track_archives_program_bench_and_keeps_swe(tmp_path, monkeypatc
     assert ledger.unit_usage(pb.unit_id, protocol_epoch=4, restart_count=0)["requests"] == 1
     assert ledger.unit_usage(
         pb.unit_id, protocol_epoch=4, restart_count=0, track_generation=1)["requests"] == 1
+    second = requeue_track(run, "ProgramBench", reason="pb_budget_too_small")
+    assert pb.unit_id in second["requeued"]
+    assert swe.unit_id not in second["requeued"]
+    assert (run / "archive" / "invalidated" / "epoch-4" / "programbench-pbv2" / pb.unit_id).is_dir()
+    assert (archive / pb.unit_id / "checkpoint" / "adapter.json").is_file()
+    assert track_generations(run)[pb.unit_id] == 2
+    assert swe.unit_id in (run / "records.jsonl").read_text(encoding="utf-8")
 
 
 def test_scoring_cpus_and_container_start_failure(tmp_path, monkeypatch):
@@ -178,13 +185,72 @@ def test_scoring_cpus_and_container_start_failure(tmp_path, monkeypatch):
     assert report["units"][0]["status"] == "harness_failed"
 
 
-def test_m1_program_bench_uses_every_shard_and_m2_chain_stays_one_group():
+def test_program_bench_request_caps_stay_inside_the_protocol_maxima():
+    from alo_cloud.freeze import PB_REQUEST_CAPS
+    from alo_cloud.services import PROTOCOL_UNIT_LIMITS
+    assert PB_REQUEST_CAPS["b0"] <= PROTOCOL_UNIT_LIMITS["m1_b0"]["requests"]
+    assert PB_REQUEST_CAPS["b1"] <= PROTOCOL_UNIT_LIMITS["m1_b1"]["requests"]
+    pb = [unit for unit in iter_units("m1") if unit.track == "ProgramBench"]
+    assert {unit.request_cap for unit in pb if unit.phase == "B0"} == {PB_REQUEST_CAPS["b0"]}
+    assert {unit.request_cap for unit in pb if unit.phase == "B1-self"} == {PB_REQUEST_CAPS["b1"]}
+    assert len({unit.arm for unit in pb}) == 4
+    swe = [unit for unit in iter_units("m1") if unit.track == "SWE-bench_Lite" and unit.phase == "B0"]
+    assert {unit.request_cap for unit in swe} == {12}
+    learning = [unit for unit in iter_units("m2")
+                if unit.track == "ProgramBench" and unit.phase == "learning"]
+    assert {unit.request_cap for unit in learning} == {PB_REQUEST_CAPS["learning"]}
+    g3 = next(unit for unit in pb if unit.arm == "g3" and unit.phase == "B0")
+    assert g3.request_cap == PB_REQUEST_CAPS["b0"]
+    assert g3.request_cap != PB_REQUEST_CAPS["b0"] * 4
+
+
+def test_budget_notice_is_injected_when_three_requests_remain(tmp_path, monkeypatch):
+    from alo_cloud.programbench_prompt import PROGRAMBENCH_BUDGET_NOTICE
+    from tests.test_services import build, messages
+    monkeypatch.setattr(
+        "urllib.request.urlopen", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("network")))
+    replies = [
+        {"model": "mimo-v2.6-flash", "choices": [{"message": {"content": "look"}}],
+         "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}},
+        {"model": "mimo-v2.6-flash", "choices": [{"message": {"content": "build"}}],
+         "usage": {"prompt_tokens": 4, "completion_tokens": 2, "total_tokens": 6}},
+    ]
+    services, seen, _ledger = build(tmp_path, monkeypatch, replies)
+    services.budget_notice = PROGRAMBENCH_BUDGET_NOTICE
+    services.limits["requests"] = 4
+    thread = [{"role": "user", "content": "task"}]
+    services.complete_for_model("mimo-v2.6-flash", thread, max_tokens=16)
+    assert PROGRAMBENCH_BUDGET_NOTICE not in json.dumps(seen[0]["body"])
+    services.complete_for_model("mimo-v2.6-flash", thread, max_tokens=16)
+    assert PROGRAMBENCH_BUDGET_NOTICE in json.dumps(seen[1]["body"])
+    assert services.budget_notice_sent is True
+    recorded = json.loads(next((tmp_path / "diagnostics").glob("notice-*.json")).read_text())
+    assert recorded["cause"] == "budget_notice"
+    assert recorded["response"]["requests_remaining"] == 3
+    assert "compile.sh" in recorded["vendor_message"]
+
+
+def test_program_bench_rerun_keeps_mimo_pro_under_45_cny():
+    from alo_cloud.projection import program_bench_rerun_cost
+    chosen = program_bench_rerun_cost()
+    assert chosen["units"] == 90
+    assert chosen["pro_with_already_microcny"] <= 45_000_000
+    wider = program_bench_rerun_cost(b0=40, b1=25)
+    assert wider["pro_with_already_microcny"] > 45_000_000
+
+
+def test_m1_program_bench_uses_every_shard_and_m2_orders_split():
     m1 = [unit.task_id for unit in iter_units("m1")
           if unit.track == "ProgramBench" and unit.phase == "B0" and unit.arm == "g1-main"]
     assert {shard_for_task("ProgramBench", task_id, 4) for task_id in m1} == {0, 1, 2, 3}
+    from alo_cloud.freeze import shard_for_unit
     m2 = [unit for unit in iter_units("m2") if unit.track == "ProgramBench" and unit.m2_condition == "persist"]
-    shards = {shard_for_task(unit.track, unit.task_id, 4) for unit in m2}
-    assert len(shards) == 1
+    by_order = {}
+    for unit in m2:
+        by_order.setdefault(unit.order_id, set()).add(shard_for_unit(unit, 4))
+    assert len(by_order) == 2
+    assert all(len(shards) == 1 for shards in by_order.values())
+    assert len({next(iter(shards)) for shards in by_order.values()}) == 2
     text = Path("scripts/run_sharded.sh").read_text(encoding="utf-8")
     assert text.index("--study m2") < text.index('wait "$pid"')
-    assert "M2 task groups stay" in text
+    assert "ProgramBench M2 orders are separate shards" in text
