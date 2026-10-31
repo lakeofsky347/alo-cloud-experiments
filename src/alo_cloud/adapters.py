@@ -10,10 +10,14 @@ from __future__ import annotations
 import copy
 from contextlib import contextmanager
 from dataclasses import asdict
+import hashlib
 import importlib.metadata
 import json
 import math
+from pathlib import Path
 import random
+import shutil
+import tempfile
 import time
 
 from .native_bridge import BoundModel, native_client
@@ -24,6 +28,31 @@ from .policy import ConstrainedThompsonPolicy, POLICY_VERSION
 from .tool_loop import TOOL_LOOP_VERSION, persistent_tool_loop
 
 ROLE_ORDER = ("Planner", "Engineer", "Critic", "Verifier")
+_UNSET = object()
+
+
+def _db_digest(path):
+    """Hash a closed SQLite file and any leftover WAL/SHM siblings."""
+    path = Path(path)
+    if not path.is_file():
+        return None
+    digest = hashlib.sha256()
+    for candidate in (path, Path(str(path) + "-wal"), Path(str(path) + "-shm")):
+        if candidate.is_file():
+            digest.update(b"\0")
+            digest.update(candidate.name.encode())
+            digest.update(candidate.read_bytes())
+    return digest.hexdigest()
+
+
+def _copy_db(source, dest):
+    dest = Path(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, dest)
+    for suffix in ("-wal", "-shm"):
+        extra = Path(str(source) + suffix)
+        if extra.is_file():
+            shutil.copy2(extra, Path(str(dest) + suffix))
 
 def _models(services):
     models = tuple(services.available_models)
@@ -71,7 +100,10 @@ class FixedSingleAgent:
 
     def run_stage(self, stage, services):
         models = _models(services)
-        self.fixed_model = self.fixed_model or models[0]
+        if not self.fixed_model:
+            raise PilotStopped("fixed_model_required")
+        if self.fixed_model not in models:
+            raise PilotStopped("fixed_model_outside_common_pool")
         return persistent_tool_loop(BoundModel(services, self.fixed_model),
             json.dumps(stage, ensure_ascii=False), self.messages, max_turns=self.max_turns)
 
@@ -92,13 +124,10 @@ class HeterogeneousGroupChat:
         if self.model_pool is not None and tuple(self.model_pool) != tuple(models):
             raise PilotStopped("groupchat_checkpoint_common_pool_changed")
         self.model_pool = tuple(models)
-        if self.role_models is None:
-            self.role_models = {"Planner": models[0], "Engineer": models[min(2, len(models) - 1)],
-                                "Critic": models[min(1, len(models) - 1)]}
-            if len(models) > 3:
-                self.role_models["Verifier"] = models[3]
-        self.manager_model = self.manager_model or models[min(1, len(models) - 1)]
-        if (not self.role_models or set(self.role_models) - {*ROLE_INSTRUCTIONS, "Verifier"}
+        # Role and selector bindings are not frozen. Pool position is not a contract.
+        if not self.role_models or not self.manager_model:
+            raise PilotStopped("groupchat_role_and_manager_binding_required")
+        if (set(self.role_models) - {*ROLE_INSTRUCTIONS, "Verifier"}
                 or any(m not in models for m in self.role_models.values()) or self.manager_model not in models):
             raise PilotStopped("groupchat_model_configuration_outside_common_pool")
 
@@ -195,15 +224,26 @@ class _TMSGate:
 
 class HeterogeneousALO:
     def __init__(self, *, planner_model=None, max_turns=10, max_attempts=2, seed=20261027,
-                 policy_priors=None, safety_multiplier=1.25, organization_updates=True):
+                 policy_priors=None, safety_multiplier=1.25, organization_updates=_UNSET,
+                 probe=False, cold_prior=False):
         if (type(max_turns) is not int or max_turns < 1
                 or type(max_attempts) is not int or max_attempts < 1):
             raise PilotStopped("invalid_alo_attempt_or_turn_limit")
+        if cold_prior and not probe:
+            raise PilotStopped("cold_prior_requires_probe")
+        if organization_updates is _UNSET:
+            organization_updates = not probe
+        elif probe and organization_updates:
+            raise PilotStopped("probe_forbids_organization_updates")
+        if probe:
+            organization_updates = False
         self.config = {"planner_model": planner_model, "max_turns": max_turns,
                        "max_attempts": max_attempts, "seed": seed,
                        "policy_priors": copy.deepcopy(policy_priors or {}),
                        "safety_multiplier": safety_multiplier,
-                       "organization_updates": bool(organization_updates), "policy_version": POLICY_VERSION,
+                       "organization_updates": bool(organization_updates),
+                       "probe": bool(probe), "cold_prior": bool(cold_prior),
+                       "policy_version": POLICY_VERSION,
                        "tool_loop_version": TOOL_LOOP_VERSION}
         self.state = {"observations": {}, "worker_transcripts": {}, "planner_messages": []}
 
@@ -226,7 +266,9 @@ class HeterogeneousALO:
             raise PilotStopped("alo_checkpoint_common_pool_changed")
         self.state["model_pool"] = list(models)
         self.state["last_criterion_statuses"] = []
-        planner_model = self.config["planner_model"] or models[min(1, len(models) - 1)]
+        planner_model = self.config["planner_model"]
+        if not planner_model:
+            raise PilotStopped("planner_model_required")
         if planner_model not in models:
             raise PilotStopped("planner_model_outside_common_pool")
         adapter, active, last = self, {}, {}
@@ -235,7 +277,32 @@ class HeterogeneousALO:
             def tuples(value):
                 return tuple(tuples(x) for x in value) if isinstance(value, (list, tuple)) else value
             rng.setstate(tuples(self.state["rng_state"]))
-        org = Organization(str(services.state_dir / "alo.sqlite3"))
+        source_db = Path(services.state_dir) / "alo.sqlite3"
+        probe = self.config["probe"]
+        if probe and self.config["organization_updates"]:
+            raise PilotStopped("probe_forbids_organization_updates")
+        probe_dir = None
+        source_digest = _db_digest(source_db) if probe else None
+        observations_before = copy.deepcopy(self.state["observations"]) if probe else None
+        if probe:
+            probe_dir = tempfile.TemporaryDirectory(prefix="alo-probe-")
+            db_path = Path(probe_dir.name) / "alo.sqlite3"
+            if self.config["cold_prior"]:
+                # Common prior only. Do not copy the last reset task's posterior.
+                pass
+            elif source_digest is None:
+                probe_dir.cleanup()
+                raise PilotStopped("learned_terminal_probe_requires_source_organization")
+            else:
+                _copy_db(source_db, db_path)
+        else:
+            db_path = source_db
+        try:
+            org = Organization(str(db_path))
+        except BaseException:
+            if probe_dir is not None:
+                probe_dir.cleanup()
+            raise
         learn = lambda: self.config["organization_updates"] and last.get("local_contract_status") in {"pass", "fail"}
         org.belief, org.tms = _BeliefGate(org.belief, learn), _TMSGate(org.tms, learn)
         for role, assignment in self.state.get("assignments", {}).items():
@@ -363,7 +430,8 @@ class HeterogeneousALO:
                 max_attempts=self.config["max_attempts"], criteria_fn=criterion, assignment_policy=policy,
                 remediation=BudgetedRemediation(), execution_scope=scope,
                 extra_state={"task_description": task, "persistent_workspace": "Inspect your own files using public tools."},
-                event_fn=lambda event, data: services.event("alo_" + event, data))
+                event_fn=lambda event, data: services.event("alo_" + event, data),
+                include_synthetic_context=False)
             self.state["last_native_run"] = asdict(result)
             self.state["last_native_run"]["boolean_success_semantics"] = "protocol_flow_or_reliable_local_contract_only"
             self.state["last_native_run"]["native_cost_counter_authoritative"] = False
@@ -371,17 +439,40 @@ class HeterogeneousALO:
                     "summary": "native ALO protocol/local-contract flow; unknown is excluded from capability learning",
                     "private_acceptance": "independent_final_evaluator_only"}
         finally:
+            if probe:
+                belief_rows = org.conn.execute("SELECT count(*) FROM belief").fetchone()[0]
+                tms_rows = org.conn.execute("SELECT count(*) FROM tms_outcomes").fetchone()[0]
             self.state["assignments"] = {role: asdict(value) for role, value in org._assignments.items()}
             self.state["rng_state"] = rng.getstate()
             org.conn.close()
+            if probe:
+                try:
+                    if self.state["observations"] != observations_before:
+                        raise PilotStopped("probe_updated_policy_observations")
+                    if _db_digest(source_db) != source_digest:
+                        raise PilotStopped("probe_mutated_source_organization")
+                    self.state["probe_isolation"] = {
+                        "prior": "cold" if self.config["cold_prior"] else "learned_terminal",
+                        "belief_rows": belief_rows, "tms_rows": tms_rows,
+                        "source_unchanged": True, "organization_updates": False,
+                    }
+                finally:
+                    probe_dir.cleanup()
 
 
 def adapter_for(group, config=None):
     config = dict(config or {})
     if group == "G1":
+        # Main uses G1_MAIN_MODEL; Strong is unselected and must be passed explicitly too.
+        if not config.get("fixed_model"):
+            raise PilotStopped("g1_fixed_model_required")
         return FixedSingleAgent(**config)
     if group == "G2":
+        if not config.get("planner_model"):
+            raise PilotStopped("planner_model_required")
         return HeterogeneousALO(**config)
     if group == "G3":
+        if not config.get("role_models") or not config.get("manager_model"):
+            raise PilotStopped("groupchat_role_and_manager_binding_required")
         return HeterogeneousGroupChat(**config)
     raise PilotStopped("unknown_trial_group")
