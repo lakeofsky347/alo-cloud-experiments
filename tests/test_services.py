@@ -37,8 +37,12 @@ def scripted(replies):
 
     def sender(url, body, headers):
         blob = json.dumps(body, ensure_ascii=False)
-        seen.append({"url": url, "body": body, "blob": blob,
-                     "auth_sha256": hashlib.sha256(headers["Authorization"].encode()).hexdigest()})
+        if "api-key" in headers:
+            scheme, material = "api-key", headers["api-key"]
+        else:
+            scheme, material = "bearer", headers["Authorization"]
+        seen.append({"url": url, "body": body, "blob": blob, "auth_scheme": scheme,
+                     "auth_sha256": hashlib.sha256(material.encode()).hexdigest()})
         if not replies:
             raise RuntimeError("scripted transport exhausted")
         reply = replies.pop(0)
@@ -96,11 +100,14 @@ def test_protocol_limits_and_payg_endpoints_are_explicit():
         assert limits["max_output_tokens"] == 4096
     assert set(POOL_ENDPOINTS) == set(MODEL_POOL)
     assert POOL_ENDPOINTS["deepseek-flash"] == (
-        "DEEPSEEK_API_KEY", "https://api.deepseek.com/chat/completions")
+        "DEEPSEEK_API_KEY", "https://api.deepseek.com/chat/completions", "bearer")
     assert POOL_ENDPOINTS["mimo-v2.6-flash"][0] == POOL_ENDPOINTS["mimo-v2.6-pro"][0] == "MIMO_API_KEY"
-    assert POOL_ENDPOINTS["glm-5.3-flash"][0] == "ZAI_API_KEY"
-    assert POOL_ENDPOINTS["glm-5.3-flash"][1] == "https://api.z.ai/api/paas/v4/chat/completions"
-    assert all("token-plan" not in url and "coding" not in url for _env, url in POOL_ENDPOINTS.values())
+    assert POOL_ENDPOINTS["mimo-v2.6-flash"][1] == "https://api.xiaomimimo.com/v1/chat/completions"
+    assert POOL_ENDPOINTS["mimo-v2.6-flash"][2] == POOL_ENDPOINTS["mimo-v2.6-pro"][2] == "api-key"
+    assert POOL_ENDPOINTS["glm-5.3-flash"] == (
+        "ZAI_API_KEY", "https://open.bigmodel.cn/api/paas/v4/chat/completions", "bearer")
+    assert all("token-plan" not in url and "api.z.ai" not in url
+               for _env, url, _auth in POOL_ENDPOINTS.values())
 
 
 def test_missing_sender_or_two_senders_refused(tmp_path):
@@ -120,7 +127,7 @@ def test_missing_sender_or_two_senders_refused(tmp_path):
 
 def test_completion_settles_four_dimensions_without_logging_the_key(tmp_path, monkeypatch):
     services, seen, ledger = build(tmp_path, monkeypatch, [
-        chat("visible-reply-text", "mimo-v2.6-flash", reasoning=4),
+        chat("visible-reply-text", "mimo-v2.6-flash", prompt=3, completion=6, reasoning=4),
         chat("second", "deepseek-flash"),
         chat("third", "glm-5.3-flash"),
         chat("fourth", "mimo-v2.6-pro"),
@@ -132,14 +139,21 @@ def test_completion_settles_four_dimensions_without_logging_the_key(tmp_path, mo
     assert first["cost_microcny"] == 1
     assert first["reasoning_tokens"] == 4
     assert seen[0]["url"] == POOL_ENDPOINTS["mimo-v2.6-flash"][1]
-    assert seen[0]["body"]["max_tokens"] == 128
+    assert seen[0]["body"]["max_completion_tokens"] == 128
+    assert "max_tokens" not in seen[0]["body"]
     assert seen[0]["body"]["stream"] is False
     assert "temperature" not in seen[0]["body"] and "thinking" not in seen[0]["body"]
+    assert seen[0]["auth_scheme"] == "api-key"
     assert KEYS["MIMO_API_KEY"] not in seen[0]["blob"]
-    assert seen[0]["auth_sha256"] == hashlib.sha256(
-        ("Bearer " + KEYS["MIMO_API_KEY"]).encode()).hexdigest()
+    assert seen[0]["auth_sha256"] == hashlib.sha256(KEYS["MIMO_API_KEY"].encode()).hexdigest()
     services.complete_for_model("deepseek-flash", messages("next"))
+    assert seen[1]["body"]["max_tokens"] == 4096 and "thinking" not in seen[1]["body"]
+    assert seen[1]["auth_scheme"] == "bearer"
     services.complete_for_model("glm-5.3-flash", messages("glm"))
+    assert seen[2]["body"]["thinking"] == {"type": "enabled"}
+    assert seen[2]["body"]["max_tokens"] == 4096
+    assert "max_completion_tokens" not in seen[2]["body"]
+    assert "reasoning_effort" not in seen[2]["body"]
     services.complete_for_model("mimo-v2.6-pro", messages("pro"))
     assert [item["url"] for item in seen] == [
         POOL_ENDPOINTS[model][1] for model in
@@ -147,7 +161,7 @@ def test_completion_settles_four_dimensions_without_logging_the_key(tmp_path, mo
     remaining = services.budget_remaining("mimo-v2.6-flash")
     assert set(remaining) == set(RESOURCE_FIELDS)
     assert remaining["requests"] == 32 - 4
-    assert remaining["tokens"] == 900_000 - (5 + 5 + 5 + 5)
+    assert remaining["tokens"] == 900_000 - (9 + 5 + 5 + 5)
     assert remaining["cny"] == (PER_MODEL_LIMIT_MICROCNY - 1) / 1_000_000
     assert services.budget_remaining("deepseek-flash")["requests"] == remaining["requests"]
     assert services.resources()["model_requests"] == 4
@@ -159,9 +173,37 @@ def test_completion_settles_four_dimensions_without_logging_the_key(tmp_path, mo
     monkeypatch.setenv("MIMO_API_KEY", "unit-test-credential-mimo-rotated")
     services.complete_for_model("mimo-v2.6-flash", messages("rotated"), max_tokens=32)
     assert seen[-1]["auth_sha256"] == hashlib.sha256(
-        b"Bearer unit-test-credential-mimo-rotated").hexdigest()
+        b"unit-test-credential-mimo-rotated").hexdigest()
     assert seen[-1]["auth_sha256"] != seen[0]["auth_sha256"]
     ledger.snapshot()
+
+
+def test_reasoning_tokens_stay_inside_the_completion_total(tmp_path, monkeypatch):
+    included = chat("answer", "glm-5.3-flash", prompt=3, completion=10, reasoning=4)
+    services, _seen, ledger = build(tmp_path, monkeypatch, [included])
+    result = services.complete_for_model("glm-5.3-flash", messages())
+    assert result["reasoning_tokens"] == 4
+    assert ledger.snapshot()["used_tokens"] == 13
+    assert services.resources()["observed_reasoning_tokens"] == 4
+    assert services.events[-1][1]["reasoning_tokens"] == 4
+
+    oversized = chat("x", "deepseek-flash", prompt=1, completion=2, reasoning=9)
+    blocked, blocked_seen, _ledger = build(tmp_path / "over", monkeypatch, [oversized, chat("y", "deepseek-flash")])
+    with pytest.raises(PilotStopped, match="provider_outcome_unknown"):
+        blocked.complete_for_model("deepseek-flash", messages())
+    with pytest.raises(PilotStopped, match="unresolved"):
+        blocked.complete_for_model("deepseek-flash", messages())
+    assert len(blocked_seen) == 1
+
+    unsplit = {"model": "glm-5.3-flash", "choices": [{"message": {"content": "x"}}],
+               "usage": {"prompt_tokens": 8, "completion_tokens": 239, "total_tokens": 247,
+                         "prompt_tokens_details": {"cached_tokens": 0}}}
+    quiet, _seen, quiet_ledger = build(tmp_path / "quiet", monkeypatch, [unsplit])
+    quiet_result = quiet.complete_for_model("glm-5.3-flash", messages())
+    assert quiet_result["reasoning_tokens"] is None
+    assert quiet.resources()["observed_reasoning_tokens"] == 0
+    assert quiet_ledger.snapshot()["used_tokens"] == 247
+    assert quiet.events[-1][1]["reasoning_tokens"] is None
 
 
 def test_missing_key_bad_usage_and_over_charge_stop_before_another_send(tmp_path, monkeypatch):
@@ -393,7 +435,8 @@ def test_permit_network_posts_through_a_replaced_urlopen(tmp_path, monkeypatch):
     services, _seen, _ledger = build(tmp_path, monkeypatch, [], permit_network=True)
     result = services.complete_for_model("glm-5.3-flash", messages("ping"), max_tokens=32)
     assert result["text"] == "from-mock"
-    assert captured["url"] == "https://api.z.ai/api/paas/v4/chat/completions"
+    assert captured["url"] == "https://open.bigmodel.cn/api/paas/v4/chat/completions"
     assert captured["authorization"].startswith("Bearer ")
     assert KEYS["ZAI_API_KEY"] not in captured["data"]
     assert '"max_tokens": 32' in captured["data"] or '"max_tokens":32' in captured["data"]
+    assert '"type": "enabled"' in captured["data"] or '"type":"enabled"' in captured["data"]

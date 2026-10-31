@@ -39,7 +39,7 @@ Linux执行需明确选择受支持的本地Docker后端，核对原生amd64、�
 | 预算 | 在私有运行存储核对每模型累计使用与未决预留；不得按新仓库重置50 CNY上限 |
 | 冻结 | 绑定代码版本、最终任务、阶段、预算、顺序、模型及评分合同后才可启动对应采集 |
 
-`StudyServices` 的离线测试注入 sender 和计费函数，不读取真实密钥，也不含价格表。付费运行前仍要：用私有账本填写期初占用（空账本不是零使用的证据）；提供单次 microcny 上限和 `charge_microcny`；只在进程环境里提供 `DEEPSEEK_API_KEY`、`MIMO_API_KEY`、`ZAI_API_KEY`，并在调用时读取；显式允许网络发送；接受目标镜像上的 Docker `--network=none` 封装；确认 MiMo 是否还必须使用 `max_completion_tokens`，以及 GLM-5.3-Flash 的 thinking 只能开启。本次传输不发送采样或 thinking 参数。上述准备没有选定 Strong，也没有写成 M1／M2 调度器。
+`StudyServices` 的离线测试注入 sender 和计费函数，不读取真实密钥，也不含价格表。传输已改到中国站按量入口：MiMo 发送 `max_completion_tokens`，GLM-5.3-Flash 发送 `thinking.type=enabled`；tokens 按 `prompt + completion` 入账，reasoning 明细不重复加计。付费运行前仍要：用私有账本填写期初占用（空账本不是零使用的证据）；提供单次 microcny 上限和 `charge_microcny`；只在进程环境里提供 `DEEPSEEK_API_KEY`、`MIMO_API_KEY`、`ZAI_API_KEY`，并在调用时读取；显式允许网络发送；接受目标镜像上的 Docker `--network=none` 封装。采样、`reasoning_effort` 和 `clear_thinking` 仍未发送。上述准备没有选定 Strong，也没有写成 M1／M2 调度器。
 
 离线测试通过只说明其覆盖的软件行为；零API容器控制通过只说明相应环境行为。它们不证明真实模型质量、整体研究功效或跨任务学习效果。
 

@@ -70,6 +70,8 @@ ALO 在一次任务开始生成 DAG，当前按固定拓扑顺序串行执行；
 
 每模型累计 50 CNY、四模型共 200 CNY，包含此前使用、失败与未知预留，跨批次不重置、不挪用。新仓库不附历史账本；期初占用必须在私有运行存储核对并绑定，缺失或不完整时不派发。开发平均费用不代替最坏情形可行性；全部角色、反馈及验证开销均计量，token合同明确输入、输出、reasoning与缺失语义。
 
+2026-10-31 业主决定了两项请求参数，详见[模型清单](models_and_benchmarks.md)：MiMo 按量请求只发送 `max_completion_tokens`（官方字段已经包含可见输出和推理 token，不再并送 `max_tokens`）；GLM-5.3-Flash 发送 `thinking.type=enabled`。账本里的 tokens 只记 `total_tokens`，并且该值必须等于 `prompt_tokens + completion_tokens`。`reasoning_tokens` 只作为 completion 的明细，必须小于等于 `completion_tokens`，不能再加一次。明细缺失时不把 reasoning 记成测得的 0，但 completion 里已经包含的用量仍算进 tokens。采样、`reasoning_effort` 和 `clear_thinking` 这次没有一起决定。
+
 派发前预留，未知派发不自动重试或释放预留。遇到 provider outcome unknown，停止当前采集并封存；任何恢复必须使用明确的新身份和恢复合同。配对任务块无法共同满足预算时停止并保留未启动单位，不将后执行系统单方面受限解释为算法差异。
 
 ## 正式冻结与后置研究
