@@ -5,10 +5,11 @@ quota service, price calculator, complete usage reconciler, or immutable audit
 store. Production admission must bind trusted opening commitments and usage
 bounds independently; there are no historical balances or prices in this file.
 
-Schema v2 adds the four dimensions ``ConstrainedThompsonPolicy`` reads
-(requests, tokens, seconds, cny) plus a separate tool-call counter. Requests,
-tokens and seconds are unit-shared; CNY stays per model. A v1 file is refused
-rather than opened with a partial balance. Missing ceilings do not become zero.
+Schema v3 adds an optional study-wide CNY total and a ``unit_id`` on each
+hold so one file can carry the paid run. Requests, tokens, seconds and tools
+stay inside the active unit when ``unit_id`` is set; CNY stays per model, and
+the optional total caps the sum. A v1 or v2 file is refused rather than opened
+with a partial balance. Missing ceilings do not become zero.
 """
 from __future__ import annotations
 
@@ -20,7 +21,7 @@ import re
 import sqlite3
 
 
-SCHEMA = "alo-local-budget-scaffold-v2"
+SCHEMA = "alo-local-budget-scaffold-v3"
 MICROCNY_PER_CNY = 1_000_000
 
 
@@ -69,7 +70,7 @@ class BudgetLedger:
     @classmethod
     def create(cls, path, *, model_limits_microcny, opening_commitments_microcny, max_requests, prior_requests,
                max_tokens=None, prior_tokens=None, max_seconds_ms=None, prior_seconds_ms=None,
-               max_tools=None, prior_tools=None):
+               max_tools=None, prior_tools=None, total_limit_microcny=None, run_mode=None):
         """Create only new state, with explicit opening usage for every model.
 
         Passing zero opening usage is a caller assertion, not evidence of a fresh
@@ -93,6 +94,12 @@ class BudgetLedger:
         token_ceiling = _ceiling(max_tokens, prior_tokens, "token")
         second_ceiling = _ceiling(max_seconds_ms, prior_seconds_ms, "seconds")
         tool_ceiling = _ceiling(max_tools, prior_tools, "tool")
+        if total_limit_microcny is not None:
+            _integer(total_limit_microcny, positive=True)
+            if sum(opening.values()) > total_limit_microcny:
+                raise ValueError("opening_commitment_exceeds_total_limit")
+        if run_mode is not None and run_mode not in {"dry-run", "live"}:
+            raise ValueError("invalid_run_mode")
         path = Path(path)
         fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         os.close(fd)
@@ -106,9 +113,11 @@ class BudgetLedger:
                     reserved_tokens INTEGER NOT NULL DEFAULT 0,
                     held_tokens INTEGER NOT NULL DEFAULT 0,
                     reserved_seconds_ms INTEGER NOT NULL DEFAULT 0,
-                    held_seconds_ms INTEGER NOT NULL DEFAULT 0);
+                    held_seconds_ms INTEGER NOT NULL DEFAULT 0,
+                    unit_id TEXT NOT NULL DEFAULT '');
                 CREATE TABLE tool_calls(id TEXT PRIMARY KEY, status TEXT NOT NULL,
-                    reserved_seconds_ms INTEGER NOT NULL, held_seconds_ms INTEGER NOT NULL);
+                    reserved_seconds_ms INTEGER NOT NULL, held_seconds_ms INTEGER NOT NULL,
+                    unit_id TEXT NOT NULL DEFAULT '');
             """)
             values = {"schema": SCHEMA, "limits": json.dumps(limits),
                       "opening": json.dumps(opening), "max_requests": str(max_requests),
@@ -122,6 +131,10 @@ class BudgetLedger:
             if tool_ceiling is not None:
                 values["max_tools"] = str(tool_ceiling[0])
                 values["prior_tools"] = str(tool_ceiling[1])
+            if total_limit_microcny is not None:
+                values["total_limit_microcny"] = str(total_limit_microcny)
+            if run_mode is not None:
+                values["run_mode"] = run_mode
             conn.executemany("INSERT INTO meta VALUES (?,?)", values.items())
             conn.commit()
         finally:
@@ -153,9 +166,11 @@ class BudgetLedger:
         meta = dict(conn.execute("SELECT key,value FROM meta"))
         limits, used = json.loads(meta["limits"]), json.loads(meta["opening"])
         rows = list(conn.execute(
-            "SELECT id,model,reserved,held,status,held_tokens,held_seconds_ms FROM requests ORDER BY rowid"))
-        tools = list(conn.execute("SELECT id,status,held_seconds_ms FROM tool_calls ORDER BY rowid"))
-        for _, model, _, held, _, _, _ in rows:
+            """SELECT id,model,reserved,held,status,held_tokens,held_seconds_ms,unit_id
+               FROM requests ORDER BY rowid"""))
+        tools = list(conn.execute(
+            "SELECT id,status,held_seconds_ms,unit_id FROM tool_calls ORDER BY rowid"))
+        for _request_id, model, _reserved, held, _status, _tokens, _seconds, _unit in rows:
             used[model] += held
         used_tokens = int(meta.get("prior_tokens", "0")) + sum(row[5] for row in rows)
         used_seconds_ms = (int(meta.get("prior_seconds_ms", "0")) + sum(row[6] for row in rows)
@@ -170,9 +185,15 @@ class BudgetLedger:
                  "used_seconds_ms": used_seconds_ms,
                  "used_tools": int(meta.get("prior_tools", "0")) + len(tools),
                  "is_execution_permit": False}
-        for key in ("max_tokens", "prior_tokens", "max_seconds_ms", "prior_seconds_ms", "max_tools", "prior_tools"):
+        for key in ("max_tokens", "prior_tokens", "max_seconds_ms", "prior_seconds_ms", "max_tools", "prior_tools",
+                    "total_limit_microcny"):
             if key in meta:
                 state[key] = int(meta[key])
+        if "run_mode" in meta:
+            state["run_mode"] = meta["run_mode"]
+        if "total_limit_microcny" in state:
+            state["total_committed_microcny"] = sum(used.values())
+            state["remaining_total_microcny"] = state["total_limit_microcny"] - state["total_committed_microcny"]
         return state
 
     def snapshot(self):
@@ -180,27 +201,67 @@ class BudgetLedger:
         with self._transaction() as conn:
             return self._snapshot(conn)
 
-    def remaining_resources(self, model):
+    def request_ids(self):
+        """Every request id in this file, settled or not."""
+        with self._transaction() as conn:
+            return [row[0] for row in conn.execute("SELECT id FROM requests ORDER BY rowid")]
+
+    def unit_usage(self, unit_id):
+        """Resource counters for one unit. CNY is not included; it stays global."""
+        _id(unit_id)
+        with self._transaction() as conn:
+            return self._unit_usage(conn, unit_id)
+
+    @staticmethod
+    def _unit_usage(conn, unit_id):
+        requests = conn.execute(
+            """SELECT COUNT(*), COALESCE(SUM(held_tokens),0), COALESCE(SUM(held_seconds_ms),0)
+               FROM requests WHERE unit_id=?""",
+            (unit_id,)).fetchone()
+        tools = conn.execute(
+            """SELECT COUNT(*), COALESCE(SUM(held_seconds_ms),0)
+               FROM tool_calls WHERE unit_id=?""",
+            (unit_id,)).fetchone()
+        return {"requests": int(requests[0]), "tokens": int(requests[1]),
+                "seconds_ms": int(requests[2]) + int(tools[1]), "tools": int(tools[0])}
+
+    def remaining_resources(self, model, *, unit_id=None, unit_request_cap=None):
         """Policy view: shared unit remainder plus that model's remaining CNY.
 
         ``requests``, ``tokens`` and ``seconds`` are the active unit's shared
         ceilings, not a second per-model grant. ``cny`` is yuan as a float of
         the integer microcny remainder. Unresolved holds and missing ceilings
-        stop the read; they are not reported as zero.
+        stop the read; they are not reported as zero. A non-empty ``unit_id``
+        counts only that unit's rows, so a later unit does not inherit the
+        previous unit's request or token use. CNY still includes every unit.
         """
         _id(model)
+        if unit_id:
+            _id(unit_id)
+        if unit_request_cap is not None:
+            _integer(unit_request_cap, positive=True)
         with self._transaction() as conn:
             state = self._snapshot(conn)
+            usage = self._unit_usage(conn, unit_id) if unit_id else None
         if model not in state["remaining_microcny"]:
             raise BudgetStopped("model_not_in_frozen_pool")
         if any(key not in state for key in ("max_tokens", "max_seconds_ms")):
             raise BudgetStopped("resource_dimensions_unconfigured")
         if state["unresolved_request_ids"] or state["unresolved_tool_ids"]:
             raise BudgetStopped("unresolved_request_blocks_subsequent_dispatch")
+        if usage is None:
+            requests_left = state["max_requests"] - state["requests"]
+            tokens_left = state["max_tokens"] - state["used_tokens"]
+            seconds_left = (state["max_seconds_ms"] - state["used_seconds_ms"]) / 1000
+        else:
+            request_cap = unit_request_cap if unit_request_cap is not None else state["max_requests"]
+            requests_left = request_cap - usage["requests"]
+            tokens_left = state["max_tokens"] - usage["tokens"]
+            seconds_left = (state["max_seconds_ms"] - usage["seconds_ms"]) / 1000
         remaining = {
-            "requests": state["max_requests"] - state["requests"],
-            "tokens": state["max_tokens"] - state["used_tokens"],
-            "seconds": (state["max_seconds_ms"] - state["used_seconds_ms"]) / 1000,
+            "requests": requests_left,
+            "tokens": tokens_left,
+            "seconds": seconds_left,
             "cny": state["remaining_microcny"][model] / MICROCNY_PER_CNY,
         }
         if any(value < 0 for value in remaining.values()):
@@ -211,10 +272,15 @@ class BudgetLedger:
         if state["unresolved_request_ids"] or state["unresolved_tool_ids"]:
             raise BudgetStopped("unresolved_request_blocks_subsequent_dispatch")
 
-    def reserve(self, request_id, model, amount_microcny, *, payload_sha256, tokens=0, seconds_ms=0):
+    def reserve(self, request_id, model, amount_microcny, *, payload_sha256, tokens=0, seconds_ms=0,
+                unit_id="", unit_request_cap=None):
         """Persist a unique worst-case hold before any separately permitted send."""
         _id(request_id)
         _id(model)
+        if unit_id:
+            _id(unit_id)
+        if unit_request_cap is not None:
+            _integer(unit_request_cap, positive=True)
         _integer(amount_microcny, positive=True)
         _integer(tokens)
         _integer(seconds_ms)
@@ -227,21 +293,33 @@ class BudgetLedger:
             self._blocked(state)
             if model not in state["remaining_microcny"]:
                 raise BudgetStopped("model_not_in_frozen_pool")
-            if state["requests"] >= state["max_requests"] or amount_microcny > state["remaining_microcny"][model]:
+            if amount_microcny > state["remaining_microcny"][model]:
                 raise BudgetStopped("cumulative_request_or_model_limit")
+            if ("total_limit_microcny" in state
+                    and state["total_committed_microcny"] + amount_microcny > state["total_limit_microcny"]):
+                raise BudgetStopped("cumulative_total_cny_limit")
+            if unit_id:
+                usage = self._unit_usage(conn, unit_id)
+                request_cap = unit_request_cap if unit_request_cap is not None else state["max_requests"]
+                if usage["requests"] >= request_cap:
+                    raise BudgetStopped("cumulative_request_or_model_limit")
+                used_tokens, used_seconds = usage["tokens"], usage["seconds_ms"]
+            else:
+                if state["requests"] >= state["max_requests"]:
+                    raise BudgetStopped("cumulative_request_or_model_limit")
+                used_tokens, used_seconds = state["used_tokens"], state["used_seconds_ms"]
             if tokens or seconds_ms or "max_tokens" in state or "max_seconds_ms" in state:
                 if "max_tokens" not in state or "max_seconds_ms" not in state:
                     raise BudgetStopped("resource_dimensions_unconfigured")
-                if (state["used_tokens"] + tokens > state["max_tokens"]
-                        or state["used_seconds_ms"] + seconds_ms > state["max_seconds_ms"]):
+                if used_tokens + tokens > state["max_tokens"] or used_seconds + seconds_ms > state["max_seconds_ms"]:
                     raise BudgetStopped("cumulative_request_or_model_limit")
             conn.execute(
                 """INSERT INTO requests
                    (id, model, reserved, held, status, payload_sha256,
-                    reserved_tokens, held_tokens, reserved_seconds_ms, held_seconds_ms)
-                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                    reserved_tokens, held_tokens, reserved_seconds_ms, held_seconds_ms, unit_id)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
                 (request_id, model, amount_microcny, amount_microcny, "reserved", payload_sha256,
-                 tokens, tokens, seconds_ms, seconds_ms))
+                 tokens, tokens, seconds_ms, seconds_ms, unit_id))
         return {"request_id": request_id, "reserved_microcny": amount_microcny, "is_execution_permit": False}
 
     def settle_known(self, request_id, charge_microcny, *, tokens=None, seconds_ms=None):
@@ -287,9 +365,11 @@ class BudgetLedger:
                 raise BudgetStopped("only_pending_reservation_may_be_marked_unknown")
             conn.execute("UPDATE requests SET status='unknown' WHERE id=?", (request_id,))
 
-    def reserve_tool(self, tool_id, *, seconds_ms):
+    def reserve_tool(self, tool_id, *, seconds_ms, unit_id=""):
         """Hold one tool call and its worst-case seconds before execution."""
         _id(tool_id)
+        if unit_id:
+            _id(unit_id)
         _integer(seconds_ms)
         with self._transaction() as conn:
             if conn.execute("SELECT 1 FROM tool_calls WHERE id=?", (tool_id,)).fetchone():
@@ -298,12 +378,17 @@ class BudgetLedger:
             self._blocked(state)
             if "max_tools" not in state or "max_seconds_ms" not in state:
                 raise BudgetStopped("resource_dimensions_unconfigured")
-            if (state["used_tools"] >= state["max_tools"]
-                    or state["used_seconds_ms"] + seconds_ms > state["max_seconds_ms"]):
+            if unit_id:
+                usage = self._unit_usage(conn, unit_id)
+                used_tools, used_seconds = usage["tools"], usage["seconds_ms"]
+            else:
+                used_tools, used_seconds = state["used_tools"], state["used_seconds_ms"]
+            if used_tools >= state["max_tools"] or used_seconds + seconds_ms > state["max_seconds_ms"]:
                 raise BudgetStopped("cumulative_request_or_model_limit")
             conn.execute(
-                "INSERT INTO tool_calls (id, status, reserved_seconds_ms, held_seconds_ms) VALUES (?,?,?,?)",
-                (tool_id, "reserved", seconds_ms, seconds_ms))
+                """INSERT INTO tool_calls
+                   (id, status, reserved_seconds_ms, held_seconds_ms, unit_id) VALUES (?,?,?,?,?)""",
+                (tool_id, "reserved", seconds_ms, seconds_ms, unit_id))
         return {"tool_id": tool_id, "is_execution_permit": False}
 
     def settle_tool(self, tool_id, *, seconds_ms):

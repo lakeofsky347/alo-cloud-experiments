@@ -8,12 +8,12 @@
 
 | 供应商 | 模型名称／版本说明 | 请求中的 `model` | 计划用途 | 官方资料 |
 | --- | --- | --- | --- | --- |
-| DeepSeek | DeepSeek-V4.1-Flash；中文文档仍要求请求模型名为 `deepseek-flash`，并说明该别名现由 **DeepSeek-V4.1-Flash-1017** 提供 | `deepseek-flash` | G2／G3 共同池成员，G1 Strong 候选 | [首次调用（中文）](https://api-docs.deepseek.com/zh-cn/) |
+| DeepSeek | 请求模型名就是 `deepseek-flash`。价格以官方价格页该模型名一行为准 | `deepseek-flash` | G2／G3 共同池成员 | [价格页（中文）](https://api-docs.deepseek.com/zh-cn/quick_start/pricing) |
 | Xiaomi MiMo | MiMo-V2.6-Flash | `mimo-v2.6-flash` | **G1 Main 固定模型**；G2／G3 池成员，Strong 候选 | [中文 OpenAI 兼容接口](https://mimo.mi.com/docs/zh-CN/api/chat/openai-api) |
 | 智谱 BigModel | GLM-5.3-Flash | `glm-5.3-flash` | G2／G3 共同池成员，G1 Strong 候选 | [GLM-5.3-Flash（中文）](https://docs.bigmodel.cn/cn/guide/models/vlm/glm-5.3-flash) |
-| Xiaomi MiMo | MiMo-V2.6-Pro | `mimo-v2.6-pro` | G2／G3 共同池成员，G1 Strong 候选 | [中文 OpenAI 兼容接口](https://mimo.mi.com/docs/zh-CN/api/chat/openai-api) |
+| Xiaomi MiMo | MiMo-V2.6-Pro | `mimo-v2.6-pro` | **G1 Strong**（2026-10-31 业主指定）；G2／G3 池成员 | [中文模型页](https://mimo.mi.com/models/zh-CN/mimo-v2.6-pro) |
 
-G1 Strong 尚未选定，从上述四候选在独立开发题上的事前规则选出；若与 Main 相同则合并执行。G2 ALO 与 G3 原生 GroupChat 使用同一模型池，角色、规划器及选择器绑定在正式合同中另行冻结。本清单没有增加专用规划模型、评分模型或 embedding 模型。GPT／Codex 云端开发助手不作为额外实验被试计入本池。
+G1 Strong 已由业主指定为 `mimo-v2.6-pro`，理由见[协议](protocol.md)。G2 ALO 与 G3 原生 GroupChat 使用同一模型池。规划器固定为 `deepseek-flash`；G3 的角色绑定为 Planner=`deepseek-flash`、Engineer=`mimo-v2.6-flash`、Critic=`glm-5.3-flash`、Verifier=`mimo-v2.6-pro`，选择器为 `deepseek-flash`。本清单没有增加专用规划模型、评分模型或 embedding 模型。GPT／Codex 云端开发助手不作为额外实验被试计入本池。官方标价与计费函数见 `alo_cloud.prices`。
 
 本轮沿用官方按量 API 通道。MiMo Token Plan、GLM Coding Plan 和第三方转发入口有各自的凭据、服务与计费规则，不能无声明混用。密钥不进仓库；真实请求默认关闭。
 
@@ -23,13 +23,13 @@ G1 Strong 尚未选定，从上述四候选在独立开发题上的事前规则�
 
 | 模型 | 请求 `model` | 按量 Chat Completions | 认证 | 本次多送的参数 |
 | --- | --- | --- | --- | --- |
-| DeepSeek-V4.1-Flash | `deepseek-flash` | `https://api.deepseek.com/chat/completions` | `Authorization: Bearer` | 不额外发送 thinking；中文文档写明省略 thinking 与 `reasoning_effort` 时默认开启思考 |
+| `deepseek-flash` | `deepseek-flash` | `https://api.deepseek.com/chat/completions` | `Authorization: Bearer` | 不额外发送 thinking；中文文档写明省略 thinking 与 `reasoning_effort` 时默认开启思考 |
 | MiMo-V2.6-Flash / Pro | `mimo-v2.6-flash`、`mimo-v2.6-pro` | `https://api.xiaomimimo.com/v1/chat/completions` | `api-key` | `max_completion_tokens`，不并送 `max_tokens` |
 | GLM-5.3-Flash | `glm-5.3-flash` | `https://open.bigmodel.cn/api/paas/v4/chat/completions` | `Authorization: Bearer` | `thinking.type=enabled` |
 
 依据：
 
-- DeepSeek 中文[首次调用](https://api-docs.deepseek.com/zh-cn/)把 OpenAI `base_url` 写成 `https://api.deepseek.com`，模型名使用 `deepseek-flash`，并说明它现由 DeepSeek-V4.1-Flash-1017 提供。中文文档没有另给一个大陆专用主机名。认证见[对话补全](https://api-docs.deepseek.com/zh-cn/api/create-chat-completion)。
+- DeepSeek 中文[首次调用](https://api-docs.deepseek.com/zh-cn/)把 OpenAI `base_url` 写成 `https://api.deepseek.com`，模型名使用 `deepseek-flash`。中文[价格页](https://api-docs.deepseek.com/zh-cn/quick_start/pricing)的模型列也是这个名字。中文文档没有另给一个大陆专用主机名。认证见[对话补全](https://api-docs.deepseek.com/zh-cn/api/create-chat-completion)。
 - MiMo 中文[首次调用](https://mimo.mi.com/docs/zh-CN/quick-start/first-api-call)把按量 OpenAI 兼容地址写成 `https://api.xiaomimimo.com/v1`。`token-plan-cn.xiaomimimo.com` 和 `batch-api-cn.xiaomimimo.com` 属于 Token Plan 与批量推理，不是本轮按量通道。[OpenAI 兼容接口](https://mimo.mi.com/docs/zh-CN/api/chat/openai-api)列出的模型 ID 含 `mimo-v2.6-flash` 与 `mimo-v2.6-pro`，输出上限字段是 `max_completion_tokens`（含可见输出和推理 token），curl 使用 `api-key`。该页写明有两种认证方式，但给出的请求头示例和 curl 只有 `api-key`。英文 FAQ 另写了 `Authorization: Bearer` 也可使用（<https://mimo.mi.com/docs/en-US/quick-start/faq/api-integration>）；实现跟随中文 curl，只送 `api-key`。
 - 智谱中文[对话补全](https://docs.bigmodel.cn/api-reference/%E6%A8%A1%E5%9E%8B-api/%E5%AF%B9%E8%AF%9D%E8%A1%A5%E5%85%A8)的服务器是 `https://open.bigmodel.cn/api/`，路径 `/paas/v4/chat/completions`，认证为 Bearer。[GLM-5.3-Flash](https://docs.bigmodel.cn/cn/guide/models/vlm/glm-5.3-flash)的模型代码是 `glm-5.3-flash`，并写明 `thinking.type` 只能为 `enabled`。[深度思考](https://docs.bigmodel.cn/cn/guide/capabilities/thinking)说明对 GLM-5.3-FLASH 传 `disabled` 会报错。此前的 `api.z.ai` 是国际站文档入口，不再使用。模型页还推荐 `reasoning_effort: max` 和 `thinking.clear_thinking: false`；这两项不是本次业主决定，请求里不送。
 
@@ -37,7 +37,7 @@ token 入账：三家能核对到的 usage 都把 `total_tokens` 定义成提示
 
 ### 模型版本仍需冻结的字段
 
-- **API 别名不等于不可变权重快照。** `deepseek-flash` 当前的 1017 映射是中文文档中的版本说明，不应将它当成已经验证可单独请求的 snapshot ID。其他模型也不能仅凭名称假定服务端权重永久不变。
+- **请求名不等于不可变权重快照。** `deepseek-flash` 是价格页和调用页上的模型名，不是一份可以单独请求的权重快照。其他模型也不能仅凭名称假定服务端权重永久不变。
 - 首次真实接口验证需记录 provider、入口、请求模型、返回模型、调用日期和官方可用的 release／snapshot 身份。未提供更细版本时，明确报告服务版本可变的限制。
 - 采样、`reasoning_effort` 和 `clear_thinking` 仍未决定。GLM-5.3-Flash 的 thinking 已按业主决定开启；不能把这一项推广成四模型共用的思考开关。DeepSeek 在省略 thinking 时的默认行为以上文中文文档为准，本传输不另发该字段。
 - 官方页面可确认名称与公开接口说明；账号权限、余额、实际返回身份和请求可达性仍待有界接口验证。每模型累计 50 CNY、总计 200 CNY 的约束继续有效，期初使用和未决预留另在私有运行存储绑定。
