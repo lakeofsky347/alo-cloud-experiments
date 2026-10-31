@@ -16,7 +16,7 @@ Do not wrap, shim, or delegate to ./executable or to an installed copy of the sa
 This container has no network.
 
 The sandbox image is task_cleanroom_v6 (Ubuntu 22.04) with these toolchains already installed:
-Rust 1.92.0 (rustc, cargo), Go 1.21.0, Python 3.12, build-essential, cmake, git, and tmux.
+Rust 1.92.0 (rustc, cargo), Go 1.21.0, Python 3.10.12, build-essential, cmake, git, and tmux.
 No task-specific packages are preinstalled. The official compile step also blocks the network,
 so compile.sh cannot download dependencies.
 

@@ -16,6 +16,8 @@ import shutil
 import subprocess
 import sys
 
+from .freeze import requested_benchmarks
+
 
 SWEBENCH_PACKAGE = "4.1.0"
 SWEBENCH_DATASET = "princeton-nlp/SWE-bench_Lite"
@@ -171,11 +173,60 @@ def _git_head(repo):
     return completed.stdout.strip()
 
 
+def _program_bench_base():
+    return {
+        "source_commit": PROGRAMBENCH_COMMIT,
+        "tests_revision": PROGRAMBENCH_TESTS_REVISION,
+        "status": "not_run",
+    }
+
+
+def _skip_program_bench(benchmarks):
+    return benchmarks is not None and "ProgramBench" not in set(benchmarks)
+
+
+def _program_bench_unrun(run_dir):
+    """SWE artifacts exist and ProgramBench has neither records nor submissions."""
+    run_dir = Path(run_dir)
+    pb_records = False
+    swe_seen = False
+    records = run_dir / "records.jsonl"
+    if records.is_file():
+        for line in records.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(row, dict):
+                continue
+            if row.get("track") == "ProgramBench":
+                pb_records = True
+            elif row.get("track") == "SWE-bench_Lite":
+                swe_seen = True
+    submissions = programbench_unit_commands(run_dir, None)
+    if pb_records or submissions:
+        return False
+    if (run_dir / "sealed" / "swe_predictions.jsonl").is_file():
+        swe_seen = True
+    return swe_seen
+
+
+def _programbench_not_run(*, skipped_by_filter):
+    body = _program_bench_base()
+    if skipped_by_filter:
+        body["skipped_by_filter"] = True
+    return body
+
+
 def score_sealed(run_dir, *, execute=False, swe_predictions=None, programbench_repo=None,
-                 docker_bin="docker"):
+                 docker_bin="docker", benchmarks=None):
     """Read sealed files and, only with ``execute``, invoke the official harnesses.
 
     The returned object has no numeric score when a harness did not run.
+    ProgramBench is ``not_run`` when the benchmark filter excludes it, and also
+    when SWE artifacts exist but no ProgramBench unit was recorded or sealed.
     """
     run_dir = Path(run_dir)
     report = {
@@ -186,15 +237,13 @@ def score_sealed(run_dir, *, execute=False, swe_predictions=None, programbench_r
             "revision": SWEBENCH_REVISION,
             "status": "not_run",
         },
-        "programbench": {
-            "source_commit": PROGRAMBENCH_COMMIT,
-            "tests_revision": PROGRAMBENCH_TESTS_REVISION,
-            "status": "not_run",
-        },
+        "programbench": _program_bench_base(),
     }
+    skip_pb = _skip_program_bench(benchmarks)
+    leave_pb = skip_pb or _program_bench_unrun(run_dir)
     if not execute:
         swe_commands, swe_path = swebench_unit_commands(run_dir, swe_predictions)
-        program_commands = programbench_unit_commands(run_dir, programbench_repo)
+        program_commands = None if leave_pb else programbench_unit_commands(run_dir, programbench_repo)
         if swe_commands is None:
             report["swebench"]["status"] = "swe_predictions_missing"
             report["swebench"]["command"] = swebench_command(
@@ -205,7 +254,9 @@ def score_sealed(run_dir, *, execute=False, swe_predictions=None, programbench_r
                 {"unit_id": item["unit_id"], "instance_id": item["instance_id"], "command": item["command"]}
                 for item in swe_commands
             ]
-        if program_commands is None:
+        if leave_pb:
+            report["programbench"] = _programbench_not_run(skipped_by_filter=skip_pb)
+        elif program_commands is None:
             report["programbench"]["status"] = "programbench_submissions_missing"
         else:
             report["programbench"]["status"] = "not_executed"
@@ -214,11 +265,17 @@ def score_sealed(run_dir, *, execute=False, swe_predictions=None, programbench_r
         return report
     if shutil.which(docker_bin) is None:
         report["swebench"]["status"] = "unavailable"
-        report["programbench"]["status"] = "unavailable"
         report["reason"] = "docker_cli_missing"
+        if leave_pb:
+            report["programbench"] = _programbench_not_run(skipped_by_filter=skip_pb)
+        else:
+            report["programbench"]["status"] = "unavailable"
         return report
     report["swebench"] = _score_swebench(run_dir, swe_predictions)
-    report["programbench"] = _score_programbench(run_dir, programbench_repo)
+    if leave_pb:
+        report["programbench"] = _programbench_not_run(skipped_by_filter=skip_pb)
+    else:
+        report["programbench"] = _score_programbench(run_dir, programbench_repo)
     return report
 
 
@@ -355,13 +412,21 @@ def main(argv=None):
     parser.add_argument("--programbench-repo", default=os.environ.get("PROGRAMBENCH_REPO") or None)
     parser.add_argument("--dataset-revision", default=SWEBENCH_REVISION)
     parser.add_argument("--programbench-hf-revision", default=PROGRAMBENCH_TESTS_REVISION)
+    parser.add_argument("--benchmarks", default=None,
+                        help="Comma-separated tracks (SWE-bench, ProgramBench). "
+                             "Default is ALO_BENCHMARKS, or every track when that is unset.")
     args = parser.parse_args(argv)
     if args.dataset_revision != SWEBENCH_REVISION or args.programbench_hf_revision != PROGRAMBENCH_TESTS_REVISION:
         print("revision does not match the frozen evaluation pins")
         return 2
+    try:
+        benchmarks = requested_benchmarks(args.benchmarks)
+    except ValueError:
+        print("unknown benchmark")
+        return 2
     report = score_sealed(
         args.run_dir, execute=args.execute, swe_predictions=args.swe_predictions,
-        programbench_repo=args.programbench_repo)
+        programbench_repo=args.programbench_repo, benchmarks=benchmarks)
     print(json.dumps(report, ensure_ascii=False, sort_keys=True))
     failed = [report["swebench"]["status"], report["programbench"]["status"]]
     if args.execute and any(status not in {"finished", "not_run"} for status in failed):
