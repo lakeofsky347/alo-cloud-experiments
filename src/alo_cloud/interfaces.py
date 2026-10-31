@@ -1,8 +1,9 @@
-"""Explicit production integration boundaries; nothing sends requests or runs code.
+"""Explicit production integration boundaries.
 
-Adapters accept caller-provided services. A real implementation must independently
-enforce permissions, cumulative accounting, deadlines and evaluation isolation.
-The protocols describe requirements, not a working provider or sandbox.
+``alo_cloud.services.StudyServices`` is the metered implementation: it reserves
+through ``BudgetLedger`` and sends only when the caller injects a transport or
+sets ``permit_network``. ``ProviderTransport`` and ``SandboxBackend`` stay
+not-configured sentinels so an unconstructed boundary cannot silently run.
 """
 from __future__ import annotations
 

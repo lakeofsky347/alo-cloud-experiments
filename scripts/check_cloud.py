@@ -14,7 +14,8 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 BASE_PINS = {"PyYAML": "6.0.3", "pytest": "9.1.1"}
 NATIVE_PINS = {"autogen-agentchat": "0.2.40", "docker": "7.2.0"}
-CORE_IMPORTS = ("yaml", "pytest", "alo", "alo_cloud", "alo_cloud.contracts", "alo_cloud.state", "alo_cloud.budget")
+CORE_IMPORTS = ("yaml", "pytest", "alo", "alo_cloud", "alo_cloud.contracts", "alo_cloud.state",
+                "alo_cloud.budget", "alo_cloud.services", "alo_cloud.providers", "alo_cloud.sandbox")
 # Preserve networking/trust configuration without reading/logging credential variables.
 CHILD_ENV_NAMES = {
     "PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TMP", "TEMP",

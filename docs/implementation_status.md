@@ -17,12 +17,13 @@ Linux执行需明确选择受支持的本地Docker后端，核对原生amd64、�
 | 源码范围 | 本仓库包含什么 | 未接入的部分 |
 | --- | --- | --- |
 | `src/alo/` | 组织、权限、B／TMS、Thompson 指派、治理和状态存储的核心算法 | 实际模型传输、候选运行与基准任务 |
-| `src/alo_cloud/adapters.py` | G1 工具循环、ALO 与原生 GroupChat 的服务接合代码 | 提供实际受限工具与计费请求的 `StudyServices` 实现 |
+| `src/alo_cloud/adapters.py` | G1 工具循环、ALO 与原生 GroupChat 的服务接合代码 | 把 `StudyServices` 接上 M1／M2 调度器；调度器仍未写 |
+| `services.py`、`providers.py`、`sandbox.py` | 显式 `StudyServices`：四模型按量 OpenAI 兼容传输、账本预留／结算、单元限额、`compile()` 语法判据、可选 Docker 命令封装 | 真实密钥、价格、期初账本、网络许可和已接受的沙箱镜像；默认不发请求 |
 | `contracts.py`、`state.py`、`checkpoints.py` | M1 顺序、M2 统计白名单与禁更新边界、检查点身份辅助函数 | 完整任务工件封存、跨主机恢复与全套 M1／M2 控制器 |
-| `budget.py` | 显式期初占用、唯一请求预留和 unknown 阻断的本地 SQLite 组件 | 真实价格与 usage 对账、不可篡改存储和分布式配额服务 |
-| `interfaces.py` | provider、sandbox、独立评分的明确接口 | 默认入口抛出未配置异常，不提供真实执行器 |
+| `budget.py` | 显式期初占用、唯一请求预留、unknown 阻断；配置了 token／毫秒／工具上限时，`remaining_resources` 给出 requests、tokens、seconds、cny | 真实价格与私有期初对账、不可篡改存储和分布式配额。未配置的维度不会被填成 0 |
+| `interfaces.py` | provider、sandbox、独立评分的明确接口；可执行实现位于 `services.py` | `ProviderTransport` 与 `SandboxBackend` 仍抛出未配置异常 |
 
-源语法验证器需要在未来 sandbox 接入后独立实现与验证，不能把 adapter 接受的调用方判据当作已经完成的 `compile()` 实测。原生 GroupChat 的软件 fixture 需显式安装可选 `native` 依赖；未安装时对应测试应明确跳过。
+`local_criterion` 对本次 `write_file` 归因的 Python 文件调用 `compile()`：只有 `SyntaxError` 是可靠失败，通过编译是可靠语法通过，非 Python、无法归因的命令写入和读取错误保持 unknown。这不是功能正确性评分。Docker 命令封装默认不执行；离线测试注入 runner，不连接 daemon。原生 GroupChat 的软件 fixture 需显式安装可选 `native` 依赖；未安装时对应测试应明确跳过。
 
 ## 正式采集前仍需完成
 
@@ -37,6 +38,8 @@ Linux执行需明确选择受支持的本地Docker后端，核对原生amd64、�
 | M2 | 验证白名单迁移、reset先验、全部学习→固定参考→终态probe顺序及probe禁更新 |
 | 预算 | 在私有运行存储核对每模型累计使用与未决预留；不得按新仓库重置50 CNY上限 |
 | 冻结 | 绑定代码版本、最终任务、阶段、预算、顺序、模型及评分合同后才可启动对应采集 |
+
+`StudyServices` 的离线测试注入 sender 和计费函数，不读取真实密钥，也不含价格表。付费运行前仍要：用私有账本填写期初占用（空账本不是零使用的证据）；提供单次 microcny 上限和 `charge_microcny`；只在进程环境里提供 `DEEPSEEK_API_KEY`、`MIMO_API_KEY`、`ZAI_API_KEY`，并在调用时读取；显式允许网络发送；接受目标镜像上的 Docker `--network=none` 封装；确认 MiMo 是否还必须使用 `max_completion_tokens`，以及 GLM-5.3-Flash 的 thinking 只能开启。本次传输不发送采样或 thinking 参数。上述准备没有选定 Strong，也没有写成 M1／M2 调度器。
 
 离线测试通过只说明其覆盖的软件行为；零API容器控制通过只说明相应环境行为。它们不证明真实模型质量、整体研究功效或跨任务学习效果。
 
