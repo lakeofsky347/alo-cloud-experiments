@@ -23,15 +23,20 @@ def _git(argv):
     return completed.stdout
 
 
+# ProgramBench's submission is the agent's codebase. The reference binary and
+# the clean-room git metadata stay out of the tarball (protocol at 895f659).
+SUBMISSION_EXCLUDE = frozenset({".git", "executable"})
+
+
 def workspace_patch(workspace, base_commit, *, git=_git):
-    """Unified diff of a sealed checkout against ``base_commit``, including new files."""
+    """Source diff against ``base_commit``. ``git add -A`` skips gitignored build output."""
     workspace = Path(workspace)
     if not (workspace / ".git").is_dir():
         return ""
     if not isinstance(base_commit, str) or not base_commit:
         return ""
     git(["git", "-C", str(workspace), "add", "-A"])
-    return git(["git", "-C", str(workspace), "diff", "--cached", "--binary", base_commit])
+    return git(["git", "-C", str(workspace), "diff", "--cached", base_commit])
 
 
 def prediction_row(instance_id, unit_id, patch):
@@ -74,7 +79,7 @@ def _pack_submission(workspace, dest_tar):
             if not path.is_file() or path.is_symlink():
                 continue
             relative = path.relative_to(workspace)
-            if ".git" in relative.parts:
+            if any(part in SUBMISSION_EXCLUDE for part in relative.parts):
                 continue
             files.append(path)
     with tarfile.open(dest_tar, "w:gz") as archive:
@@ -94,9 +99,11 @@ def collect_sealed(run_dir, *, git=_git):
         track = record.get("track")
         if not isinstance(task_id, str) or not isinstance(track, str):
             continue
-        sealed = run_dir / "sealed" / unit_id
+        sealed_patch = run_dir / "checkpoints" / unit_id / "model.patch"
         workspace = run_dir / "checkpoints" / unit_id / "workspace"
-        source = workspace if workspace.is_dir() else sealed
+        if not workspace.is_dir():
+            workspace = run_dir / "units" / unit_id / "state" / "workspace"
+        source = workspace
         entry = {
             "unit_id": unit_id,
             "instance_id": task_id,
@@ -110,10 +117,13 @@ def collect_sealed(run_dir, *, git=_git):
         if track == "SWE-bench_Lite":
             patch = ""
             note = ""
-            try:
-                patch = workspace_patch(source, record.get("base_commit") or "", git=git)
-            except RuntimeError:
-                note = "git_diff_failed"
+            if sealed_patch.is_file():
+                patch = sealed_patch.read_text(encoding="utf-8")
+            else:
+                try:
+                    patch = workspace_patch(source, record.get("base_commit") or "", git=git)
+                except RuntimeError:
+                    note = "git_diff_failed"
             row = prediction_row(task_id, unit_id, patch)
             predictions.append(row)
             unit_path = run_dir / "sealed" / "swe_units" / f"{unit_id}.jsonl"
@@ -126,9 +136,13 @@ def collect_sealed(run_dir, *, git=_git):
                 entry["note"] = "empty_patch"
         elif track == "ProgramBench":
             dest = run_dir / "sealed" / "programbench" / unit_id / task_id / "submission.tar.gz"
-            count = _pack_submission(source, dest)
-            entry["submission"] = str(dest.relative_to(run_dir))
-            entry["files"] = count
+            if dest.is_file():
+                entry["submission"] = str(dest.relative_to(run_dir))
+                entry["files"] = None
+            else:
+                count = _pack_submission(source, dest)
+                entry["submission"] = str(dest.relative_to(run_dir))
+                entry["files"] = count
         manifest.append(entry)
     predictions_path = run_dir / "sealed" / "swe_predictions.jsonl"
     _write_jsonl(predictions_path, predictions)

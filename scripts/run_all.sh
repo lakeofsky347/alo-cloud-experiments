@@ -18,7 +18,9 @@ cd "$ROOT"
 "$PY" scripts/smoke_test.py --live --run-dir "$RUN_DIR"
 
 # ALO_SANDBOX_IMAGE is only the fallback. SWE and ProgramBench units use the
-# official per-task images resolved in alo_cloud.images.
+# official per-task images. Each unit is seeded from that image (SWE /testbed,
+# ProgramBench /workspace) and the live tree is deleted after the patch or
+# submission tarball is written. Set ALO_SEED_IMAGES=1 to seed during a dry-run.
 if [ ! -d "$DATA_DIR/SWE-bench_Lite" ] || [ ! -d "$DATA_DIR/ProgramBench" ]; then
   echo "Stage public task JSON at $DATA_DIR/<track>/<task_id>.json"
   echo "SWE files need repo (owner/name) and base_commit. Do not include patch, test_patch, FAIL_TO_PASS or PASS_TO_PASS."

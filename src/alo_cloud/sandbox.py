@@ -25,6 +25,12 @@ CREDENTIAL_ENV_NAMES = ("DEEPSEEK_API_KEY", "MIMO_API_KEY", "ZAI_API_KEY")
 DEFAULT_SANDBOX_MEMORY = "4g"
 DEFAULT_SANDBOX_PIDS = "512"
 DEFAULT_SANDBOX_TMPFS = "1g"
+# Official SWE-bench instance images put base conda ahead of the testbed env.
+SWE_TESTBED_PATH = (
+    "/opt/miniconda3/envs/testbed/bin:"
+    "/opt/miniconda3/bin:"
+    "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+)
 _MEMORY = re.compile(r"\d+[bBkKmMgG]")
 _PIDS = re.compile(r"[1-9]\d{0,6}")
 _TMPFS = re.compile(r"\d+[bBkKmMgG]")
@@ -233,7 +239,8 @@ class DockerSandbox:
 
     def __init__(self, workspace, *, image=None, image_resolver=None, runner=None,
                  permit_execution=False, memory=None, pids_limit=None, tmpfs_size=None,
-                 extra_mounts=()):
+                 extra_mounts=(), workdir="/workspace", mount_points=None, path=None,
+                 merge_image_workspace=False):
         if image_resolver is None and not _image_ok(image):
             raise PilotStopped("invalid_sandbox_image")
         if image_resolver is not None and not callable(image_resolver):
@@ -247,9 +254,17 @@ class DockerSandbox:
         self.pids_limit = sandbox_pids(pids_limit)
         self.tmpfs_size = sandbox_tmpfs(tmpfs_size)
         self.extra_mounts = tuple(extra_mounts)
+        self.workdir = workdir if isinstance(workdir, str) and workdir.startswith("/") else None
+        self.mount_points = tuple(mount_points) if mount_points is not None else ("/workspace",)
+        self.path = path
+        self.merge_image_workspace = bool(merge_image_workspace)
+        if self.workdir is None or not self.mount_points:
+            raise PilotStopped("invalid_sandbox_mount")
+        if self.path is not None and (not isinstance(self.path, str) or not self.path or "\n" in self.path):
+            raise PilotStopped("invalid_sandbox_path")
         if self.permit_execution and self.runner is not None:
             raise PilotStopped("one_sandbox_runner")
-        for mount in self.extra_mounts:
+        for mount in (*self.extra_mounts, *self.mount_points):
             if not isinstance(mount, str) or not mount.startswith("/") or ".." in mount or "\0" in mount:
                 raise PilotStopped("invalid_sandbox_mount")
 
@@ -271,22 +286,43 @@ class DockerSandbox:
             "--cap-drop=ALL",
             f"--pids-limit={self.pids_limit}",
             f"--memory={self.memory}",
-            "--read-only",
-            "--tmpfs", f"/tmp:rw,nosuid,nodev,size={self.tmpfs_size}",
-            "--workdir", "/workspace",
-            "--mount", f"type=bind,src={self.workspace},dst=/workspace",
         ]
+        # The in-image /workspace must stay writable when an execute-only binary
+        # cannot be copied out. Every other sandbox keeps a read-only root.
+        if not self.merge_image_workspace:
+            command.append("--read-only")
+        command.extend([
+            "--tmpfs", f"/tmp:rw,nosuid,nodev,size={self.tmpfs_size}",
+            "--workdir", self.workdir,
+        ])
+        if self.merge_image_workspace:
+            command.extend(["--mount", f"type=bind,src={self.workspace},dst=/agent"])
+        else:
+            for dest in self.mount_points:
+                command.extend(["--mount", f"type=bind,src={self.workspace},dst={dest}"])
         for mount in self.extra_mounts:
             command.extend(["--mount", f"type=bind,src={self.workspace},dst={mount}"])
         command.extend([
             "--user", f"{os.getuid()}:{os.getgid()}",
             "--env", "PYTHONDONTWRITEBYTECODE=1",
             "--env", "PYTHONUNBUFFERED=1",
-            "--env", "PYTHONPATH=/workspace",
+            "--env", "PYTHONPATH=/workspace:/testbed",
             "--env", "LANG=C.UTF-8",
-            image,
-            *argv,
         ])
+        if self.path:
+            command.extend(["--env", "PATH=" + self.path])
+        if self.merge_image_workspace:
+            command.extend([
+                image, "sh", "-c",
+                'if [ -n "$(ls -A /agent 2>/dev/null)" ]; then cp -a /agent/. /workspace/; fi; '
+                '"$@"; status=$?; '
+                'tar -C /workspace --exclude=executable --exclude=.git -cf - . | tar -C /agent -xf -; '
+                'exit $status',
+                "alo-merge",
+                *argv,
+            ])
+        else:
+            command.extend([image, *argv])
         rendered = "\n".join(command)
         for name in CREDENTIAL_ENV_NAMES:
             if name in rendered:
