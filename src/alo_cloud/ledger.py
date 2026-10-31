@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import shutil
 
@@ -40,13 +41,54 @@ def _write_counts(run_dir, counts):
                     encoding="utf-8")
 
 
-def _archive_tree(source, dest):
+def _unused_path(dest):
+    """A path that does not exist yet. An occupied path gets ``-dupN``.
+
+    ``shutil.move`` into an existing directory nests the source inside it and
+    then crashes when that child already exists. Callers must not do that.
+    """
+    dest = Path(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if not dest.exists():
+        return dest
+    n = 2
+    while True:
+        candidate = dest.parent / f"{dest.name}-dup{n}"
+        if not candidate.exists():
+            return candidate
+        n += 1
+
+
+def _safe_move(source, dest):
+    """Move ``source`` onto a path that does not already exist. Missing source is a no-op."""
     source = Path(source)
     if not source.exists():
-        return False
-    dest.parent.mkdir(parents=True, exist_ok=True)
+        return None
+    dest = _unused_path(dest)
     shutil.move(str(source), str(dest))
-    return True
+    return dest
+
+
+def _copy_aside(source, dest):
+    """Copy a live index into the archive without removing or truncating either file."""
+    source = Path(source)
+    if not source.is_file():
+        return None
+    dest = _unused_path(dest)
+    shutil.copy2(source, dest)
+    return dest
+
+
+def _append_text(path, text):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(text)
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def _archive_tree(source, dest):
+    return _safe_move(source, dest) is not None
 
 
 def _park_tree(source, dest):
@@ -69,8 +111,7 @@ def _archive_records(run_dir, unit_id, dest_dir):
             kept.append(line)
     if not removed:
         return 0
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    (dest_dir / "records.jsonl").write_text("\n".join(removed) + "\n", encoding="utf-8")
+    _append_text(Path(dest_dir) / "records.jsonl", "".join(line + "\n" for line in removed))
     path.write_text(("\n".join(kept) + "\n") if kept else "", encoding="utf-8")
     return len(removed)
 
@@ -93,15 +134,22 @@ def restart_unit(run_dir, unit_id, *, reason, ledger=None):
     if counts.get(unit_id, 0) >= 1:
         raise BudgetStopped("restart_already_used")
     generation = counts.get(unit_id, 0) + 1
-    dest = run_dir / "archive" / "restarts" / unit_id / str(generation)
+    epoch = current_epoch(run_dir)
+    # Generation resets with the epoch, so the directory must name the epoch.
+    # A leftover from an earlier crash gets a -dupN sibling instead of a nested move.
+    dest = _unused_path(run_dir / "archive" / "restarts" / f"epoch-{epoch}" / unit_id / str(generation))
+    dest.mkdir(parents=True, exist_ok=False)
+    # Trees move before the live record is removed. A crash here leaves the
+    # record in place, so resume skips the unit instead of halting on a partial id.
+    _safe_move(run_dir / "checkpoints" / unit_id, dest / "checkpoint")
+    _safe_move(run_dir / "units" / unit_id, dest / "unit")
+    _safe_move(run_dir / "sealed" / "swe_units" / f"{unit_id}.jsonl", dest / "swe_unit.jsonl")
+    _safe_move(run_dir / "sealed" / "programbench" / unit_id, dest / "programbench")
     removed = _archive_records(run_dir, unit_id, dest)
-    _archive_tree(run_dir / "checkpoints" / unit_id, dest / "checkpoint")
-    _archive_tree(run_dir / "units" / unit_id, dest / "unit")
-    _archive_tree(run_dir / "sealed" / "swe_units" / f"{unit_id}.jsonl", dest / "swe_unit.jsonl")
     counts[unit_id] = generation
     _write_counts(run_dir, counts)
-    return {"unit_id": unit_id, "restart_count": generation, "archived_records": removed,
-            "archive": str(dest)}
+    return {"unit_id": unit_id, "restart_count": generation, "protocol_epoch": epoch,
+            "archived_records": removed, "archive": str(dest)}
 
 
 def _epoch_path(run_dir):
@@ -136,7 +184,12 @@ def begin_epoch(run_dir, *, reason):
     if unknown.is_file() and unknown.stat().st_size:
         dest = run_dir / "archive" / "epochs" / str(previous)
         dest.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(unknown), str(dest / "unknown_outcomes.jsonl"))
+        target = dest / "unknown_outcomes.jsonl"
+        if target.exists():
+            _append_text(target, unknown.read_text(encoding="utf-8"))
+            unknown.unlink()
+        else:
+            shutil.move(str(unknown), str(target))
     _write_counts(run_dir, {})
     _epoch_path(run_dir).write_text(json.dumps(
         {"epoch": epoch, "reason": reason.strip()}, ensure_ascii=False, sort_keys=True) + "\n",
@@ -183,11 +236,18 @@ def archive_finished(run_dir, *, reason):
                 continue
             unit_dest = dest / unit_id
             unit_dest.mkdir(parents=True, exist_ok=True)
-            if _archive_tree(run_dir / "checkpoints" / unit_id, unit_dest / "checkpoint"):
+            if _safe_move(run_dir / "checkpoints" / unit_id, unit_dest / "checkpoint"):
                 moved += 1
-            _archive_tree(run_dir / "sealed" / "swe_units" / f"{unit_id}.jsonl", unit_dest / "swe_unit.jsonl")
+            _safe_move(run_dir / "sealed" / "swe_units" / f"{unit_id}.jsonl", unit_dest / "swe_unit.jsonl")
+            _safe_move(run_dir / "sealed" / "programbench" / unit_id, unit_dest / "programbench")
         records.write_text("", encoding="utf-8")
         archived_units = len(rows)
+        archive = str(dest)
+    # Live harness indexes are rewritten from the current records on the next
+    # collect. Keep a copy with this epoch before that happens.
+    if _copy_aside(run_dir / "sealed" / "swe_predictions.jsonl", dest / "swe_predictions.jsonl"):
+        archive = str(dest)
+    if _copy_aside(run_dir / "sealed" / "manifest.jsonl", dest / "manifest.jsonl"):
         archive = str(dest)
     parked_units = _park_tree(run_dir / "units", dest / "units")
     parked_checkpoints = _park_tree(run_dir / "checkpoints", dest / "checkpoints")

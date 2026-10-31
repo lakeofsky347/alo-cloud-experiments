@@ -67,6 +67,12 @@ def _load_records(run_dir):
 
 
 def _write_jsonl(path, rows):
+    """Rewrite one live harness index from the current records.
+
+    This is not an archive. ``archive-finished`` copies ``swe_predictions.jsonl``
+    and ``manifest.jsonl`` aside first. Per-unit files are moved, not appended,
+    because the harness reads a single prediction per unit.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
         for row in rows:

@@ -178,7 +178,8 @@ def test_timeout_charges_worst_case_restarts_once_and_continues(tmp_path, monkey
     assert diagnostics
     assert all(secret not in path.read_text(encoding="utf-8") for path in diagnostics)
     assert list(live.glob("*.json")) == []
-    archived = list((tmp_path / "run" / "archive" / "restarts" / unit.unit_id).rglob("records.jsonl"))
+    archived = list((tmp_path / "run" / "archive" / "restarts").rglob("records.jsonl"))
+    assert any("epoch-0" in path.parts for path in archived)
     assert archived and "provider_deadline_charged" in archived[0].read_text(encoding="utf-8")
     unknown = tmp_path / "run" / "unknown_outcomes.jsonl"
     assert not unknown.is_file() or unknown.read_text(encoding="utf-8").strip() == ""
