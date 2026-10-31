@@ -123,10 +123,11 @@ def test_vendor_error_settles_zero_and_transport_failures_hold(tmp_path, monkeyp
 
     held, _seen, held_ledger = build(tmp_path / "timeout", monkeypatch, [])
     held.transport._sender = boom
-    with pytest.raises(PilotStopped, match="provider_outcome_charged"):
+    with pytest.raises(PilotStopped, match="provider_deadline_charged"):
         held.complete_for_model("mimo-v2.6-flash", messages(), max_tokens=128)
     timeout = _diag(tmp_path / "timeout", "req-m1_b0-1")
-    assert timeout["cause"] == "timeout"
+    assert timeout["cause"] == "deadline_timeout"
+    assert timeout["charged_timeout"] is True
     assert timeout["settled"] is True
     assert timeout["response"] is None
     assert secret not in json.dumps(timeout)
@@ -165,7 +166,8 @@ def test_timeout_charges_worst_case_restarts_once_and_continues(tmp_path, monkey
 
     rows = run_schedule((unit,), tmp_path / "run", live=False, sender=fail)
     assert rows[0]["status"] == "blocked"
-    assert rows[0]["reason"] == "second_unknown_interruption"
+    assert rows[0]["reason"] == "second_timeout_interruption"
+    assert rows[0]["charged_timeout"] is True
     assert rows[0]["restart_count"] == 1
     assert rows[0]["halt_schedule"] is False
     ledger = BudgetLedger(tmp_path / "run" / "budget.sqlite3")
@@ -177,8 +179,13 @@ def test_timeout_charges_worst_case_restarts_once_and_continues(tmp_path, monkey
     assert all(secret not in path.read_text(encoding="utf-8") for path in diagnostics)
     assert list(live.glob("*.json")) == []
     archived = list((tmp_path / "run" / "archive" / "restarts" / unit.unit_id).rglob("records.jsonl"))
-    assert archived and "provider_outcome_charged" in archived[0].read_text(encoding="utf-8")
-    assert sum(1 for line in (tmp_path / "run" / "unknown_outcomes.jsonl").read_text().splitlines() if line.strip()) == 2
+    assert archived and "provider_deadline_charged" in archived[0].read_text(encoding="utf-8")
+    unknown = tmp_path / "run" / "unknown_outcomes.jsonl"
+    assert not unknown.is_file() or unknown.read_text(encoding="utf-8").strip() == ""
+    counts = json.loads((tmp_path / "run" / "progress" / "timeout_counts.json").read_text(encoding="utf-8"))
+    assert counts["charged_timeouts"] == 2
+    assert counts["halt_reason"] is None
+    assert counts["by_model"]["mimo-v2.6-flash"]["charged_timeouts_in_window"] == 2
     assert main([
         "archive-finished", "--run-dir", str(tmp_path / "run"),
         "--reason", "rerun under the updated caps",
@@ -259,7 +266,7 @@ def test_hold_settles_inside_the_wall_clock_margin(tmp_path, monkeypatch):
     def fake_send(url, body, headers, *, timeout_s, model, started=None, clock=None):
         del url, body, headers
         assert started == 0.0
-        assert timeout_s == 300
+        assert timeout_s == 600
 
         class Tick:
             def readline(self):
@@ -271,14 +278,15 @@ def test_hold_settles_inside_the_wall_clock_margin(tmp_path, monkeypatch):
     monkeypatch.setattr("alo_cloud.providers.urllib_send", fake_send)
     services, _seen, ledger = build(
         tmp_path, monkeypatch, [], permit_network=True, clock=now)
-    with pytest.raises(PilotStopped, match="provider_outcome_charged"):
+    with pytest.raises(PilotStopped, match="provider_deadline_charged"):
         services.complete_for_model("mimo-v2.6-flash", messages(), max_tokens=16)
-    assert state["t"] <= 300 + 30
+    assert state["t"] <= 600 + 30
     assert ledger.snapshot()["unresolved_request_ids"] == []
     record = _diag(tmp_path, "req-m1_b0-1")
-    assert record["cause"] == "timeout"
+    assert record["cause"] == "deadline_timeout"
+    assert record["charged_timeout"] is True
     assert record["settled"] is True
-    assert record["latency_ms"] <= (300 + 30) * 1000
+    assert record["latency_ms"] <= (600 + 30) * 1000
 
 
 def test_blocking_close_cannot_keep_the_hold_open(tmp_path, monkeypatch):
@@ -322,14 +330,15 @@ def test_blocking_close_cannot_keep_the_hold_open(tmp_path, monkeypatch):
     monkeypatch.setattr(urllib.request, "urlopen", lambda *args, **kwargs: Response())
     services, _seen, ledger = build(tmp_path, monkeypatch, [], permit_network=True)
     started = time.monotonic()
-    with pytest.raises(PilotStopped, match="provider_outcome_charged"):
+    with pytest.raises(PilotStopped, match="provider_deadline_charged"):
         services.complete_for_model("mimo-v2.6-flash", messages(), max_tokens=16)
     elapsed = time.monotonic() - started
     assert elapsed <= deadline + 1.0
     assert closed["n"] == 0
     assert ledger.snapshot()["unresolved_request_ids"] == []
     record = _diag(tmp_path, "req-m1_b0-1")
-    assert record["cause"] == "timeout"
+    assert record["cause"] == "deadline_timeout"
+    assert record["charged_timeout"] is True
     assert record["settled"] is True
     assert record["latency_ms"] <= 1000
 
@@ -392,3 +401,152 @@ def test_restart_after_cap_minus_one_gets_a_fresh_request_cap(tmp_path, monkeypa
     assert ledger.unit_usage(unit.unit_id, restart_count=1)["requests"] == cap
     assert ledger.snapshot()["committed_or_reserved_microcny"]["mimo-v2.6-pro"] > 0
     assert ledger.snapshot()["unresolved_request_ids"] == []
+
+
+def test_mimo_flash_deadline_matches_pro():
+    from alo_cloud.freeze import PROVIDER_TIMEOUT_S
+    assert PROVIDER_TIMEOUT_S["mimo-v2.6-flash"] == 600
+    assert PROVIDER_TIMEOUT_S["mimo-v2.6-pro"] == 600
+    assert PROVIDER_TIMEOUT_S["deepseek-flash"] == 300
+    assert PROVIDER_TIMEOUT_S["glm-5.3-flash"] == 300
+
+
+def test_deadline_timeouts_do_not_count_toward_the_unknown_cap(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "urllib.request.urlopen", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("network")))
+    units = select_units("m1", arms=("g1-main",))[:2]
+
+    def fail(url, body, headers):
+        del url, body, headers
+        raise TimeoutError("provider_wall_clock")
+
+    rows = run_schedule(units, tmp_path / "run", live=False, sender=fail)
+    assert [row["reason"] for row in rows] == ["second_timeout_interruption", "second_timeout_interruption"]
+    assert all(row["halt_schedule"] is False and row["charged_timeout"] is True for row in rows)
+    unknown = tmp_path / "run" / "unknown_outcomes.jsonl"
+    assert not unknown.exists()
+    counts = json.loads((tmp_path / "run" / "progress" / "timeout_counts.json").read_text(encoding="utf-8"))
+    assert counts["charged_timeouts"] == 4
+    assert counts["halt_reason"] is None
+    assert counts["by_model"]["mimo-v2.6-flash"]["window_full"] is False
+
+
+def test_genuine_unknowns_still_halt_after_three(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "urllib.request.urlopen", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("network")))
+    units = select_units("m1", arms=("g1-main",))[:2]
+
+    def fail(url, body, headers):
+        del url, body, headers
+        raise ConnectionResetError("reset")
+
+    with pytest.raises(PilotStopped, match="unknown_outcome_threshold"):
+        run_schedule(units, tmp_path / "run", live=False, sender=fail)
+    halted = [json.loads(line) for line in (tmp_path / "run" / "records.jsonl").read_text().splitlines() if line.strip()]
+    assert halted[-1]["reason"] == "unknown_outcome_threshold"
+    assert halted[-1]["halt_schedule"] is True
+    assert sum(1 for line in (tmp_path / "run" / "unknown_outcomes.jsonl").read_text().splitlines() if line.strip()) == 4
+
+
+def test_charged_timeout_valves(tmp_path):
+    from alo_cloud.contracts import MODEL_POOL, PER_MODEL_LIMIT_MICROCNY, STUDY_TOTAL_LIMIT_MICROCNY
+    from alo_cloud.progress import assess_charged_timeouts
+
+    def ledger_with(rows):
+        path = tmp_path / f"budget-{len(list(tmp_path.glob('budget-*.sqlite3')))}.sqlite3"
+        ledger = BudgetLedger.create(
+            path,
+            model_limits_microcny={model: PER_MODEL_LIMIT_MICROCNY for model in MODEL_POOL},
+            opening_commitments_microcny={model: 0 for model in MODEL_POOL},
+            max_requests=200, prior_requests=0, max_tokens=900_000, prior_tokens=0,
+            max_seconds_ms=1_200_000, prior_seconds_ms=0, max_tools=120, prior_tools=0,
+            total_limit_microcny=STUDY_TOTAL_LIMIT_MICROCNY, run_mode="dry-run")
+        for request_id, held, cause in rows:
+            ledger.reserve(request_id, "mimo-v2.6-flash", held, payload_sha256="a" * 64,
+                           tokens=10, seconds_ms=10, unit_id="unit-a", unit_request_cap=200,
+                           protocol_epoch=2)
+            ledger.settle_known(request_id, held, tokens=10, seconds_ms=10)
+            if cause:
+                record = {
+                    "schema": "alo-provider-diagnostic-v1", "request_id": request_id,
+                    "cause": cause, "settled": True, "model": "mimo-v2.6-flash",
+                }
+                dest = path.parent / "diagnostics" / f"{request_id}.json"
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_text(json.dumps(record), encoding="utf-8")
+        return ledger
+
+    under = [("req-e2-unit-%02d" % index, 1_000, "deadline_timeout" if index < 10 else None)
+             for index in range(40)]
+    quiet = assess_charged_timeouts(ledger_with(under), protocol_epoch=2)
+    assert quiet["halt_reason"] is None
+    assert quiet["by_model"]["mimo-v2.6-flash"]["charged_timeouts_in_window"] == 10
+
+    over = [("req-e2-rate-%02d" % index, 1_000, "deadline_timeout" if index < 11 else None)
+            for index in range(40)]
+    # Historical epoch-2 diagnostics used cause "timeout" for the same settlement.
+    over[0] = ("req-e2-rate-00", 1_000, "timeout")
+    rated = assess_charged_timeouts(ledger_with(over), protocol_epoch=2)
+    assert rated["halt_reason"] == "charged_timeout_rate"
+    assert rated["by_model"]["mimo-v2.6-flash"]["window_full"] is True
+
+    below_cap = assess_charged_timeouts(
+        ledger_with([("req-e2-cny-1", 10_000_000, "deadline_timeout")]), protocol_epoch=2)
+    assert below_cap["halt_reason"] is None
+    above_cap = assess_charged_timeouts(
+        ledger_with([("req-e2-cny-2", 10_000_001, "timeout")]), protocol_epoch=2)
+    assert above_cap["halt_reason"] == "charged_timeout_cny"
+    assert above_cap["charged_timeout_microcny"] == 10_000_001
+
+
+def test_timeout_rate_halts_the_schedule_once_the_window_is_full(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "urllib.request.urlopen", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("network")))
+    monkeypatch.setattr("alo_cloud.progress.CHARGED_TIMEOUT_WINDOW", 4)
+    units = select_units("m1", arms=("g1-main",))[:2]
+
+    def fail(url, body, headers):
+        del url, body, headers
+        raise TimeoutError("provider_wall_clock")
+
+    with pytest.raises(PilotStopped, match="charged_timeout_rate"):
+        run_schedule(units, tmp_path / "run", live=False, sender=fail)
+    halted = [json.loads(line) for line in (tmp_path / "run" / "records.jsonl").read_text().splitlines() if line.strip()]
+    assert halted[-1]["halt_schedule"] is True
+    assert halted[-1]["reason"] == "charged_timeout_rate"
+    counts = json.loads((tmp_path / "run" / "progress" / "timeout_counts.json").read_text(encoding="utf-8"))
+    assert counts["halt_reason"] == "charged_timeout_rate"
+    outcomes = (tmp_path / "run" / "progress" / "provider_outcomes.jsonl").read_text(encoding="utf-8")
+    assert outcomes.count('"outcome": "deadline_timeout"') == 4
+
+
+def test_resume_skips_a_halted_terminal_row(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "urllib.request.urlopen", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("network")))
+    mains = select_units("m1", arms=("g1-main",))
+    halted = next(unit for unit in mains if unit.task_id == "django__django-11583" and unit.phase == "B0")
+    fresh = next(unit for unit in mains if unit.task_id == "scikit-learn__scikit-learn-13584" and unit.phase == "B0")
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "protocol_epoch.json").write_text(
+        json.dumps({"epoch": 2, "reason": "continue epoch 2"}) + "\n", encoding="utf-8")
+    (run / "records.jsonl").write_text(json.dumps({
+        "unit_id": halted.unit_id, "status": "stopped", "reason": "provider_outcome_charged",
+        "halt_schedule": True, "restart_count": 1,
+    }) + "\n", encoding="utf-8")
+
+    def succeed(url, body, headers):
+        del url, headers
+        return _body(body["model"], '{"final":"ok"}', _usage(4, 2))
+
+    rows = run_schedule((halted, fresh), run, live=False, sender=succeed)
+    assert rows[0]["unit_id"] == halted.unit_id
+    assert rows[0]["halt_schedule"] is True
+    assert rows[0]["status"] == "stopped"
+    assert rows[1]["unit_id"] == fresh.unit_id
+    assert rows[1]["status"] == "completed"
+    assert rows[1]["halt_schedule"] is False
+    assert rows[1]["protocol_epoch"] == 2
+    ledger = BudgetLedger(run / "budget.sqlite3")
+    assert all(halted.unit_id not in request_id for request_id in ledger.request_ids())
+    assert any(fresh.unit_id in request_id for request_id in ledger.request_ids())

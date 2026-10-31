@@ -244,6 +244,14 @@ class BudgetLedger:
         with self._transaction() as conn:
             return [row[0] for row in conn.execute("SELECT id FROM requests ORDER BY rowid")]
 
+    def request_rows(self):
+        """Request id, model, held microcny and status, in insertion order."""
+        with self._transaction() as conn:
+            rows = conn.execute(
+                "SELECT id, model, held, status FROM requests ORDER BY rowid").fetchall()
+        return [{"id": row[0], "model": row[1], "held_microcny": int(row[2]), "status": row[3]}
+                for row in rows]
+
     def unit_usage(self, unit_id, protocol_epoch=0, restart_count=0):
         """Resource counters for one attempt. CNY is not included; it stays global.
 

@@ -445,8 +445,11 @@ def urllib_send(url, body, headers, *, timeout_s, model, started=None, clock=Non
 
 def _exception_cause(error):
     reason = getattr(error, "reason", error) if isinstance(error, urllib.error.URLError) else error
+    # Every timeout this transport raises is the deadline we armed: the wall-clock
+    # check, or the socket timeout set to the time still left. That is a charged
+    # deadline, not an ambiguous provider result.
     if isinstance(reason, (TimeoutError, socket.timeout)):
-        return "timeout"
+        return "deadline_timeout"
     if isinstance(reason, (ConnectionResetError, BrokenPipeError, ConnectionAbortedError)):
         return "connection_reset"
     return "transport_error"

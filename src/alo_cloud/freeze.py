@@ -49,11 +49,17 @@ MIMO_MAX_COMPLETION_TOKENS = 16384
 NON_MIMO_MAX_COMPLETION_TOKENS = 16384
 PROVIDER_TIMEOUT_S = {
     "deepseek-flash": 300,
-    "mimo-v2.6-flash": 300,
+    "mimo-v2.6-flash": 600,
     "glm-5.3-flash": 300,
     "mimo-v2.6-pro": 600,
 }
 MAX_UNKNOWN_OUTCOMES = 3
+# A charged deadline timeout restarts the unit and does not increment the unknown
+# counter. The rate uses a full window: fewer than this many requests for a model
+# cannot trip the percentage. The CNY cap is the epoch total, in yuan.
+CHARGED_TIMEOUT_WINDOW = 40
+CHARGED_TIMEOUT_RATE = 0.25
+CHARGED_TIMEOUT_EPOCH_CNY = 10
 SCHEDULE_RULE = (
     "m1-track-rotation-v1; m2-all-learning-then-references-then-probes-v1; "
     "probe prior alternates by sequence index plus probe position"
@@ -232,9 +238,12 @@ def freeze_payload():
             "probe_seeds": list(row["probe_seeds"]),
         })
     return {
-        "schema": "alo-protocol-freeze-v6",
+        "schema": "alo-protocol-freeze-v7",
         "provider_timeout_s": dict(PROVIDER_TIMEOUT_S),
         "max_unknown_outcomes": MAX_UNKNOWN_OUTCOMES,
+        "charged_timeout_window": CHARGED_TIMEOUT_WINDOW,
+        "charged_timeout_rate": CHARGED_TIMEOUT_RATE,
+        "charged_timeout_epoch_cny": CHARGED_TIMEOUT_EPOCH_CNY,
         "max_blocked_fraction": MAX_BLOCKED_FRACTION,
         "blocked_fraction_min_units": BLOCKED_FRACTION_MIN_UNITS,
         "price_retrieved_on": RETRIEVED_ON,
