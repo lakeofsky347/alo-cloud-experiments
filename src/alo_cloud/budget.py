@@ -10,6 +10,9 @@ hold so one file can carry the paid run. Requests, tokens, seconds and tools
 stay inside the active unit when ``unit_id`` is set; CNY stays per model, and
 the optional total caps the sum. A v1 or v2 file is refused rather than opened
 with a partial balance. Missing ceilings do not become zero.
+
+An in-progress v3 file stays openable. ``resolve_unknown`` adds an ``audit``
+table when it is first used and does not change the schema key.
 """
 from __future__ import annotations
 
@@ -364,6 +367,70 @@ class BudgetLedger:
             if row is None or row[0] != "reserved":
                 raise BudgetStopped("only_pending_reservation_may_be_marked_unknown")
             conn.execute("UPDATE requests SET status='unknown' WHERE id=?", (request_id,))
+
+    def resolve_unknown(self, request_id, charge_microcny, *, reason, worst_case=False):
+        """Settle one unknown hold. The CNY charge stays in the model total.
+
+        ``worst_case`` charges the reserved microcny. A smaller charge releases
+        the difference. The token and second columns on an unknown row are the
+        pre-dispatch remainder lock, not a vendor receipt, so resolving releases
+        that lock. An audit row records both numbers.
+        """
+        _id(request_id)
+        if not isinstance(reason, str) or not reason.strip() or len(reason) > 500:
+            raise ValueError("resolve_reason_required")
+        if worst_case and charge_microcny is not None:
+            raise ValueError("resolve_charge_conflict")
+        if not worst_case:
+            _integer(charge_microcny)
+        with self._transaction() as conn:
+            row = conn.execute(
+                """SELECT reserved,status,reserved_tokens,held_tokens,reserved_seconds_ms,held_seconds_ms
+                   FROM requests WHERE id=?""",
+                (request_id,)).fetchone()
+            if row is None or row[1] != "unknown":
+                raise BudgetStopped("only_unknown_hold_may_be_resolved")
+            reserved = row[0]
+            charge = reserved if worst_case else charge_microcny
+            if charge > reserved:
+                raise BudgetStopped("resolve_charge_above_hold")
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS audit(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    request_id TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    charge_microcny INTEGER NOT NULL,
+                    reserved_microcny INTEGER NOT NULL,
+                    released_tokens INTEGER NOT NULL,
+                    released_seconds_ms INTEGER NOT NULL)""")
+            conn.execute(
+                """UPDATE requests
+                   SET held=?, held_tokens=0, held_seconds_ms=0, status='settled'
+                   WHERE id=?""",
+                (charge, request_id))
+            conn.execute(
+                """INSERT INTO audit
+                   (request_id, action, reason, charge_microcny, reserved_microcny,
+                    released_tokens, released_seconds_ms)
+                   VALUES (?,?,?,?,?,?,?)""",
+                (request_id, "resolve_unknown", reason.strip(), charge, reserved, row[3], row[5]))
+        return {"request_id": request_id, "charge_microcny": charge, "reserved_microcny": reserved,
+                "released_tokens": row[3], "released_seconds_ms": row[5], "status": "settled"}
+
+    def audit_rows(self):
+        with self._transaction() as conn:
+            exists = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='audit'").fetchone()
+            if not exists:
+                return []
+            rows = conn.execute(
+                """SELECT request_id, action, reason, charge_microcny, reserved_microcny,
+                          released_tokens, released_seconds_ms
+                   FROM audit ORDER BY id""").fetchall()
+        return [{"request_id": row[0], "action": row[1], "reason": row[2],
+                 "charge_microcny": row[3], "reserved_microcny": row[4],
+                 "released_tokens": row[5], "released_seconds_ms": row[6]} for row in rows]
 
     def reserve_tool(self, tool_id, *, seconds_ms, unit_id=""):
         """Hold one tool call and its worst-case seconds before execution."""

@@ -61,6 +61,29 @@ def test_provider_tool_calls_are_not_executed():
     assert services.calls == [("complete", 2, 4096)]
 
 
+def test_length_stop_ends_the_loop_and_an_empty_turn_continues():
+    stopped = LoopServices([{"text": "", "length_stop": True, "finish_reason": "length"}])
+    result = persistent_tool_loop(stopped, "public task", [], max_turns=3)
+    assert result == {"status": "failed", "summary": "length_stop"}
+    assert len(stopped.calls) == 1
+    empty = LoopServices([
+        {"text": "", "finish_reason": "stop"},
+        '{"final":"after empty"}',
+    ])
+    messages = []
+    result = persistent_tool_loop(empty, "public task", messages, max_turns=3)
+    assert result == {"status": "completed", "summary": "after empty"}
+    assert json.loads(messages[3]["content"])["public_tool_error"] == "empty_assistant_turn"
+    rejected = LoopServices([
+        {"text": "", "vendor_error": True},
+        '{"final":"after error"}',
+    ])
+    messages = []
+    result = persistent_tool_loop(rejected, "public task", messages, max_turns=3)
+    assert result["status"] == "completed"
+    assert json.loads(messages[3]["content"])["provider_error"] == "vendor_error"
+
+
 def test_explicit_tool_then_final_and_turn_cap():
     services = LoopServices([
         '{"tool":"list_files","arguments":{}}',

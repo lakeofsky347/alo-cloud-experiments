@@ -27,6 +27,7 @@ from .freeze import (
     BLOCKED_FRACTION_MIN_UNITS, G2_PLANNER_MODEL, G3_MANAGER_MODEL, G3_ROLES,
     MAX_BLOCKED_FRACTION, select_units,
 )
+from .ledger import restart_counts
 from .images import resolve_task_image
 from .prices import ceiling_for_messages, charge_microcny
 from .sandbox import SWE_TESTBED_PATH, DockerSandbox
@@ -251,8 +252,16 @@ def _done_ids(path):
     return done
 
 
-def _touched(request_id, unit_id):
-    return request_id.startswith(f"req-{unit_id}-") or request_id.startswith(f"tool-{unit_id}-")
+def _touched(request_id, unit_id, restart_count=0):
+    """True when this id belongs to the attempt that would be started now.
+
+    A restarted unit keeps its old rows for the CNY total. Those rows use the
+    previous id prefix, so they do not look like a partial retry of the new
+    attempt. A crash during the new attempt still blocks a silent retry.
+    """
+    generation = f"-r{restart_count}" if restart_count else ""
+    return (request_id.startswith(f"req-{unit_id}{generation}-")
+            or request_id.startswith(f"tool-{unit_id}{generation}-"))
 
 
 def missing_payloads(units, data_dir):
@@ -293,7 +302,8 @@ def run_schedule(units, run_dir, *, live, data_dir=None, docker_image=None, send
                 results.append(done[unit.unit_id])
                 _stop_if_blocked(results)
                 continue
-            if any(_touched(request_id, unit.unit_id) for request_id in known_ids):
+            if any(_touched(request_id, unit.unit_id, restart_counts(run_dir).get(unit.unit_id, 0))
+                   for request_id in known_ids):
                 raise BudgetStopped("partial_unit_not_retried")
             record = _execute_unit(unit, run_dir, ledger, live=live, data_dir=data_dir,
                                    docker_image=docker_image, sender=sender, git_runner=git_runner,
@@ -303,7 +313,7 @@ def run_schedule(units, run_dir, *, live, data_dir=None, docker_image=None, send
             results.append(record)
             known_ids = ledger.request_ids()
             _stop_if_blocked(results)
-            if record["status"] == "stopped" and record.get("halt_schedule"):
+            if record.get("halt_schedule"):
                 raise PilotStopped(record.get("reason") or "schedule_stopped")
     finally:
         collect_sealed(run_dir)
@@ -468,6 +478,8 @@ def _execute_unit(unit, run_dir, ledger, *, live, data_dir, docker_image, sender
         "started_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
     state_dir = Path(run_dir) / "units" / unit.unit_id / "state"
+    restart_count = restart_counts(run_dir).get(unit.unit_id, 0)
+    record["restart_count"] = restart_count
     services = StudyServices(
         state_dir, ledger, unit=unit.protocol_unit,
         per_request_microcny_ceiling=PER_MODEL_LIMIT_MICROCNY,
@@ -478,6 +490,7 @@ def _execute_unit(unit, run_dir, ledger, *, live, data_dir, docker_image, sender
         require_credentials=live,
         unit_id=unit.unit_id,
         limits={"requests": unit.request_cap},
+        restart_count=1 if restart_count >= 1 else 0,
     )
     payload = load_public_payload(data_dir, unit.track, unit.task_id)
     repo = _public_field(payload, "repo")
@@ -523,6 +536,10 @@ def _execute_unit(unit, run_dir, ledger, *, live, data_dir, docker_image, sender
         reason = str(error)
         status = "stopped"
         halt = reason not in {"cumulative_request_or_model_limit", "unit_seconds_exhausted"}
+        if reason == "provider_outcome_unknown" and restart_count >= 1:
+            status = "blocked"
+            reason = "second_unknown_interruption"
+            halt = True
     except BudgetStopped as error:
         reason = str(error)
         status, halt = "stopped", True

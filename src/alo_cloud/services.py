@@ -15,9 +15,12 @@ from pathlib import Path
 
 from .budget import MICROCNY_PER_CNY, BudgetLedger, BudgetStopped
 from .contracts import MODEL_POOL, PER_MODEL_LIMIT_MICROCNY, STUDY_TOTAL_LIMIT_MICROCNY
+from .diagnostics import write_diagnostic
 from .errors import PilotStopped, ProtocolError
+from .freeze import MIMO_MAX_COMPLETION_TOKENS
 from .providers import (
-    OpenAICompatibleTransport, credential_configured, messages_contain_credential, request_body,
+    MIMO_MODELS, OpenAICompatibleTransport, credential_configured, messages_contain_credential,
+    request_body,
 )
 from .sandbox import DockerSandbox, Workspace, python_syntax_evidence
 
@@ -25,13 +28,13 @@ from .sandbox import DockerSandbox, Workspace, python_syntax_evidence
 # protocol.md 资源、未知与停止. Enforcement table, not a collection freeze.
 PROTOCOL_UNIT_LIMITS = {
     "strong_b0": {"requests": 32, "tokens": 900_000, "tools": 120, "seconds": 1200,
-                  "command_seconds": 60, "max_output_tokens": 4096},
+                  "command_seconds": 60, "max_output_tokens": MIMO_MAX_COMPLETION_TOKENS},
     "m1_b0": {"requests": 32, "tokens": 900_000, "tools": 120, "seconds": 1200,
-              "command_seconds": 60, "max_output_tokens": 4096},
+              "command_seconds": 60, "max_output_tokens": MIMO_MAX_COMPLETION_TOKENS},
     "m1_b1": {"requests": 16, "tokens": 900_000, "tools": 120, "seconds": 1200,
-              "command_seconds": 60, "max_output_tokens": 4096},
+              "command_seconds": 60, "max_output_tokens": MIMO_MAX_COMPLETION_TOKENS},
     "m2": {"requests": 32, "tokens": 900_000, "tools": 120, "seconds": 1200,
-           "command_seconds": 60, "max_output_tokens": 4096},
+           "command_seconds": 60, "max_output_tokens": MIMO_MAX_COMPLETION_TOKENS},
 }
 
 
@@ -71,7 +74,8 @@ class StudyServices:
 
     def __init__(self, state_dir, ledger, *, unit, per_request_microcny_ceiling, charge_microcny,
                  sender=None, permit_network=False, sandbox=None, clock=None, public_quality=None,
-                 unit_id=None, request_ceiling=None, require_credentials=True, limits=None):
+                 unit_id=None, request_ceiling=None, require_credentials=True, limits=None,
+                 restart_count=0):
         if unit not in PROTOCOL_UNIT_LIMITS:
             raise PilotStopped("unknown_protocol_unit")
         if not isinstance(ledger, BudgetLedger):
@@ -84,7 +88,10 @@ class StudyServices:
             raise PilotStopped("request_ceiling_must_be_callable")
         if unit_id is not None and (not isinstance(unit_id, str) or not unit_id):
             raise PilotStopped("unit_id_required")
+        if type(restart_count) is not int or restart_count not in {0, 1}:
+            raise PilotStopped("invalid_restart_count")
         self.limits = _merge_limits(unit, limits)
+        self.restart_count = restart_count
         self.unit = unit
         self.unit_id = unit_id
         self.ledger = ledger
@@ -139,6 +146,8 @@ class StudyServices:
     def _next_id(self, kind):
         self._seq += 1
         label = self.unit_id or self.unit
+        if self.restart_count:
+            return f"{kind}-{label}-r{self.restart_count}-{self._seq}"
         return f"{kind}-{label}-{self._seq}"
 
     def _resource_kwargs(self):
@@ -203,11 +212,60 @@ class StudyServices:
         except BudgetStopped as error:
             self._stop(error)
 
+    def _sent_max_tokens(self, model, max_tokens):
+        """Give MiMo a completion cap that can hold reasoning and a visible answer.
+
+        ``max_completion_tokens`` includes reasoning. A caller asking for at least
+        the historical 4096 cap is raised to ``MIMO_MAX_COMPLETION_TOKENS``.
+        Smaller explicit caps, used by smoke tests, stay as requested. The
+        reservation uses this same number.
+        """
+        if model in MIMO_MODELS and max_tokens >= 4096:
+            return min(self.limits["max_output_tokens"], MIMO_MAX_COMPLETION_TOKENS)
+        return max_tokens
+
+    def _diagnose(self, request_id, model, outcome, *, latency_ms, settled, cause=None):
+        try:
+            write_diagnostic(
+                self.ledger, request_id, model=model, unit_id=self.unit_id,
+                cause=cause or outcome.get("cause") or "transport_error",
+                http_status=outcome.get("http_status"),
+                vendor_code=outcome.get("vendor_code"),
+                vendor_message=outcome.get("vendor_message"),
+                response=outcome.get("response"),
+                finish_reason=outcome.get("finish_reason"),
+                latency_ms=latency_ms, settled=settled,
+            )
+        except (OSError, ValueError):
+            return
+
+    def _usage_charge(self, model, parsed):
+        try:
+            charge = self._charge(model, {
+                "input_tokens": parsed["input_tokens"], "output_tokens": parsed["output_tokens"],
+                "reasoning_tokens": parsed["reasoning_tokens"], "total_tokens": parsed["total_tokens"],
+                "cache_hit_tokens": parsed.get("cache_hit_tokens"),
+            })
+        except Exception:
+            return None
+        if type(charge) is not int or charge < 0:
+            return None
+        return charge
+
+    def _remember(self, parsed, charge):
+        self._observed["model_requests"] += 1
+        self._observed["input_tokens"] += parsed["input_tokens"]
+        self._observed["output_tokens"] += parsed["output_tokens"]
+        if parsed["reasoning_tokens"] is not None:
+            self._observed["reasoning_tokens"] += parsed["reasoning_tokens"]
+        self._observed["microcny"] += charge
+
     def complete_for_model(self, model, messages, *, max_tokens=4096):
         if model not in self.available_models:
             raise PilotStopped("model_outside_pool")
         if type(max_tokens) is not int or not 1 <= max_tokens <= self.limits["max_output_tokens"]:
             raise PilotStopped("output_token_parameter_outside_unit_limit")
+        sent_max_tokens = self._sent_max_tokens(model, max_tokens)
         if not _valid_messages(messages):
             raise PilotStopped("invalid_model_messages")
         self._ensure_not_blocked()
@@ -216,12 +274,12 @@ class StudyServices:
             raise PilotStopped("provider_credential_missing")
         if messages_contain_credential(model, messages):
             raise PilotStopped("provider_credential_in_prompt")
-        body = request_body(model, messages, max_tokens)
+        body = request_body(model, messages, sent_max_tokens)
         if self._request_ceiling is None:
             amount = self.per_request_microcny_ceiling
         else:
             try:
-                amount = self._request_ceiling(model, messages, max_tokens)
+                amount = self._request_ceiling(model, messages, sent_max_tokens)
             except Exception:
                 raise PilotStopped("per_request_microcny_ceiling_required") from None
             if type(amount) is not int or not 1 <= amount <= self.per_request_microcny_ceiling:
@@ -236,47 +294,63 @@ class StudyServices:
             self._stop(error)
         started = self._clock()
         try:
-            parsed = self.transport.complete_for_model(model, messages, max_tokens=max_tokens)
-            try:
-                charge = self._charge(model, {
-                    "input_tokens": parsed["input_tokens"], "output_tokens": parsed["output_tokens"],
-                    "reasoning_tokens": parsed["reasoning_tokens"], "total_tokens": parsed["total_tokens"],
-                    "cache_hit_tokens": parsed.get("cache_hit_tokens"),
-                })
-            except Exception:
-                raise PilotStopped("provider_outcome_unknown") from None
-            if type(charge) is not int or charge < 0:
-                raise PilotStopped("provider_outcome_unknown")
+            outcome = self.transport.complete_for_model(model, messages, max_tokens=sent_max_tokens)
             elapsed_ms = max(0, int(round((self._clock() - started) * 1000)))
-            self.ledger.settle_known(request_id, charge, tokens=parsed["total_tokens"], seconds_ms=elapsed_ms)
+            kind = outcome.get("kind")
+            if kind == "completion":
+                parsed = outcome["parsed"]
+                charge = self._usage_charge(model, parsed)
+                if charge is None:
+                    self._diagnose(request_id, model, outcome, latency_ms=elapsed_ms,
+                                   settled=False, cause="charge_rejected")
+                    self._mark_request_unknown(request_id)
+                    raise PilotStopped("provider_outcome_unknown")
+                self.ledger.settle_known(
+                    request_id, charge, tokens=parsed["total_tokens"], seconds_ms=elapsed_ms)
+                if outcome.get("cause") == "empty_completion":
+                    self._diagnose(request_id, model, outcome, latency_ms=elapsed_ms, settled=True)
+                self._remember(parsed, charge)
+                self.event("model_settled", {"model": model, "request_id": request_id,
+                                              "input_tokens": parsed["input_tokens"],
+                                              "output_tokens": parsed["output_tokens"],
+                                              "reasoning_tokens": parsed["reasoning_tokens"],
+                                              "charge_microcny": charge,
+                                              "finish_reason": parsed.get("finish_reason")})
+                return {"text": parsed["text"], "input_tokens": parsed["input_tokens"],
+                        "output_tokens": parsed["output_tokens"],
+                        "reasoning_tokens": parsed["reasoning_tokens"],
+                        "latency_ms": elapsed_ms, "cost_microcny": charge, "currency": "CNY",
+                        "finish_reason": parsed.get("finish_reason"),
+                        "length_stop": parsed["text"] == "" and parsed.get("finish_reason") == "length",
+                        "vendor_error": False}
+            if kind == "vendor_error":
+                self.ledger.settle_known(request_id, 0, tokens=0, seconds_ms=elapsed_ms)
+                self._diagnose(request_id, model, outcome, latency_ms=elapsed_ms, settled=True)
+                self._observed["model_requests"] += 1
+                self.event("model_settled", {"model": model, "request_id": request_id,
+                                              "input_tokens": 0, "output_tokens": 0,
+                                              "reasoning_tokens": None, "charge_microcny": 0,
+                                              "vendor_error": True})
+                return {"text": "", "input_tokens": 0, "output_tokens": 0, "reasoning_tokens": None,
+                        "latency_ms": elapsed_ms, "cost_microcny": 0, "currency": "CNY",
+                        "finish_reason": None, "length_stop": False, "vendor_error": True}
+            self._diagnose(request_id, model, outcome, latency_ms=elapsed_ms, settled=False)
+            self._mark_request_unknown(request_id)
+            raise PilotStopped("provider_outcome_unknown")
         except PilotStopped as error:
             if str(error) != "provider_outcome_unknown":
+                self._diagnose(request_id, model, {"cause": "transport_error"}, latency_ms=0, settled=False)
                 self._mark_request_unknown(request_id)
                 raise PilotStopped("provider_outcome_unknown") from None
-            self._mark_request_unknown(request_id)
             raise
         except BudgetStopped:
+            self._diagnose(request_id, model, {"cause": "charge_rejected"}, latency_ms=0,
+                           settled=False, cause="charge_rejected")
             raise PilotStopped("provider_outcome_unknown") from None
         except Exception:
+            self._diagnose(request_id, model, {"cause": "transport_error"}, latency_ms=0, settled=False)
             self._mark_request_unknown(request_id)
             raise PilotStopped("provider_outcome_unknown") from None
-        self._observed["model_requests"] += 1
-        self._observed["input_tokens"] += parsed["input_tokens"]
-        self._observed["output_tokens"] += parsed["output_tokens"]
-        # Unreported reasoning stays out of the counter. The billed token total
-        # already includes it when the provider folded it into completion_tokens.
-        if parsed["reasoning_tokens"] is not None:
-            self._observed["reasoning_tokens"] += parsed["reasoning_tokens"]
-        self._observed["microcny"] += charge
-        latency_ms = elapsed_ms
-        self.event("model_settled", {"model": model, "request_id": request_id,
-                                      "input_tokens": parsed["input_tokens"],
-                                      "output_tokens": parsed["output_tokens"],
-                                      "reasoning_tokens": parsed["reasoning_tokens"],
-                                      "charge_microcny": charge})
-        return {"text": parsed["text"], "input_tokens": parsed["input_tokens"],
-                "output_tokens": parsed["output_tokens"], "reasoning_tokens": parsed["reasoning_tokens"],
-                "latency_ms": latency_ms, "cost_microcny": charge, "currency": "CNY"}
 
     def resources(self):
         return {"model_requests": self._observed["model_requests"],

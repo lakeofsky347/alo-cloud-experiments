@@ -65,19 +65,23 @@ ALO 在一次任务开始生成 DAG，当前按固定拓扑顺序串行执行；
 
 | 单元 | 请求 | tokens | 工具 | 墙钟秒 | 单命令秒 | 输出参数 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Strong 开发 B0 | 32 | 900000 | 120 | 1200 | 60 | 4096 |
-| M1 B0 | 32 | 900000 | 120 | 1200 | 60 | 4096 |
-| M1 自身 B1 | 16 | 900000 | 120 | 1200 | 60 | 4096 |
-| M2 学习／probe／固定参考 | 32 | 900000 | 120 | 1200 | 60 | 4096 |
+| Strong 开发 B0 | 32 | 900000 | 120 | 1200 | 60 | 8192 |
+| M1 B0 | 32 | 900000 | 120 | 1200 | 60 | 8192 |
+| M1 自身 B1 | 16 | 900000 | 120 | 1200 | 60 | 8192 |
+| M2 学习／probe／固定参考 | 32 | 900000 | 120 | 1200 | 60 | 8192 |
 
 每模型累计 50 CNY、四模型共 200 CNY，包含失败与未知预留，跨批次不重置、不挪用。本仓库没有可引用的数值期初占用；历史 Drive 原件不在检出中且含模型回答，不导入。业主因此把本轮付费账本的期初承诺定为 0。账本文件写到运行目录之后，恢复运行继续使用同一文件，不把已发生的扣费清零。派发前按官方标价预留单次上限：提示按缓存未命中、补全按 `max_completion_tokens`，不足 1 microcny 的零头向上取整；没有缓存命中拆分时，全部输入按缓存未命中计价。`deepseek-flash` 采用官方高峰标价，避免高峰时段的实际账单高于预留。开发平均费用不代替最坏情形可行性；全部角色、反馈及验证开销均计量，token合同明确输入、输出、reasoning与缺失语义。
 
-2026-10-31 业主决定了两项请求参数，详见[模型清单](models_and_benchmarks.md)：MiMo 按量请求只发送 `max_completion_tokens`（官方字段已经包含可见输出和推理 token，不再并送 `max_tokens`）；GLM-5.3-Flash 发送 `thinking.type=enabled`。账本里的 tokens 只记 `total_tokens`，并且该值必须等于 `prompt_tokens + completion_tokens`。`reasoning_tokens` 只作为 completion 的明细，必须小于等于 `completion_tokens`，不能再加一次。明细缺失时不把 reasoning 记成测得的 0，但 completion 里已经包含的用量仍算进 tokens。采样、`reasoning_effort` 和 `clear_thinking` 这次没有一起决定。
+2026-10-31 业主决定了两项请求参数，详见[模型清单](models_and_benchmarks.md)：MiMo 按量请求只发送 `max_completion_tokens`（官方字段已经包含可见输出和推理 token，不再并送 `max_tokens`）；GLM-5.3-Flash 发送 `thinking.type=enabled`。账本里的 tokens 只记 `total_tokens`，并且该值必须等于 `prompt_tokens + completion_tokens`。`reasoning_tokens` 可以出现在 `usage` 顶层，也可以出现在 `completion_tokens_details` 里；两处同时出现时必须相等，并且小于等于 `completion_tokens`，不能再加一次。明细缺失时不把 reasoning 记成测得的 0，但 completion 里已经包含的用量仍算进 tokens。采样、`reasoning_effort` 和 `clear_thinking` 这次没有一起决定。
 
-派发前预留，未知派发不自动重试或释放预留。遇到 provider outcome unknown，停止当前采集并封存；任何恢复必须使用明确的新身份和恢复合同。配对任务块无法共同满足预算时停止并保留未启动单位，不将后执行系统单方面受限解释为算法差异。
+MiMo 的 `max_completion_tokens` 同时封顶推理和可见回答。调用方要求至少 4096 时，实际发送并预留 8192，避免推理写满 4096 后可见内容为空。DeepSeek 与 GLM 的默认发送值仍是 4096，单元允许的输出参数上限是 8192。费用投影仍按每次输出 2048 token 估计，不把这个上限当成每次都会用满。
+
+派发前预留。一次结果按三类处理，不再把它们合成同一种 unknown。HTTP 200、usage 自洽、但 `content` 为 null 或空字符串，是已知的计费完成：按供应商报告的 usage 用 `charge_microcny` 结算；`finish_reason=length` 且可见文本为空时，代理循环记一次空回答并停止该轮（length stop），不把预留留成 unknown。非 200 且响应体是可解析的供应商错误时，按 0 结算：三家价格页按成功产生的 token 计费，错误响应不另计；诊断文件仍留下错误码和消息。只有发送之后超时、响应中途连接被重置、以及无法解析的 HTTP 200，才保持 unknown，预留不释放，并停止后续派发。每种非成功完成都把脱敏诊断写到运行目录的 `diagnostics/<request_id>.json`（原因、HTTP 状态、供应商错误码和消息、不含请求头和密钥的响应 JSON、延迟、finish_reason）。认证头和密钥不写入该文件。
+
+业主授权的恢复规则：基础设施或 unknown 打断的单元可以从头重跑一次。此前已经计入账本的花费保留，不从模型累计里删掉；工作区、检查点和日程记录归档，请求号带上重启代次，避免和旧预留冲突。单元记录写下 `restart_count`。第二次再被 unknown 打断时，该单元记为 blocked，不再重启。操作命令是 `python -m alo_cloud.ledger resolve`。配对任务块无法共同满足预算时停止并保留未启动单位，不将后执行系统单方面受限解释为算法差异。
 
 ## 正式冻结与后置研究
 
-任务身份、种子、组别、模型和参数见 [protocol_freeze.md](protocol_freeze.md)。费用投影见 [cost_projection.md](cost_projection.md)。2026-10-31 的冻结哈希再次更新，上一版和原因写在 [protocol_freeze.md](protocol_freeze.md)。题单和标价未变。官方 SWE 镜像的 HEAD 比 `base_commit` 多一个只改文件模式的提交，计分补丁相对该镜像 HEAD；评分工作目录在运行目录的 `eval`；blocked 比例超过 0.25 时停止，并在 M2 之前打印原因直方图。阶段准备不等于采集许可，离线单元测试不代替原生环境正负控制，也不是模型分数。
+任务身份、种子、组别、模型和参数见 [protocol_freeze.md](protocol_freeze.md)。费用投影见 [cost_projection.md](cost_projection.md)。2026-10-31 的冻结哈希再次更新，上一版和原因写在 [protocol_freeze.md](protocol_freeze.md)。题单和标价未变。供应商结果分成空完成、可解析错误和真正的 unknown；unknown 打断的单元允许从头重启一次，第二次记 blocked。MiMo 的补全上限改为 8192，因为该字段包含推理。阶段准备不等于采集许可，离线单元测试不代替原生环境正负控制，也不是模型分数。
 
 A1 固定同一 DAG 比较调度、A2 比较同来源反馈维度、A3 比较组织更新启用／冻结，均另行冻结。X1 后置；若开展，只共享白名单公开失败摘要，使用同一父检查点上的自身反馈对照与等追加预算，不共享源码、补丁或隐藏评分。
