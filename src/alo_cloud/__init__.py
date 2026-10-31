@@ -1,1 +1,1 @@
-"""Source-only M1/M2 scaffold. Benchmark, provider and sandbox integrations are not configured."""
+"""M1/M2 scaffold. StudyServices is an offline-tested metered boundary, not a collection permit."""
