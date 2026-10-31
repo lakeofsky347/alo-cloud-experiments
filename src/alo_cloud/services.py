@@ -211,7 +211,10 @@ class StudyServices:
         self._observed["model_requests"] += 1
         self._observed["input_tokens"] += parsed["input_tokens"]
         self._observed["output_tokens"] += parsed["output_tokens"]
-        self._observed["reasoning_tokens"] += parsed["reasoning_tokens"]
+        # Unreported reasoning stays out of the counter. The billed token total
+        # already includes it when the provider folded it into completion_tokens.
+        if parsed["reasoning_tokens"] is not None:
+            self._observed["reasoning_tokens"] += parsed["reasoning_tokens"]
         self._observed["microcny"] += charge
         latency_ms = elapsed_ms
         self.event("model_settled", {"model": model, "request_id": request_id,

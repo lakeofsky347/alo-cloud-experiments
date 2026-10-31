@@ -4,9 +4,13 @@ Keys are read from the process environment at the moment of a call and are not
 stored on the instance. This module does not contain a price table, and the
 network sender stays off unless the caller passes ``permit_network=True``.
 Pay-as-you-go endpoints only: MiMo Token Plan and GLM Coding Plan are different
-products and are not selected here. Sampling and thinking parameters are not
-sent, because that contract is still unfrozen; GLM-5.3-Flash in particular
-cannot be assumed to share a thinking-off switch with the other three models.
+products and are not selected here.
+
+Mainland-China pay-as-you-go URLs and the two owner parameter decisions are
+recorded in ``docs/models_and_benchmarks.md``. MiMo sends
+``max_completion_tokens`` and not ``max_tokens``. GLM-5.3-Flash sends
+``thinking.type=enabled``. Sampling, ``reasoning_effort`` and
+``clear_thinking`` are still omitted.
 """
 from __future__ import annotations
 
@@ -18,16 +22,16 @@ from .contracts import MODEL_POOL
 from .errors import PilotStopped
 
 
-# Official pay-as-you-go OpenAI-compatible chat completions, rechecked 2026-10-31.
-# DeepSeek: https://api.deepseek.com/chat/completions with DEEPSEEK_API_KEY.
-# MiMo: https://api.xiaomimimo.com/v1/chat/completions with MIMO_API_KEY.
-# Z.AI: https://api.z.ai/api/paas/v4/chat/completions with ZAI_API_KEY.
+# Mainland pay-as-you-go chat completions. Env names stay stable; auth scheme follows
+# the vendor page cited in docs/models_and_benchmarks.md. "bearer" is
+# Authorization: Bearer. "api-key" is the header used by the MiMo zh-CN curl.
 POOL_ENDPOINTS = {
-    "deepseek-flash": ("DEEPSEEK_API_KEY", "https://api.deepseek.com/chat/completions"),
-    "mimo-v2.6-flash": ("MIMO_API_KEY", "https://api.xiaomimimo.com/v1/chat/completions"),
-    "mimo-v2.6-pro": ("MIMO_API_KEY", "https://api.xiaomimimo.com/v1/chat/completions"),
-    "glm-5.3-flash": ("ZAI_API_KEY", "https://api.z.ai/api/paas/v4/chat/completions"),
+    "deepseek-flash": ("DEEPSEEK_API_KEY", "https://api.deepseek.com/chat/completions", "bearer"),
+    "mimo-v2.6-flash": ("MIMO_API_KEY", "https://api.xiaomimimo.com/v1/chat/completions", "api-key"),
+    "mimo-v2.6-pro": ("MIMO_API_KEY", "https://api.xiaomimimo.com/v1/chat/completions", "api-key"),
+    "glm-5.3-flash": ("ZAI_API_KEY", "https://open.bigmodel.cn/api/paas/v4/chat/completions", "bearer"),
 }
+MIMO_MODELS = frozenset({"mimo-v2.6-flash", "mimo-v2.6-pro"})
 
 
 def _key_ok(value):
@@ -39,7 +43,7 @@ def credential_configured(model):
     """True when the model's env var currently holds a non-empty single-line key."""
     if model not in POOL_ENDPOINTS:
         return False
-    env_name, _url = POOL_ENDPOINTS[model]
+    env_name, _url, _auth = POOL_ENDPOINTS[model]
     value = os.environ.get(env_name)
     try:
         return _key_ok(value)
@@ -51,7 +55,7 @@ def messages_contain_credential(model, messages):
     """Refuse to transmit a prompt that already embeds the live key."""
     if model not in POOL_ENDPOINTS:
         return False
-    env_name, _url = POOL_ENDPOINTS[model]
+    env_name, _url, _auth = POOL_ENDPOINTS[model]
     key = os.environ.get(env_name)
     try:
         if not _key_ok(key):
@@ -66,8 +70,31 @@ def messages_contain_credential(model, messages):
 
 
 def request_body(model, messages, max_tokens):
-    """Chat-completions JSON. No key, no thinking switch, no temperature freeze."""
-    return {"model": model, "messages": messages, "max_tokens": max_tokens, "stream": False}
+    """Chat-completions JSON. No key and no sampling freeze.
+
+    MiMo's published field is ``max_completion_tokens`` and already includes
+    reasoning tokens, so ``max_tokens`` is not sent beside it. GLM-5.3-Flash
+    cannot disable thinking; the body sets ``thinking.type`` to ``enabled``.
+    """
+    body = {"model": model, "messages": messages, "stream": False}
+    if model in MIMO_MODELS:
+        body["max_completion_tokens"] = max_tokens
+    else:
+        body["max_tokens"] = max_tokens
+    if model == "glm-5.3-flash":
+        body["thinking"] = {"type": "enabled"}
+    return body
+
+
+def _auth_headers(auth, key):
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    if auth == "bearer":
+        headers["Authorization"] = "Bearer " + key
+    elif auth == "api-key":
+        headers["api-key"] = key
+    else:
+        raise PilotStopped("unknown_auth_scheme")
+    return headers
 
 
 def parse_openai_chat_completion(payload, model):
@@ -91,25 +118,28 @@ def parse_openai_chat_completion(payload, model):
     if (type(prompt) is not int or type(completion) is not int or type(total) is not int
             or prompt < 0 or completion < 0 or total != prompt + completion):
         raise PilotStopped("provider_outcome_unknown")
-    reasoning = 0
+    # Official usage defines total as prompt + completion. reasoning_tokens, when
+    # present, is a completion-detail and must not be added a second time.
+    # A missing split stays unreported; it is not recorded as a measured zero.
+    if "reasoning_tokens" in usage:
+        raise PilotStopped("provider_outcome_unknown")
+    reasoning = None
     details = usage.get("completion_tokens_details")
     if details is not None:
-        if not isinstance(details, dict) or "reasoning_tokens" not in details:
+        if not isinstance(details, dict):
             raise PilotStopped("provider_outcome_unknown")
-        reasoning = details["reasoning_tokens"]
-        if type(reasoning) is not int or reasoning < 0:
-            raise PilotStopped("provider_outcome_unknown")
+        if "reasoning_tokens" in details:
+            reasoning = details["reasoning_tokens"]
+            if type(reasoning) is not int or reasoning < 0 or reasoning > completion:
+                raise PilotStopped("provider_outcome_unknown")
     return {"text": message["content"], "input_tokens": prompt, "output_tokens": completion,
             "reasoning_tokens": reasoning, "total_tokens": total}
 
 
-def urllib_send(url, body, key, *, timeout_s):
+def urllib_send(url, body, headers, *, timeout_s):
     """Real HTTP POST. Callers must not use this from offline tests."""
     data = json.dumps(body, ensure_ascii=False).encode()
-    request = urllib.request.Request(
-        url, data=data, method="POST",
-        headers={"Authorization": "Bearer " + key, "Content-Type": "application/json",
-                 "Accept": "application/json"})
+    request = urllib.request.Request(url, data=data, method="POST", headers=headers)
     with urllib.request.urlopen(request, timeout=timeout_s) as response:
         raw = response.read()
     return json.loads(raw.decode())
@@ -130,7 +160,7 @@ class OpenAICompatibleTransport:
     def complete_for_model(self, model, messages, *, max_tokens=4096):
         if model not in MODEL_POOL or model not in POOL_ENDPOINTS:
             raise PilotStopped("model_outside_pool")
-        env_name, url = POOL_ENDPOINTS[model]
+        env_name, url, auth = POOL_ENDPOINTS[model]
         key = os.environ.get(env_name)
         try:
             if not _key_ok(key):
@@ -139,13 +169,12 @@ class OpenAICompatibleTransport:
             encoded = json.dumps(body, ensure_ascii=False)
             if key in encoded:
                 raise PilotStopped("provider_credential_in_prompt")
-            headers = {"Authorization": "Bearer " + key, "Content-Type": "application/json",
-                       "Accept": "application/json"}
+            headers = _auth_headers(auth, key)
             try:
                 if self._sender is not None:
                     payload = self._sender(url, body, headers)
                 elif self._permit_network:
-                    payload = urllib_send(url, body, key, timeout_s=self._timeout_s)
+                    payload = urllib_send(url, body, headers, timeout_s=self._timeout_s)
                 else:
                     raise PilotStopped("provider_network_not_permitted")
             except PilotStopped:
