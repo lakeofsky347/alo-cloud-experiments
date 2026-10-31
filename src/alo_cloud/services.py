@@ -25,6 +25,11 @@ from .providers import (
 from .sandbox import DockerSandbox, Workspace, python_syntax_evidence
 
 
+# Settle still runs on the caller after the transport returns. A hold must not
+# stay open past the provider deadline by more than this.
+HOLD_SETTLE_MARGIN_S = 5
+
+
 # protocol.md 资源、未知与停止. Enforcement table, not a collection freeze.
 PROTOCOL_UNIT_LIMITS = {
     "strong_b0": {"requests": 32, "tokens": 900_000, "tools": 120, "seconds": 1200,
@@ -208,7 +213,7 @@ class StudyServices:
         wall_ms = int(self._wall_remaining() * 1000)
         seconds_ms = min(accounted_ms, max(wall_ms, 0))
         if tokens < 1 or seconds_ms < 1:
-            raise PilotStopped("cumulative_request_or_model_limit")
+            raise PilotStopped("unit_resource_exhausted")
         return tokens, seconds_ms
 
     def _mark_request_unknown(self, request_id):
@@ -291,17 +296,26 @@ class StudyServices:
                 raise PilotStopped("per_request_microcny_ceiling_required")
         token_hold, second_hold = self._worst_case_holds()
         request_id = self._next_id("req")
+        deadline_s = PROVIDER_TIMEOUT_S[model]
         try:
             self.ledger.reserve(request_id, model, amount,
                                 payload_sha256=_digest(body), tokens=token_hold, seconds_ms=second_hold,
                                 **self._resource_kwargs())
         except BudgetStopped as error:
             self._stop(error)
+        # The hold is open now. Connect, stream and settle share this clock.
         started = self._clock()
         try:
             outcome = self.transport.complete_for_model(
                 model, messages, max_tokens=sent_max_tokens,
-                timeout_s=PROVIDER_TIMEOUT_S[model])
+                timeout_s=deadline_s, started=started, clock=self._clock)
+            elapsed_s = self._clock() - started
+            # The transport must already have returned. This only refuses to bill
+            # a success that came back after the hold was supposed to be closed.
+            if elapsed_s > deadline_s + HOLD_SETTLE_MARGIN_S:
+                outcome = {"kind": "unknown", "cause": "timeout", "http_status": None,
+                           "vendor_code": None, "vendor_message": None, "finish_reason": None,
+                           "response": None, "parsed": None}
             elapsed_ms = max(0, int(round((self._clock() - started) * 1000)))
             kind = outcome.get("kind")
             if kind == "completion":

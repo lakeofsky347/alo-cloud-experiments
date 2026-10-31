@@ -417,12 +417,10 @@ class HeterogeneousALO:
                 untried = [m for m in ctx.eligible_models if m not in ctx.tried_models]
                 if not untried:
                     return Decision("stop", reason="all_eligible_models_tried")
-                try:
-                    target, trace = policy.select(org, pool, untried, "remediation", (), "default-user", rng)
-                except PilotStopped as error:
-                    if str(error) != "budget_infeasible_all_models":
-                        raise
-                    return Decision("stop", reason="remaining_budget_infeasible_for_reassignment")
+                # Same exception as first assignment and later nodes. run.py
+                # stops only this unit for unit_resource_exhausted, and halts
+                # the schedule for a real CNY-cap failure.
+                target, trace = policy.select(org, pool, untried, "remediation", (), "default-user", rng)
                 services.event("alo_remediation_selection", trace)
                 return Decision("reassign", target_model=target, reason="constrained_ts_reassignment")
 

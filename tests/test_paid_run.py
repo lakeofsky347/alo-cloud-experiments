@@ -72,7 +72,7 @@ def test_unit_scope_does_not_spend_the_next_units_request_cap(tmp_path):
     ledger.reserve("req-unit-a-1", "mimo-v2.6-flash", 10, payload_sha256="a" * 64,
                    tokens=5, seconds_ms=5, unit_id="unit-a", unit_request_cap=1)
     ledger.settle_known("req-unit-a-1", 4, tokens=5, seconds_ms=5)
-    with pytest.raises(BudgetStopped, match="model_limit"):
+    with pytest.raises(BudgetStopped, match="unit_resource_exhausted"):
         ledger.reserve("req-unit-a-2", "mimo-v2.6-flash", 10, payload_sha256="b" * 64,
                        tokens=5, seconds_ms=5, unit_id="unit-a", unit_request_cap=1)
     ledger.reserve("req-unit-b-1", "mimo-v2.6-pro", 10, payload_sha256="c" * 64,

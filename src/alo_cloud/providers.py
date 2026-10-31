@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import os
 import socket
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -288,16 +289,47 @@ def parse_sse(text, model):
     return assemble_stream(chunks, model)
 
 
-def _arm_deadline(response, seconds):
-    """Bound the next socket wait by the remaining wall-clock budget."""
+# After the deadline the caller stops waiting. This only covers the socket
+# abort unblocking a read; it is not extra time for the provider.
+_JOIN_SLACK_S = 0.25
+
+
+def _socket_of(response):
+    if response is None:
+        return None
+    sock = getattr(response, "_sock", None)
+    if sock is not None:
+        return sock
     fp = getattr(response, "fp", None)
     raw = getattr(fp, "raw", None) if fp is not None else None
-    sock = None
-    if raw is not None:
-        sock = getattr(raw, "_sock", None)
-        if sock is None:
-            inner = getattr(raw, "raw", None)
-            sock = getattr(inner, "_sock", None) if inner is not None else None
+    if raw is None:
+        return None
+    sock = getattr(raw, "_sock", None)
+    if sock is None:
+        inner = getattr(raw, "raw", None)
+        sock = getattr(inner, "_sock", None) if inner is not None else None
+    return sock
+
+
+def _abort_socket(response):
+    """Unblock a read. Do not call ``response.close()``; that wait kept holds open."""
+    sock = _socket_of(response)
+    if sock is None or not hasattr(sock, "settimeout"):
+        return
+    for action in (
+        lambda: sock.settimeout(0.05),
+        lambda: sock.shutdown(socket.SHUT_RDWR),
+        lambda: sock.close(),
+    ):
+        try:
+            action()
+        except OSError:
+            pass
+
+
+def _arm_deadline(response, seconds):
+    """Bound the next socket wait by the remaining wall-clock budget."""
+    sock = _socket_of(response)
     if sock is not None and hasattr(sock, "settimeout"):
         try:
             sock.settimeout(max(float(seconds), 0.001))
@@ -317,6 +349,7 @@ def _read_sse(response, model, *, deadline_s, started, clock=None):
     while True:
         remaining = deadline_s - (clock() - started)
         if remaining <= 0:
+            _abort_socket(response)
             raise TimeoutError("provider_wall_clock")
         _arm_deadline(response, remaining)
         raw = response.readline()
@@ -337,28 +370,77 @@ def _read_sse(response, model, *, deadline_s, started, clock=None):
     return assemble_stream(chunks, model)
 
 
-def urllib_send(url, body, headers, *, timeout_s, model):
-    """Real HTTP POST. Returns ``(payload, status)``. Offline tests must not call this.
-
-    A 200 body is read as SSE so a long reasoning trace does not have to arrive
-    in one silent read. A non-200 body is parsed as JSON when it is a vendor error.
-    """
-    data = json.dumps(body, ensure_ascii=False).encode()
-    request = urllib.request.Request(url, data=data, method="POST", headers=headers)
-    started = time.monotonic()
+def _exchange(request, timeout_s, model, started, clock, captured):
+    """One attempt. There is no retry or backoff loop."""
+    response = None
     try:
-        with urllib.request.urlopen(request, timeout=timeout_s) as response:
-            status = getattr(response, "status", None)
-            if status != 200:
-                return _read_json_body(response.read()), status
-            return _read_sse(response, model, deadline_s=timeout_s, started=started), status
+        remaining = timeout_s - (clock() - started)
+        if remaining <= 0:
+            captured["error"] = TimeoutError("provider_wall_clock")
+            return
+        response = urllib.request.urlopen(request, timeout=remaining)
+        captured["response"] = response
+        status = getattr(response, "status", None)
+        if clock() - started > timeout_s:
+            captured["error"] = TimeoutError("provider_wall_clock")
+            return
+        if status != 200:
+            captured["result"] = (_read_json_body(response.read()), status)
+            return
+        captured["result"] = (
+            _read_sse(response, model, deadline_s=timeout_s, started=started, clock=clock),
+            status)
     except urllib.error.HTTPError as error:
         status = getattr(error, "code", None)
         try:
             raw = error.read()
         except Exception:
             raw = b""
-        return _read_json_body(raw), status
+        captured["result"] = (_read_json_body(raw), status)
+    except Exception as error:
+        captured["error"] = error
+    finally:
+        # A deadline abort must not wait on close. The caller shuts the socket
+        # down and stops joining; close runs only after a finished body.
+        if response is not None and captured.get("error") is None and "result" in captured:
+            try:
+                response.close()
+            except Exception:
+                pass
+
+
+def urllib_send(url, body, headers, *, timeout_s, model, started=None, clock=None):
+    """Real HTTP POST. Returns ``(payload, status)``. Offline tests must not call this.
+
+    ``started`` is the moment the ledger hold was taken. Connect, response
+    headers, a non-200 body and the SSE stream share that deadline. The caller
+    stops at the deadline plus a short abort slack and does not wait for
+    ``response.close()``, which can block after the provider has already timed out.
+    """
+    clock = clock or time.monotonic
+    started = clock() if started is None else started
+    remaining = timeout_s - (clock() - started)
+    if remaining <= 0:
+        raise TimeoutError("provider_wall_clock")
+    data = json.dumps(body, ensure_ascii=False).encode()
+    request = urllib.request.Request(url, data=data, method="POST", headers=headers)
+    captured = {}
+    worker = threading.Thread(
+        target=_exchange,
+        args=(request, timeout_s, model, started, clock, captured),
+        daemon=True)
+    worker.start()
+    worker.join(remaining)
+    if worker.is_alive() or clock() - started > timeout_s:
+        _abort_socket(captured.get("response"))
+        worker.join(_JOIN_SLACK_S)
+    if worker.is_alive() or clock() - started > timeout_s + _JOIN_SLACK_S:
+        raise TimeoutError("provider_wall_clock")
+    if "error" in captured:
+        raise captured["error"]
+    if "result" not in captured:
+        raise TimeoutError("provider_wall_clock")
+    return captured["result"]
 
 
 def _exception_cause(error):
@@ -419,7 +501,8 @@ class OpenAICompatibleTransport:
         self._timeout_s = float(timeout_s)
         self.last_http_status = None
 
-    def complete_for_model(self, model, messages, *, max_tokens=4096, timeout_s=None):
+    def complete_for_model(self, model, messages, *, max_tokens=4096, timeout_s=None,
+                           started=None, clock=None):
         if model not in MODEL_POOL or model not in POOL_ENDPOINTS:
             raise PilotStopped("model_outside_pool")
         env_name, url, auth = POOL_ENDPOINTS[model]
@@ -437,17 +520,24 @@ class OpenAICompatibleTransport:
                 if _key_ok(key) and key in encoded:
                     raise PilotStopped("provider_credential_in_prompt")
                 headers = {"Content-Type": "application/json", "Accept": "application/json"}
+            limit = self._timeout_s if timeout_s is None else timeout_s
             try:
+                if (started is not None and clock is not None
+                        and clock() - started > limit):
+                    raise TimeoutError("provider_wall_clock")
                 if self._sender is not None:
                     payload = self._sender(url, body, headers)
                     status = None
                     if isinstance(payload, tuple) and len(payload) == 2 and type(payload[1]) is int:
                         payload, status = payload
+                    if (started is not None and clock is not None
+                            and clock() - started > limit):
+                        raise TimeoutError("provider_wall_clock")
                 elif self._permit_network:
                     try:
-                        limit = self._timeout_s if timeout_s is None else timeout_s
                         payload, status = urllib_send(
-                            url, body, headers, timeout_s=limit, model=model)
+                            url, body, headers, timeout_s=limit, model=model,
+                            started=started, clock=clock)
                     except Exception as error:
                         self.last_http_status = None
                         return _unknown_transport(error)

@@ -159,11 +159,17 @@ def archive_finished(run_dir, *, reason):
     moved = 0
     archive = ""
     if rows:
-        dest = run_dir / "archive" / "protocol-rerun"
+        previous = current_epoch(run_dir)
+        root = run_dir / "archive" / "protocol-rerun"
+        dest = root / f"epoch-{previous}"
         dest.mkdir(parents=True, exist_ok=True)
-        (dest / "records.jsonl").write_text(
-            "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows), encoding="utf-8")
-        (dest / "reason.txt").write_text(reason.strip() + "\n", encoding="utf-8")
+        body = "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows)
+        with (dest / "records.jsonl").open("a", encoding="utf-8") as handle:
+            handle.write(body)
+        with (root / "records.jsonl").open("a", encoding="utf-8") as handle:
+            handle.write(body)
+        with (dest / "reason.txt").open("a", encoding="utf-8") as handle:
+            handle.write(reason.strip() + "\n")
         for row in rows:
             unit_id = row.get("unit_id")
             if not isinstance(unit_id, str) or not unit_id:

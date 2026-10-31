@@ -583,7 +583,8 @@ def _execute_unit(unit, run_dir, ledger, *, live, data_dir, docker_image, sender
         reason = str(error)
         status = "stopped"
         halt = reason not in {
-            "cumulative_request_or_model_limit", "unit_seconds_exhausted", "provider_outcome_charged",
+            "cumulative_request_or_model_limit", "unit_resource_exhausted",
+            "unit_seconds_exhausted", "provider_outcome_charged",
         }
         if reason == "provider_outcome_charged":
             record["charged_unknown"] = True
