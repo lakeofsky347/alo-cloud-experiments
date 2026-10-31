@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import urllib.error
 import urllib.request
 
@@ -98,15 +99,58 @@ def _auth_headers(auth, key):
     return headers
 
 
+def _reasoning_tokens(usage, completion):
+    """Accept the documented detail field and a top-level copy of the same count.
+
+    DeepSeek and MiMo document ``completion_tokens_details.reasoning_tokens``.
+    MiMo responses also put the same count on ``usage`` itself. GLM's published
+    example has neither field. When both are present they must agree, and the
+    count must already sit inside ``completion_tokens``. A missing split stays
+    unreported; it is not recorded as a measured zero.
+    """
+    top = usage["reasoning_tokens"] if "reasoning_tokens" in usage else None
+    details = usage.get("completion_tokens_details")
+    detail = None
+    if details is not None:
+        if not isinstance(details, dict):
+            raise PilotStopped("provider_outcome_unknown")
+        if "reasoning_tokens" in details:
+            detail = details["reasoning_tokens"]
+    if top is None and detail is None:
+        return None
+    for value in (top, detail):
+        if value is None:
+            continue
+        if type(value) is not int or value < 0 or value > completion:
+            raise PilotStopped("provider_outcome_unknown")
+    if top is not None and detail is not None and top != detail:
+        raise PilotStopped("provider_outcome_unknown")
+    return top if top is not None else detail
+
+
 def parse_openai_chat_completion(payload, model):
-    """Known usage only. Inconsistent or missing token fields are unknown."""
+    """Known usage only. Inconsistent or missing token fields are unknown.
+
+    ``content`` may be null or empty when usage is well formed. That is a billed
+    completion whose visible text is empty, not an unknown transport result.
+    """
     if not isinstance(payload, dict):
         raise PilotStopped("provider_outcome_unknown")
     choices = payload.get("choices")
     if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
         raise PilotStopped("provider_outcome_unknown")
     message = choices[0].get("message")
-    if not isinstance(message, dict) or not isinstance(message.get("content"), str):
+    if not isinstance(message, dict):
+        raise PilotStopped("provider_outcome_unknown")
+    content = message.get("content")
+    if content is None:
+        text = ""
+    elif isinstance(content, str):
+        text = content
+    else:
+        raise PilotStopped("provider_outcome_unknown")
+    finish = choices[0].get("finish_reason")
+    if finish is not None and not isinstance(finish, str):
         raise PilotStopped("provider_outcome_unknown")
     returned = payload.get("model")
     if returned is not None and returned != model:
@@ -119,23 +163,33 @@ def parse_openai_chat_completion(payload, model):
     if (type(prompt) is not int or type(completion) is not int or type(total) is not int
             or prompt < 0 or completion < 0 or total != prompt + completion):
         raise PilotStopped("provider_outcome_unknown")
-    # Official usage defines total as prompt + completion. reasoning_tokens, when
-    # present, is a completion-detail and must not be added a second time.
-    # A missing split stays unreported; it is not recorded as a measured zero.
-    if "reasoning_tokens" in usage:
-        raise PilotStopped("provider_outcome_unknown")
-    reasoning = None
-    details = usage.get("completion_tokens_details")
-    if details is not None:
-        if not isinstance(details, dict):
-            raise PilotStopped("provider_outcome_unknown")
-        if "reasoning_tokens" in details:
-            reasoning = details["reasoning_tokens"]
-            if type(reasoning) is not int or reasoning < 0 or reasoning > completion:
-                raise PilotStopped("provider_outcome_unknown")
+    reasoning = _reasoning_tokens(usage, completion)
     cache_hit = _cache_hit_tokens(usage, prompt)
-    return {"text": message["content"], "input_tokens": prompt, "output_tokens": completion,
-            "reasoning_tokens": reasoning, "total_tokens": total, "cache_hit_tokens": cache_hit}
+    return {"text": text, "input_tokens": prompt, "output_tokens": completion,
+            "reasoning_tokens": reasoning, "total_tokens": total, "cache_hit_tokens": cache_hit,
+            "finish_reason": finish}
+
+
+def parse_vendor_error(payload):
+    """Return code and message from an OpenAI-style or GLM-style error body."""
+    if not isinstance(payload, dict):
+        return None
+    error = payload.get("error")
+    if isinstance(error, dict):
+        code = error.get("code", error.get("type"))
+        message = error.get("message", error.get("msg"))
+    elif "message" in payload or "msg" in payload:
+        code = payload.get("code")
+        message = payload.get("message", payload.get("msg"))
+    else:
+        return None
+    if code is None and message is None:
+        return None
+    if code is not None and not isinstance(code, (str, int)):
+        return None
+    if message is not None and not isinstance(message, str):
+        return None
+    return {"code": None if code is None else str(code), "message": message or ""}
 
 
 def _cache_hit_tokens(usage, prompt):
@@ -167,14 +221,78 @@ def _cache_hit_tokens(usage, prompt):
     return hit
 
 
+def _read_json_body(raw):
+    if not raw:
+        return None
+    try:
+        value = json.loads(raw.decode())
+    except (UnicodeError, json.JSONDecodeError, TypeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
 def urllib_send(url, body, headers, *, timeout_s):
-    """Real HTTP POST. Returns ``(payload, status)``. Offline tests must not call this."""
+    """Real HTTP POST. Returns ``(payload, status)``. Offline tests must not call this.
+
+    A non-200 response is returned with its JSON body when the body parses.
+    Timeouts and connection failures still raise so the caller can tell them
+    from a vendor error document.
+    """
     data = json.dumps(body, ensure_ascii=False).encode()
     request = urllib.request.Request(url, data=data, method="POST", headers=headers)
-    with urllib.request.urlopen(request, timeout=timeout_s) as response:
-        status = getattr(response, "status", None)
-        raw = response.read()
-    return json.loads(raw.decode()), status
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_s) as response:
+            status = getattr(response, "status", None)
+            raw = response.read()
+    except urllib.error.HTTPError as error:
+        status = getattr(error, "code", None)
+        try:
+            raw = error.read()
+        except Exception:
+            raw = b""
+    return _read_json_body(raw), status
+
+
+def _exception_cause(error):
+    reason = getattr(error, "reason", error) if isinstance(error, urllib.error.URLError) else error
+    if isinstance(reason, (TimeoutError, socket.timeout)):
+        return "timeout"
+    if isinstance(reason, (ConnectionResetError, BrokenPipeError, ConnectionAbortedError)):
+        return "connection_reset"
+    return "transport_error"
+
+
+def interpret_response(payload, model, *, http_status):
+    """Classify one HTTP result. Headers are not accepted and are not returned."""
+    status = http_status
+    if status is None and isinstance(payload, dict):
+        status = 200
+    response = payload if isinstance(payload, dict) else None
+    if status != 200:
+        vendor = parse_vendor_error(response) if status is not None else None
+        if vendor is not None:
+            return {"kind": "vendor_error", "cause": "vendor_error", "http_status": status,
+                    "vendor_code": vendor["code"], "vendor_message": vendor["message"],
+                    "finish_reason": None, "response": response, "parsed": None}
+        return {"kind": "unknown", "cause": "transport_error", "http_status": status,
+                "vendor_code": None, "vendor_message": None, "finish_reason": None,
+                "response": response, "parsed": None}
+    try:
+        parsed = parse_openai_chat_completion(payload, model)
+    except PilotStopped:
+        return {"kind": "unknown", "cause": "unparseable_success", "http_status": status,
+                "vendor_code": None, "vendor_message": None, "finish_reason": None,
+                "response": response, "parsed": None}
+    cause = "empty_completion" if parsed["text"] == "" else None
+    return {"kind": "completion", "cause": cause, "http_status": status,
+            "vendor_code": None, "vendor_message": None, "finish_reason": parsed["finish_reason"],
+            "response": response, "parsed": parsed}
+
+
+def _unknown_transport(error):
+    return {"kind": "unknown", "cause": _exception_cause(error), "http_status": None,
+            "vendor_code": None, "vendor_message": None, "finish_reason": None,
+            "response": None, "parsed": None}
 
 
 class OpenAICompatibleTransport:
@@ -214,19 +332,23 @@ class OpenAICompatibleTransport:
             try:
                 if self._sender is not None:
                     payload = self._sender(url, body, headers)
+                    status = None
+                    if isinstance(payload, tuple) and len(payload) == 2 and type(payload[1]) is int:
+                        payload, status = payload
                 elif self._permit_network:
                     try:
                         payload, status = urllib_send(url, body, headers, timeout_s=self._timeout_s)
-                    except urllib.error.HTTPError as error:
-                        self.last_http_status = getattr(error, "code", None)
-                        raise PilotStopped("provider_outcome_unknown") from None
-                    self.last_http_status = status
+                    except Exception as error:
+                        self.last_http_status = None
+                        return _unknown_transport(error)
                 else:
                     raise PilotStopped("provider_network_not_permitted")
             except PilotStopped:
                 raise
-            except Exception:
-                raise PilotStopped("provider_outcome_unknown") from None
-            return parse_openai_chat_completion(payload, model)
+            except Exception as error:
+                self.last_http_status = None
+                return _unknown_transport(error)
+            self.last_http_status = status if status is not None else 200
+            return interpret_response(payload, model, http_status=status)
         finally:
             key = None

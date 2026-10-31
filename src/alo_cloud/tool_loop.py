@@ -109,6 +109,19 @@ def persistent_tool_loop(services, prompt, messages, *, system="", max_turns=10)
         # Retain the received text before parsing/dispatch. No provider-level
         # tool_calls are inspected or invoked, even if present in reply.
         messages.append({"role": "assistant", "content": text if isinstance(text, str) else ""})
+        if isinstance(reply, dict) and reply.get("length_stop"):
+            return {"status": "failed", "summary": "length_stop"}
+        if isinstance(reply, dict) and reply.get("vendor_error"):
+            _append(messages, {"provider_error": "vendor_error",
+                "detail": "The provider rejected this request. It was not billed.",
+                "automatic_retry": False, "protocol_version": TOOL_LOOP_VERSION})
+            continue
+        if text == "":
+            _append(messages, {"public_tool_error": "empty_assistant_turn",
+                "detail": "The assistant message was empty.",
+                "protocol_version": TOOL_LOOP_VERSION, "error_phase": "response_validation",
+                "required_response": FORMAT_RULE, "automatic_retry": False})
+            continue
         try:
             action = parse_response(text)
         except (ValueError, TypeError, KeyError) as error:

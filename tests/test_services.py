@@ -78,6 +78,7 @@ def build(tmp_path, monkeypatch, replies, **kwargs):
         tmp_path / "state", ledger, unit=unit,
         per_request_microcny_ceiling=kwargs.get("ceiling", 1000),
         charge_microcny=kwargs.get("charge", lambda model, usage: 1),
+        request_ceiling=kwargs.get("request_ceiling"),
         sender=None if kwargs.get("permit_network") else sender,
         permit_network=bool(kwargs.get("permit_network")),
         sandbox=kwargs.get("sandbox"), clock=kwargs.get("clock"))
@@ -97,7 +98,7 @@ def test_protocol_limits_and_payg_endpoints_are_explicit():
         assert limits["tools"] == 120
         assert limits["seconds"] == 1200
         assert limits["command_seconds"] == 60
-        assert limits["max_output_tokens"] == 4096
+        assert limits["max_output_tokens"] == 8192
     assert set(POOL_ENDPOINTS) == set(MODEL_POOL)
     assert POOL_ENDPOINTS["deepseek-flash"] == (
         "DEEPSEEK_API_KEY", "https://api.deepseek.com/chat/completions", "bearer")
@@ -259,7 +260,7 @@ def test_unit_caps_stop_dispatch_without_a_further_send(tmp_path, monkeypatch):
         services.complete_for_model("mimo-v2.6-flash", messages("overflow"))
     assert len(seen) == 16
     with pytest.raises(PilotStopped, match="output_token_parameter"):
-        services.complete_for_model("mimo-v2.6-flash", messages("too many"), max_tokens=4097)
+        services.complete_for_model("mimo-v2.6-flash", messages("too many"), max_tokens=8193)
 
     class Clock:
         def __init__(self):

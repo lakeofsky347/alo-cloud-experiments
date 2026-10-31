@@ -42,6 +42,8 @@ CALL_CAPS = {
 M1_CONDITIONS = ("g1-main", "g1-strong", "g2", "g3")
 MAX_BLOCKED_FRACTION = 0.25
 BLOCKED_FRACTION_MIN_UNITS = 4
+MIMO_MAX_COMPLETION_TOKENS = 8192
+NON_MIMO_MAX_COMPLETION_TOKENS = 4096
 SCHEDULE_RULE = (
     "m1-track-rotation-v1; m2-all-learning-then-references-then-probes-v1; "
     "probe prior alternates by sequence index plus probe position"
@@ -220,7 +222,7 @@ def freeze_payload():
             "probe_seeds": list(row["probe_seeds"]),
         })
     return {
-        "schema": "alo-protocol-freeze-v4",
+        "schema": "alo-protocol-freeze-v5",
         "max_blocked_fraction": MAX_BLOCKED_FRACTION,
         "blocked_fraction_min_units": BLOCKED_FRACTION_MIN_UNITS,
         "price_retrieved_on": RETRIEVED_ON,
@@ -236,7 +238,15 @@ def freeze_payload():
         "charge_rule": "ceil_microcny; missing cache split bills all input at cache-miss; deepseek-flash uses peak",
         "budget_cny": {"per_model": 50, "total": 200, "opening_commitments": 0},
         "token_estimate": dict(TOKEN_ESTIMATE),
-        "max_completion_tokens": 4096,
+        "max_completion_tokens": NON_MIMO_MAX_COMPLETION_TOKENS,
+        "mimo_max_completion_tokens": MIMO_MAX_COMPLETION_TOKENS,
+        "provider_outcomes": {
+            "empty_completion": "settle_reported_usage",
+            "vendor_error": "settle_0",
+            "unknown_causes": ["timeout", "connection_reset", "unparseable_success", "transport_error"],
+            "usage_reasoning_tokens": "top_level_or_completion_tokens_details",
+            "restart_unknown_unit": "once_then_blocked",
+        },
         "call_caps": dict(CALL_CAPS),
         "selection_seed": SELECTION_SEED,
         "g2_base_seed": G2_BASE_SEED,

@@ -2,9 +2,9 @@
 
 日期：2026-10-31。本文件列出付费日程的任务身份、种子、组别、模型和参数。规范载荷在 `alo_cloud.freeze.freeze_payload`。CI 重新计算其 SHA-256，必须与下面这一行一致。
 
-freeze_sha256: cd136ed5288a416467ba312f153ac83f4f54c9c801e7774969f5c4f9f15f024b
+freeze_sha256: 19b7a7eea099c480d5fbadcf4d57decb9ca3ce4df6d0b48d679fee0826f84deb
 
-上一版哈希是 `ddf2187bfba33dc94a931c92634c908a48e939a26bff2e1b88b27721ece9ddc8`。题单、种子、组别和标价没有改。这次改哈希是因为官方 SWE 镜像的 `/testbed` HEAD 比 `base_commit` 多一个只改文件模式（100644 到 100755）的提交：接受 `HEAD` 等于 `base_commit`，或 `HEAD^` 等于 `base_commit` 且 `git diff --summary HEAD^ HEAD` 与 `--numstat` 只有模式变化、没有内容变化；否则该单元 blocked。计分补丁相对镜像 HEAD 生成，单元记录和检查点同时写下 image HEAD 与 `base_commit`，恢复时补丁打在镜像 HEAD 上。ProgramBench 每个命令往返同步时排除 `.git` 和 `executable`。评分进程的工作目录是运行目录下的 `eval`。已结束单元达到 4 个且 blocked 比例超过 0.25 时，调度停止，并在 M2 之前打印 blocked 原因直方图。
+上一版哈希是 `cd136ed5288a416467ba312f153ac83f4f54c9c801e7774969f5c4f9f15f024b`。题单、种子、组别和标价没有改。这次改哈希是因为供应商结果不再合成一种 unknown：usage 自洽但内容为空时按报告用量结算，可解析的非 200 错误按 0 结算，只有超时、连接中断和无法解析的 200 保持预留；`reasoning_tokens` 接受顶层或 `completion_tokens_details`。unknown 打断的单元允许从头重启一次，花费留在账本里，第二次记 blocked。MiMo 的 `max_completion_tokens` 从 4096 改为 8192，因为该字段包含推理，4096 会把可见回答挤空。费用投影的 2048 输出估计没有改。
 
 检查：`python -m alo_cloud.freeze --check`
 
@@ -19,7 +19,7 @@ freeze_sha256: cd136ed5288a416467ba312f153ac83f4f54c9c801e7774969f5c4f9f15f024b
 | G3 manager | `deepseek-flash` |
 | G3 Planner / Engineer / Critic / Verifier | `deepseek-flash` / `mimo-v2.6-flash` / `glm-5.3-flash` / `mimo-v2.6-pro` |
 
-发送的参数：MiMo 只送 `max_completion_tokens`；GLM-5.3-Flash 送 `thinking.type=enabled`。不送 temperature、`reasoning_effort`、`clear_thinking`。单次补全上限仍是协议里的 4096。价格按 2026-10-31 官方标价，`deepseek-flash` 用高峰价。计费向上取整到 microcny；没有缓存命中拆分时，输入全部按缓存未命中。
+发送的参数：MiMo 只送 `max_completion_tokens`，调用方要求至少 4096 时实际发送 8192；DeepSeek 与 GLM 默认仍送 4096。GLM-5.3-Flash 送 `thinking.type=enabled`。不送 temperature、`reasoning_effort`、`clear_thinking`。单元输出参数上限是 8192。价格按 2026-10-31 官方标价，`deepseek-flash` 用高峰价。计费向上取整到 microcny；没有缓存命中拆分时，输入全部按缓存未命中。
 
 预算：每模型 50 CNY，合计 200 CNY。新建账本期初承诺为 0。
 
