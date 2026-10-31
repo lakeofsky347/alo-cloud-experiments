@@ -2,7 +2,9 @@
 
 日期：2026-10-31。本文件列出付费日程的任务身份、种子、组别、模型和参数。规范载荷在 `alo_cloud.freeze.freeze_payload`。CI 重新计算其 SHA-256，必须与下面这一行一致。
 
-freeze_sha256: b4812a4342d2d11ab697effcf402d015deb5a1de251e06ddfb7d45a277bf871e
+freeze_sha256: fd667624ac990fb16044a8a2e54be1d1a20329e1d9f03f101008c3be5262dd10
+
+上一版哈希是 `b4812a4342d2d11ab697effcf402d015deb5a1de251e06ddfb7d45a277bf871e`（任务、种子、组别、模型和标价）。这次改哈希是因为执行合同增加了四项，题单和价格没有改：每单元单独评分（`model_name_or_path` 用 unit id，ProgramBench 按 `sealed/programbench/<unit_id>/<instance_id>/` 放交卷）；SWE 沙箱镜像为 `swebench/sweb.eval.x86_64.<id>:latest`（`__` 写成 `_1776_`），ProgramBench 为 `programbench/<id>:task_cleanroom_v6`；评价命令钉住 SWE-bench Lite revision `6ec7bb89b9342f664a54a6e0a6ea6501d3437cc2`，并把 `PROGRAMBENCH_HF_REVISION=de0ddfb637590c7ecb54fa0b5301f6dc7dfbcee5` 写进评价进程；沙箱内存 4g、pids 512、tmpfs 1g。`ALO_SANDBOX_IMAGE` 只作为没有官方镜像时的后备。
 
 检查：`python -m alo_cloud.freeze --check`
 

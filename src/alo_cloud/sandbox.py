@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import os
 from pathlib import Path, PurePosixPath
+import re
 import subprocess
 
 from .errors import IntegrationNotConfigured, PilotStopped, ProtocolError
@@ -21,6 +22,12 @@ MAX_FILE_BYTES = 1_048_576
 MAX_SEARCH_CHARS = 10_000
 MAX_TOOL_OUTPUT_CHARS = 1_048_576
 CREDENTIAL_ENV_NAMES = ("DEEPSEEK_API_KEY", "MIMO_API_KEY", "ZAI_API_KEY")
+DEFAULT_SANDBOX_MEMORY = "4g"
+DEFAULT_SANDBOX_PIDS = "512"
+DEFAULT_SANDBOX_TMPFS = "1g"
+_MEMORY = re.compile(r"\d+[bBkKmMgG]")
+_PIDS = re.compile(r"[1-9]\d{0,6}")
+_TMPFS = re.compile(r"\d+[bBkKmMgG]")
 
 
 class SandboxUnknown(PilotStopped):
@@ -192,41 +199,94 @@ def subprocess_docker_runner(argv, timeout_s):
             "timed_out": False}
 
 
-class DockerSandbox:
-    """Build a no-network ``docker run`` and execute it only through ``runner`` or an explicit permit."""
+def _image_ok(image):
+    return isinstance(image, str) and bool(image) and not image.startswith("-") and not any(ch.isspace() for ch in image)
 
-    def __init__(self, workspace, *, image, runner=None, permit_execution=False):
-        if not isinstance(image, str) or not image or image.startswith("-") or any(ch.isspace() for ch in image):
+
+def sandbox_memory(value=None):
+    chosen = value if value is not None else os.environ.get("ALO_SANDBOX_MEMORY") or DEFAULT_SANDBOX_MEMORY
+    if not isinstance(chosen, str) or not _MEMORY.fullmatch(chosen):
+        raise PilotStopped("invalid_sandbox_memory")
+    return chosen
+
+
+def sandbox_pids(value=None):
+    chosen = value if value is not None else os.environ.get("ALO_SANDBOX_PIDS") or DEFAULT_SANDBOX_PIDS
+    if not isinstance(chosen, str) or not _PIDS.fullmatch(chosen):
+        raise PilotStopped("invalid_sandbox_pids")
+    return chosen
+
+
+def sandbox_tmpfs(value=None):
+    chosen = value if value is not None else os.environ.get("ALO_SANDBOX_TMPFS") or DEFAULT_SANDBOX_TMPFS
+    if not isinstance(chosen, str) or not _TMPFS.fullmatch(chosen):
+        raise PilotStopped("invalid_sandbox_tmpfs")
+    return chosen
+
+
+class DockerSandbox:
+    """Build a no-network ``docker run`` and execute it only through ``runner`` or an explicit permit.
+
+    ``image_resolver`` is called when a command is built, so a unit can supply
+    the official per-task image. A plain ``image`` string remains the fallback.
+    """
+
+    def __init__(self, workspace, *, image=None, image_resolver=None, runner=None,
+                 permit_execution=False, memory=None, pids_limit=None, tmpfs_size=None,
+                 extra_mounts=()):
+        if image_resolver is None and not _image_ok(image):
+            raise PilotStopped("invalid_sandbox_image")
+        if image_resolver is not None and not callable(image_resolver):
             raise PilotStopped("invalid_sandbox_image")
         self.workspace = Path(workspace).resolve()
         self.image = image
+        self.image_resolver = image_resolver
         self.runner = runner
         self.permit_execution = bool(permit_execution)
+        self.memory = sandbox_memory(memory)
+        self.pids_limit = sandbox_pids(pids_limit)
+        self.tmpfs_size = sandbox_tmpfs(tmpfs_size)
+        self.extra_mounts = tuple(extra_mounts)
         if self.permit_execution and self.runner is not None:
             raise PilotStopped("one_sandbox_runner")
+        for mount in self.extra_mounts:
+            if not isinstance(mount, str) or not mount.startswith("/") or ".." in mount or "\0" in mount:
+                raise PilotStopped("invalid_sandbox_mount")
 
     @property
     def execution_ready(self):
         return self.runner is not None or self.permit_execution
 
+    def resolved_image(self):
+        image = self.image_resolver() if self.image_resolver is not None else self.image
+        if not _image_ok(image):
+            raise PilotStopped("invalid_sandbox_image")
+        return image
+
     def docker_argv(self, argv):
+        image = self.resolved_image()
         command = [
             "docker", "run", "--rm",
             "--network=none",
             "--cap-drop=ALL",
-            "--pids-limit=128",
-            "--memory=512m",
+            f"--pids-limit={self.pids_limit}",
+            f"--memory={self.memory}",
             "--read-only",
-            "--tmpfs", "/tmp:rw,nosuid,nodev,size=64m",
+            "--tmpfs", f"/tmp:rw,nosuid,nodev,size={self.tmpfs_size}",
             "--workdir", "/workspace",
             "--mount", f"type=bind,src={self.workspace},dst=/workspace",
+        ]
+        for mount in self.extra_mounts:
+            command.extend(["--mount", f"type=bind,src={self.workspace},dst={mount}"])
+        command.extend([
             "--user", f"{os.getuid()}:{os.getgid()}",
             "--env", "PYTHONDONTWRITEBYTECODE=1",
             "--env", "PYTHONUNBUFFERED=1",
+            "--env", "PYTHONPATH=/workspace",
             "--env", "LANG=C.UTF-8",
-            self.image,
+            image,
             *argv,
-        ]
+        ])
         rendered = "\n".join(command)
         for name in CREDENTIAL_ENV_NAMES:
             if name in rendered:

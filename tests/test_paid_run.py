@@ -1,6 +1,7 @@
 """Offline checks for prices, the study ledger, the freeze, and dry-run."""
 import json
 from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -9,7 +10,12 @@ from alo_cloud.contracts import (
     G1_MAIN_MODEL, G1_STRONG_MODEL, MODEL_POOL, PER_MODEL_LIMIT_MICROCNY, STUDY_TOTAL_LIMIT_MICROCNY,
 )
 from alo_cloud.errors import PilotStopped
-from alo_cloud.evaluate import PROGRAMBENCH_COMMIT, score_sealed, swebench_command
+from alo_cloud.collect import collect_sealed
+from alo_cloud.evaluate import (
+    PROGRAMBENCH_COMMIT, PROGRAMBENCH_TESTS_REVISION, score_sealed, swebench_command, programbench_env,
+)
+from alo_cloud.images import programbench_instance_image, swebench_instance_image
+from alo_cloud.sandbox import DockerSandbox
 from alo_cloud.freeze import all_task_ids, freeze_sha256, iter_units, select_units
 from alo_cloud.prices import UnpricedModel, charge_microcny, request_ceiling_microcny
 from alo_cloud.projection import project, within_budget
@@ -193,11 +199,14 @@ def test_live_without_keys_does_not_send(tmp_path, monkeypatch):
 
 def test_evaluator_does_not_invent_a_score(tmp_path):
     report = score_sealed(tmp_path, execute=False)
-    assert report["swebench"]["status"] == "not_executed"
-    assert "score" not in json.dumps(report)
+    assert report["swebench"]["status"] == "swe_predictions_missing"
+    assert report["programbench"]["status"] == "programbench_submissions_missing"
+    rendered = json.dumps(report)
+    assert "resolved" not in rendered
     command = swebench_command(tmp_path / "preds.jsonl", run_id="alo-m1m2", instance_ids=("a",), split="test")
     assert command[2] == "swebench.harness.run_evaluation"
-    assert PROGRAMBENCH_COMMIT in json.dumps(report)
+    assert "6ec7bb89b9342f664a54a6e0a6ea6501d3437cc2" in command
+    assert PROGRAMBENCH_COMMIT in rendered
     executed = score_sealed(tmp_path, execute=True)
     assert executed["swebench"]["status"] == "unavailable"
 
@@ -220,6 +229,123 @@ def test_smoke_plan_stays_under_half_a_cny_and_does_not_send(capsys):
     assert "not_sent" in captured
     assert "DEEPSEEK_API_KEY" not in captured
     assert "Authorization" not in captured
+
+
+def test_official_images_and_sandbox_limits(tmp_path):
+    assert swebench_instance_image("django__django-11583") == (
+        "swebench/sweb.eval.x86_64.django_1776_django-11583:latest")
+    assert programbench_instance_image("ffmpeg__ffmpeg.360a402") == (
+        "programbench/ffmpeg_1776_ffmpeg.360a402:task_cleanroom_v6")
+    box = DockerSandbox(tmp_path, image="example.invalid/alo:test", memory="4g", pids_limit="512")
+    argv = box.docker_argv(["python", "-c", "print(1)"])
+    assert "--network=none" in argv
+    assert "--memory=4g" in argv
+    assert "--pids-limit=512" in argv
+    assert "example.invalid/alo:test" in argv
+    assert argv.index("--network=none") < argv.index("example.invalid/alo:test")
+
+
+def test_checkout_and_per_unit_scoring_handoff(tmp_path, monkeypatch):
+    monkeypatch.setattr("urllib.request.urlopen", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("network")))
+    calls = []
+
+    def runner(argv):
+        calls.append(list(argv))
+        if len(argv) >= 2 and argv[1] == "init":
+            Path(argv[-1], ".git").mkdir(parents=True, exist_ok=True)
+        completed = type("Completed", (), {})()
+        completed.returncode = 0
+        completed.stdout = ""
+        completed.stderr = ""
+        return completed
+
+    data = tmp_path / "data" / "SWE-bench_Lite"
+    data.mkdir(parents=True)
+    (data / "django__django-11583.json").write_text(json.dumps({
+        "repo": "django/django",
+        "base_commit": "a" * 40,
+        "problem_statement": "public bug",
+        "patch": "diff --git a/secret",
+    }), encoding="utf-8")
+    units = select_units("m1", arms=("g1-main",), tasks=("django__django-11583",))
+    rows = run_schedule(units[:1], tmp_path / "run", live=False, data_dir=tmp_path / "data",
+                        sender=dry_run_sender, git_runner=runner)
+    assert rows[0]["status"] == "completed"
+    assert rows[0]["sandbox_image"] == swebench_instance_image("django__django-11583")
+    assert rows[0]["base_commit"] == "a" * 40
+    assert "diff --git" not in json.dumps(rows[0])
+    assert any(argv[1:4] == ["-C", str(tmp_path / "run" / "units" / rows[0]["unit_id"] / "state" / "workspace"), "fetch"]
+               or (len(argv) > 3 and argv[1] == "-C" and "fetch" in argv) for argv in calls)
+    fetched = [argv for argv in calls if "fetch" in argv]
+    assert fetched and fetched[0][-1] == "a" * 40
+    assert (tmp_path / "run" / "sealed" / "swe_predictions.jsonl").is_file()
+
+
+def test_collect_keeps_one_prediction_per_unit(tmp_path, monkeypatch):
+    monkeypatch.setenv("PROGRAMBENCH_HF_REVISION", "not-the-pin")
+    run = tmp_path / "run"
+    bases = {}
+    for unit, text in (("m1.SWE.django__django-11583.g1-main.B0", "one\n"),
+                       ("m1.SWE.django__django-11583.g2.B0", "two\n")):
+        workspace = run / "checkpoints" / unit / "workspace"
+        workspace.mkdir(parents=True)
+        subprocess.check_call(["git", "init", "-q", str(workspace)])
+        subprocess.check_call(["git", "-C", str(workspace), "config", "user.email", "t@example.com"])
+        subprocess.check_call(["git", "-C", str(workspace), "config", "user.name", "t"])
+        (workspace / "a.py").write_text("base\n", encoding="utf-8")
+        subprocess.check_call(["git", "-C", str(workspace), "add", "a.py"])
+        subprocess.check_call(["git", "-C", str(workspace), "commit", "-q", "-m", "base"])
+        bases[unit] = subprocess.check_output(
+            ["git", "-C", str(workspace), "rev-parse", "HEAD"], text=True).strip()
+        (workspace / "a.py").write_text(text, encoding="utf-8")
+    program = run / "checkpoints" / "m1.ProgramBench.ffmpeg__ffmpeg.360a402.g1-main.B0" / "workspace"
+    program.mkdir(parents=True)
+    (program / "main.c").write_text("int main(void){return 0;}\n", encoding="utf-8")
+    with (run / "records.jsonl").open("w", encoding="utf-8") as handle:
+        for unit, _text in (("m1.SWE.django__django-11583.g1-main.B0", "one\n"),
+                            ("m1.SWE.django__django-11583.g2.B0", "two\n")):
+            handle.write(json.dumps({
+                "unit_id": unit, "task_id": "django__django-11583", "track": "SWE-bench_Lite",
+                "arm": unit.split(".")[3], "phase": "B0", "study": "m1", "base_commit": bases[unit],
+            }) + "\n")
+        handle.write(json.dumps({
+            "unit_id": "m1.ProgramBench.ffmpeg__ffmpeg.360a402.g1-main.B0",
+            "task_id": "ffmpeg__ffmpeg.360a402", "track": "ProgramBench",
+            "arm": "g1-main", "phase": "B0", "study": "m1",
+        }) + "\n")
+    summary = collect_sealed(run)
+    assert summary["predictions"] == 2
+    rows = [json.loads(line) for line in (run / "sealed" / "swe_predictions.jsonl").read_text().splitlines()]
+    assert {row["model_name_or_path"] for row in rows} == set(bases)
+    assert {row["instance_id"] for row in rows} == {"django__django-11583"}
+    assert all("one" in row["model_patch"] or "two" in row["model_patch"] for row in rows)
+    tarball = (run / "sealed" / "programbench" / "m1.ProgramBench.ffmpeg__ffmpeg.360a402.g1-main.B0"
+               / "ffmpeg__ffmpeg.360a402" / "submission.tar.gz")
+    assert tarball.is_file()
+    report = score_sealed(run, execute=False, programbench_repo="/tmp/programbench-src")
+    assert len(report["swebench"]["units"]) == 2
+    run_ids = [item["command"][item["command"].index("--run_id") + 1] for item in report["swebench"]["units"]]
+    assert len(set(run_ids)) == 2
+    assert all("6ec7bb89b9342f664a54a6e0a6ea6501d3437cc2" in item["command"]
+               for item in report["swebench"]["units"])
+    assert report["programbench"]["hf_revision"] == PROGRAMBENCH_TESTS_REVISION
+    assert programbench_env()["PROGRAMBENCH_HF_REVISION"] == PROGRAMBENCH_TESTS_REVISION
+    assert "DEEPSEEK_API_KEY" not in programbench_env({"DEEPSEEK_API_KEY": "secret", "PATH": "/usr/bin"})
+
+
+def test_live_swe_without_checkout_metadata_does_not_call_the_model(tmp_path, monkeypatch):
+    monkeypatch.setattr("urllib.request.urlopen", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("network")))
+    for name in ("DEEPSEEK_API_KEY", "MIMO_API_KEY", "ZAI_API_KEY"):
+        monkeypatch.setenv(name, "present")
+    data = tmp_path / "data" / "SWE-bench_Lite"
+    data.mkdir(parents=True)
+    (data / "django__django-11583.json").write_text(
+        json.dumps({"problem_statement": "public"}), encoding="utf-8")
+    units = select_units("m1", arms=("g1-main",), tasks=("django__django-11583",))
+    rows = run_schedule(units[:1], tmp_path / "run", live=True, data_dir=tmp_path / "data")
+    assert rows[0]["status"] == "blocked"
+    assert rows[0]["reason"] == "swe_checkout_metadata_missing"
+    assert rows[0]["sandbox_image"] == swebench_instance_image("django__django-11583")
 
 
 def test_repository_text_does_not_call_the_model_by_a_snapshot_suffix():
