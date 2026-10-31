@@ -35,7 +35,7 @@ G1 Strong 已由业主指定为 `mimo-v2.6-pro`，理由见[协议](protocol.md)
 
 token 入账：三家能核对到的 usage 都把 `total_tokens` 定义成提示加补全。DeepSeek 与 MiMo 的文档把 `reasoning_tokens` 放在 `completion_tokens_details` 里，作为补全明细；MiMo 的按量响应也会在 `usage` 顶层再给同一个计数。智谱启用思考的官方示例只有 `prompt_tokens`、`completion_tokens` 与 `total_tokens`（`8 + 239 = 247`），思考文本在 `reasoning_content`。因此两处 `reasoning_tokens` 都接受，同时出现时必须相等，并且小于等于 `completion_tokens`，不能再加一次。账本按 `total_tokens` 扣减，且要求它等于 `prompt_tokens + completion_tokens`。明细缺失时不把 reasoning 记成测得的 0。若计数大于 completion、两处不一致，或 `total_tokens` 对不上，该次结果视为 unknown 并停止后续派发。`content` 为 null 或空字符串、但 usage 满足上述恒等式时，按报告的 usage 结算，可见回答记为空；这不是 unknown。
 
-四个模型的补全都包含推理。调用方要求至少 4096 时发送 16384，预留按 16384 计算。请求使用 SSE：DeepSeek 文档写明最后一个块携带 usage，并支持 `stream_options.include_usage`；智谱流式文档写明 usage 只在最后一个 chunk；MiMo 文档写明 `stream=true` 时用 SSE 增量返回 `reasoning_content` 和 `content`。读超时与沙箱命令分开，MiMo-Pro 为 600 秒，其余为 300 秒。
+四个模型的补全都包含推理。调用方要求至少 4096 时发送 16384，预留按 16384 计算。请求使用 SSE：DeepSeek 文档写明最后一个块携带 usage，并支持 `stream_options.include_usage`；智谱流式文档写明 usage 只在最后一个 chunk；MiMo 文档写明 `stream=true` 时用 SSE 增量返回 `reasoning_content` 和 `content`。读超时与沙箱命令分开，MiMo-V2.6-Flash 与 MiMo-Pro 为 600 秒，DeepSeek 与 GLM 为 300 秒。
 
 ### 模型版本仍需冻结的字段
 

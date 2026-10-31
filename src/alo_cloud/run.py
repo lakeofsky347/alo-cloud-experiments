@@ -28,6 +28,7 @@ from .freeze import (
     MAX_BLOCKED_FRACTION, MAX_UNKNOWN_OUTCOMES, select_units,
 )
 from .ledger import current_epoch, restart_counts, restart_unit
+from .progress import publish_timeout_counts
 from .images import resolve_task_image
 from .prices import ceiling_for_messages, charge_microcny
 from .sandbox import SWE_TESTBED_PATH, DockerSandbox
@@ -323,10 +324,13 @@ def run_schedule(units, run_dir, *, live, data_dir=None, docker_image=None, send
     records_path = run_dir / "records.jsonl"
     done = _done_ids(records_path)
     known_ids = ledger.request_ids()
+    publish_timeout_counts(run_dir, ledger, protocol_epoch=current_epoch(run_dir))
     results = []
     try:
         for unit in units:
             if unit.unit_id in done:
+                # The row is terminal, including one that stopped the previous
+                # process with halt_schedule. Resume does not raise that flag again.
                 results.append(done[unit.unit_id])
                 _stop_if_blocked(results)
                 continue
@@ -341,16 +345,27 @@ def run_schedule(units, run_dir, *, live, data_dir=None, docker_image=None, send
                     docker_image=docker_image, sender=sender, git_runner=git_runner,
                     sandbox_memory=sandbox_memory, sandbox_pids=sandbox_pids,
                     image_seeder=image_seeder, unknown_so_far=_unknown_count(run_dir))
-                _append_record(records_path, record)
+                if record.get("charged_timeout"):
+                    verdict = publish_timeout_counts(
+                        run_dir, ledger, protocol_epoch=current_epoch(run_dir))
+                    record["charged_timeout_epoch_microcny"] = verdict["charged_timeout_microcny"]
+                    if verdict["halt_reason"]:
+                        record["halt_schedule"] = True
+                        record["reason"] = verdict["halt_reason"]
                 if record.get("charged_unknown"):
                     count = _note_unknown(run_dir, record)
                     if count > MAX_UNKNOWN_OUTCOMES:
                         record["halt_schedule"] = True
                         record["reason"] = "unknown_outcome_threshold"
+                _append_record(records_path, record)
                 known_ids = ledger.request_ids()
-                if (record.get("charged_unknown") and not retried and record.get("restart_count", 0) == 0
+                if ((record.get("charged_unknown") or record.get("charged_timeout"))
+                        and not retried and record.get("restart_count", 0) == 0
                         and not record.get("halt_schedule")):
-                    restart_unit(run_dir, unit.unit_id, reason="charged unknown; restart once", ledger=ledger)
+                    restart_reason = (
+                        "charged timeout; restart once" if record.get("charged_timeout")
+                        else "charged unknown; restart once")
+                    restart_unit(run_dir, unit.unit_id, reason=restart_reason, ledger=ledger)
                     retried = True
                     continue
                 break
@@ -584,9 +599,15 @@ def _execute_unit(unit, run_dir, ledger, *, live, data_dir, docker_image, sender
         status = "stopped"
         halt = reason not in {
             "cumulative_request_or_model_limit", "unit_resource_exhausted",
-            "unit_seconds_exhausted", "provider_outcome_charged",
+            "unit_seconds_exhausted", "provider_outcome_charged", "provider_deadline_charged",
         }
-        if reason == "provider_outcome_charged":
+        if reason == "provider_deadline_charged":
+            record["charged_timeout"] = True
+            if restart_count >= 1:
+                status = "blocked"
+                reason = "second_timeout_interruption"
+            halt = False
+        elif reason == "provider_outcome_charged":
             record["charged_unknown"] = True
             if restart_count >= 1:
                 status = "blocked"

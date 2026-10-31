@@ -17,6 +17,7 @@ CAUSES = frozenset({
     "empty_completion",
     "vendor_error",
     "timeout",
+    "deadline_timeout",
     "connection_reset",
     "unparseable_success",
     "transport_error",
@@ -75,7 +76,8 @@ def redact(value, secrets):
 
 
 def write_diagnostic(ledger, request_id, *, cause, http_status, vendor_code, vendor_message,
-                     response, finish_reason, latency_ms, settled, model, unit_id):
+                     response, finish_reason, latency_ms, settled, model, unit_id,
+                     charged_timeout=False):
     """Persist one redacted JSON file named ``<request_id>.json``."""
     if cause not in CAUSES:
         raise ValueError("diagnostic_cause_rejected")
@@ -94,6 +96,7 @@ def write_diagnostic(ledger, request_id, *, cause, http_status, vendor_code, ven
         "finish_reason": finish_reason if isinstance(finish_reason, str) else None,
         "latency_ms": latency_ms if type(latency_ms) is int else None,
         "settled": bool(settled),
+        "charged_timeout": bool(charged_timeout),
         "response": redact(response, secrets) if isinstance(response, dict) else None,
     }
     path = diagnostics_directory(ledger) / f"{request_id}.json"
