@@ -20,6 +20,8 @@ from .errors import IntegrationNotConfigured, PilotStopped, ProtocolError
 CRITERION_ID = "python_write_file_compile_syntax_v1"
 MAX_FILE_BYTES = 1_048_576
 MAX_SEARCH_CHARS = 10_000
+MAX_LISTED_FILES = 200
+MAX_READ_CHARS = 32_000
 MAX_TOOL_OUTPUT_CHARS = 1_048_576
 CREDENTIAL_ENV_NAMES = ("DEEPSEEK_API_KEY", "MIMO_API_KEY", "ZAI_API_KEY")
 DEFAULT_SANDBOX_MEMORY = "4g"
@@ -61,7 +63,7 @@ class Workspace:
         self.root.mkdir(parents=True, exist_ok=True)
         self.attributed = []
 
-    def list_files(self):
+    def _file_paths(self):
         found = []
         root = self.root.resolve()
         for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
@@ -76,12 +78,23 @@ class Workspace:
                     found.append(resolved.relative_to(root).as_posix())
         return found
 
+    def list_files(self):
+        """Return workspace paths. A large tree is capped so it cannot fill the next prompt."""
+        found = self._file_paths()
+        if len(found) <= MAX_LISTED_FILES:
+            return found
+        return {"paths": found[:MAX_LISTED_FILES], "truncated": True,
+                "omitted": len(found) - MAX_LISTED_FILES}
+
     def read_file(self, path):
         _relative_path, candidate = _relative(self.root, path)
         if candidate.is_symlink() or not candidate.is_file():
             raise ProtocolError("workspace_file_missing")
         try:
-            return candidate.read_text(encoding="utf-8")
+            text = candidate.read_text(encoding="utf-8")
+            if len(text) > MAX_READ_CHARS:
+                return text[:MAX_READ_CHARS] + "\n...[truncated]"
+            return text
         except (OSError, UnicodeError) as error:
             raise ProtocolError("workspace_file_unreadable") from error
 
@@ -106,7 +119,7 @@ class Workspace:
         if not isinstance(text, str) or not text or len(text) > MAX_SEARCH_CHARS:
             raise ProtocolError("workspace_search_text_rejected")
         matches = []
-        for relative in self.list_files():
+        for relative in self._file_paths():
             try:
                 content = self.read_file(relative)
             except ProtocolError:

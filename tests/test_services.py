@@ -98,7 +98,7 @@ def test_protocol_limits_and_payg_endpoints_are_explicit():
         assert limits["tools"] == 120
         assert limits["seconds"] == 1200
         assert limits["command_seconds"] == 60
-        assert limits["max_output_tokens"] == 8192
+        assert limits["max_output_tokens"] == 16384
     assert set(POOL_ENDPOINTS) == set(MODEL_POOL)
     assert POOL_ENDPOINTS["deepseek-flash"] == (
         "DEEPSEEK_API_KEY", "https://api.deepseek.com/chat/completions", "bearer")
@@ -142,17 +142,20 @@ def test_completion_settles_four_dimensions_without_logging_the_key(tmp_path, mo
     assert seen[0]["url"] == POOL_ENDPOINTS["mimo-v2.6-flash"][1]
     assert seen[0]["body"]["max_completion_tokens"] == 128
     assert "max_tokens" not in seen[0]["body"]
-    assert seen[0]["body"]["stream"] is False
+    assert seen[0]["body"]["stream"] is True
+    assert "stream_options" not in seen[0]["body"]
     assert "temperature" not in seen[0]["body"] and "thinking" not in seen[0]["body"]
     assert seen[0]["auth_scheme"] == "api-key"
     assert KEYS["MIMO_API_KEY"] not in seen[0]["blob"]
     assert seen[0]["auth_sha256"] == hashlib.sha256(KEYS["MIMO_API_KEY"].encode()).hexdigest()
     services.complete_for_model("deepseek-flash", messages("next"))
-    assert seen[1]["body"]["max_tokens"] == 4096 and "thinking" not in seen[1]["body"]
+    assert seen[1]["body"]["max_tokens"] == 16384 and "thinking" not in seen[1]["body"]
+    assert seen[1]["body"]["stream_options"] == {"include_usage": True}
     assert seen[1]["auth_scheme"] == "bearer"
     services.complete_for_model("glm-5.3-flash", messages("glm"))
     assert seen[2]["body"]["thinking"] == {"type": "enabled"}
-    assert seen[2]["body"]["max_tokens"] == 4096
+    assert seen[2]["body"]["max_tokens"] == 16384
+    assert "stream_options" not in seen[2]["body"]
     assert "max_completion_tokens" not in seen[2]["body"]
     assert "reasoning_effort" not in seen[2]["body"]
     services.complete_for_model("mimo-v2.6-pro", messages("pro"))
@@ -189,12 +192,13 @@ def test_reasoning_tokens_stay_inside_the_completion_total(tmp_path, monkeypatch
     assert services.events[-1][1]["reasoning_tokens"] == 4
 
     oversized = chat("x", "deepseek-flash", prompt=1, completion=2, reasoning=9)
-    blocked, blocked_seen, _ledger = build(tmp_path / "over", monkeypatch, [oversized, chat("y", "deepseek-flash")])
-    with pytest.raises(PilotStopped, match="provider_outcome_unknown"):
+    blocked, blocked_seen, blocked_ledger = build(
+        tmp_path / "over", monkeypatch, [oversized, chat("y", "deepseek-flash")])
+    with pytest.raises(PilotStopped, match="provider_outcome_charged"):
         blocked.complete_for_model("deepseek-flash", messages())
-    with pytest.raises(PilotStopped, match="unresolved"):
-        blocked.complete_for_model("deepseek-flash", messages())
-    assert len(blocked_seen) == 1
+    assert blocked.complete_for_model("deepseek-flash", messages())["text"] == "y"
+    assert blocked_ledger.snapshot()["unresolved_request_ids"] == []
+    assert len(blocked_seen) == 2
 
     unsplit = {"model": "glm-5.3-flash", "choices": [{"message": {"content": "x"}}],
                "usage": {"prompt_tokens": 8, "completion_tokens": 239, "total_tokens": 247,
@@ -219,27 +223,27 @@ def test_missing_key_bad_usage_and_over_charge_stop_before_another_send(tmp_path
         services.complete_for_model("mimo-v2.6-flash", messages(KEYS["MIMO_API_KEY"]))
     assert ledger.snapshot()["requests"] == 0
 
-    blocked, blocked_seen, _ledger = build(tmp_path / "bad", monkeypatch, [{"choices": []}])
-    with pytest.raises(PilotStopped, match="provider_outcome_unknown"):
+    blocked, blocked_seen, blocked_ledger = build(tmp_path / "bad", monkeypatch, [{"choices": []}])
+    with pytest.raises(PilotStopped, match="provider_outcome_charged"):
         blocked.complete_for_model("glm-5.3-flash", messages())
-    with pytest.raises(PilotStopped, match="unresolved"):
-        blocked.complete_for_model("glm-5.3-flash", messages())
+    assert blocked_ledger.snapshot()["unresolved_request_ids"] == []
     assert len(blocked_seen) == 1
 
     mismatch, mismatch_seen, _ledger = build(tmp_path / "mismatch", monkeypatch, [
         chat("x", "other-model"),
     ])
-    with pytest.raises(PilotStopped, match="provider_outcome_unknown"):
+    with pytest.raises(PilotStopped, match="provider_outcome_charged"):
         mismatch.complete_for_model("glm-5.3-flash", messages())
     assert mismatch_seen[0]["body"]["model"] == "glm-5.3-flash"
 
-    inconsistent, _seen, _ledger = build(tmp_path / "tokens", monkeypatch, [{
+    inconsistent, _seen, inconsistent_ledger = build(tmp_path / "tokens", monkeypatch, [{
         "model": "deepseek-flash",
         "choices": [{"message": {"content": "x"}}],
         "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 3},
     }])
-    with pytest.raises(PilotStopped, match="provider_outcome_unknown"):
+    with pytest.raises(PilotStopped, match="provider_outcome_charged"):
         inconsistent.complete_for_model("deepseek-flash", messages())
+    assert inconsistent_ledger.snapshot()["unresolved_request_ids"] == []
 
     costly, costly_seen, _ledger = build(
         tmp_path / "cost", monkeypatch, [chat("x", "deepseek-flash")],
@@ -260,7 +264,7 @@ def test_unit_caps_stop_dispatch_without_a_further_send(tmp_path, monkeypatch):
         services.complete_for_model("mimo-v2.6-flash", messages("overflow"))
     assert len(seen) == 16
     with pytest.raises(PilotStopped, match="output_token_parameter"):
-        services.complete_for_model("mimo-v2.6-flash", messages("too many"), max_tokens=8193)
+        services.complete_for_model("mimo-v2.6-flash", messages("too many"), max_tokens=16385)
 
     class Clock:
         def __init__(self):
@@ -309,17 +313,18 @@ def test_policy_reads_service_remaining_and_skips_an_exhausted_model(tmp_path, m
     assert selected != "deepseek-flash"
     assert trace["scores"]["deepseek-flash"]["feasible"] is False
     assert "cny" in trace["scores"]["deepseek-flash"]["violated_resources"]
-    services, seen, _ledger = build(tmp_path / "unknown", monkeypatch, [{"nope": True}])
-    with pytest.raises(PilotStopped):
+    services, seen, ledger = build(tmp_path / "unknown", monkeypatch, [{"nope": True}])
+    with pytest.raises(PilotStopped, match="provider_outcome_charged"):
         services.complete_for_model("mimo-v2.6-flash", messages())
+    assert ledger.snapshot()["unresolved_request_ids"] == []
     blocked = Organization(":memory:")
     try:
-        with pytest.raises(PilotStopped, match="unresolved"):
-            ConstrainedThompsonPolicy({}, services.budget_remaining).select(
-                blocked, {}, ["mimo-v2.6-flash"], "type=generic|complexity=na|uncertainty=na",
-                (), "user", random.Random(0))
+        selected, _trace = ConstrainedThompsonPolicy({}, services.budget_remaining).select(
+            blocked, {}, ["mimo-v2.6-flash"], "type=generic|complexity=na|uncertainty=na",
+            (), "user", random.Random(0))
     finally:
         blocked.conn.close()
+    assert selected == "mimo-v2.6-flash"
     assert len(seen) == 1
 
 

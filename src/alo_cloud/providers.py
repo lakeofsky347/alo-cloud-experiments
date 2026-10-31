@@ -78,7 +78,13 @@ def request_body(model, messages, max_tokens):
     reasoning tokens, so ``max_tokens`` is not sent beside it. GLM-5.3-Flash
     cannot disable thinking; the body sets ``thinking.type`` to ``enabled``.
     """
-    body = {"model": model, "messages": messages, "stream": False}
+    # Streaming keeps the socket alive while a reasoning model generates.
+    # DeepSeek documents stream_options.include_usage. GLM's streaming guide puts
+    # usage on the last chunk without that field. MiMo documents SSE deltas and
+    # does not document stream_options, so it is not sent there.
+    body = {"model": model, "messages": messages, "stream": True}
+    if model == "deepseek-flash":
+        body["stream_options"] = {"include_usage": True}
     if model in MIMO_MODELS:
         body["max_completion_tokens"] = max_tokens
     else:
@@ -231,26 +237,98 @@ def _read_json_body(raw):
     return value if isinstance(value, dict) else None
 
 
-def urllib_send(url, body, headers, *, timeout_s):
+def assemble_stream(chunks, model):
+    """Fold SSE chunks into one chat completion. Usage comes from the final chunk."""
+    parts = []
+    finish = None
+    usage = None
+    for chunk in chunks:
+        if not isinstance(chunk, dict):
+            continue
+        chunk_usage = chunk.get("usage")
+        if isinstance(chunk_usage, dict) and chunk_usage.get("prompt_tokens") is not None:
+            usage = chunk_usage
+        choices = chunk.get("choices") or []
+        if not choices or not isinstance(choices[0], dict):
+            continue
+        choice = choices[0]
+        if isinstance(choice.get("finish_reason"), str):
+            finish = choice["finish_reason"]
+        delta = choice.get("delta") if isinstance(choice.get("delta"), dict) else {}
+        message = choice.get("message") if isinstance(choice.get("message"), dict) else {}
+        piece = delta.get("content")
+        if not isinstance(piece, str):
+            piece = message.get("content") if isinstance(message.get("content"), str) else None
+        if isinstance(piece, str):
+            parts.append(piece)
+    return {
+        "model": model,
+        "choices": [{"finish_reason": finish, "message": {"role": "assistant", "content": "".join(parts)}}],
+        "usage": usage,
+    }
+
+
+def parse_sse(text, model):
+    """Parse a recorded event stream. Blank lines and SSE comments are ignored."""
+    chunks = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith(":"):
+            continue
+        if not stripped.startswith("data:"):
+            continue
+        data = stripped[5:].strip()
+        if data == "[DONE]":
+            break
+        try:
+            chunks.append(json.loads(data))
+        except json.JSONDecodeError:
+            return None
+    return assemble_stream(chunks, model)
+
+
+def _read_sse(response, model):
+    chunks = []
+    while True:
+        raw = response.readline()
+        if not raw:
+            break
+        line = raw.decode("utf-8", errors="replace").strip()
+        if not line or line.startswith(":"):
+            continue
+        if not line.startswith("data:"):
+            continue
+        data = line[5:].strip()
+        if data == "[DONE]":
+            break
+        try:
+            chunks.append(json.loads(data))
+        except json.JSONDecodeError:
+            return None
+    return assemble_stream(chunks, model)
+
+
+def urllib_send(url, body, headers, *, timeout_s, model):
     """Real HTTP POST. Returns ``(payload, status)``. Offline tests must not call this.
 
-    A non-200 response is returned with its JSON body when the body parses.
-    Timeouts and connection failures still raise so the caller can tell them
-    from a vendor error document.
+    A 200 body is read as SSE so a long reasoning trace does not have to arrive
+    in one silent read. A non-200 body is parsed as JSON when it is a vendor error.
     """
     data = json.dumps(body, ensure_ascii=False).encode()
     request = urllib.request.Request(url, data=data, method="POST", headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=timeout_s) as response:
             status = getattr(response, "status", None)
-            raw = response.read()
+            if status != 200:
+                return _read_json_body(response.read()), status
+            return _read_sse(response, model), status
     except urllib.error.HTTPError as error:
         status = getattr(error, "code", None)
         try:
             raw = error.read()
         except Exception:
             raw = b""
-    return _read_json_body(raw), status
+        return _read_json_body(raw), status
 
 
 def _exception_cause(error):
@@ -303,7 +381,7 @@ class OpenAICompatibleTransport:
             raise PilotStopped("one_transport_sender")
         if permit_network and not require_credentials:
             raise PilotStopped("live_transport_requires_credentials")
-        if type(timeout_s) not in (int, float) or isinstance(timeout_s, bool) or not 0 < timeout_s <= 60:
+        if type(timeout_s) not in (int, float) or isinstance(timeout_s, bool) or not 0 < timeout_s <= 600:
             raise PilotStopped("invalid_provider_timeout")
         self._sender = sender
         self._permit_network = bool(permit_network)
@@ -311,7 +389,7 @@ class OpenAICompatibleTransport:
         self._timeout_s = float(timeout_s)
         self.last_http_status = None
 
-    def complete_for_model(self, model, messages, *, max_tokens=4096):
+    def complete_for_model(self, model, messages, *, max_tokens=4096, timeout_s=None):
         if model not in MODEL_POOL or model not in POOL_ENDPOINTS:
             raise PilotStopped("model_outside_pool")
         env_name, url, auth = POOL_ENDPOINTS[model]
@@ -337,7 +415,9 @@ class OpenAICompatibleTransport:
                         payload, status = payload
                 elif self._permit_network:
                     try:
-                        payload, status = urllib_send(url, body, headers, timeout_s=self._timeout_s)
+                        limit = self._timeout_s if timeout_s is None else timeout_s
+                        payload, status = urllib_send(
+                            url, body, headers, timeout_s=limit, model=model)
                     except Exception as error:
                         self.last_http_status = None
                         return _unknown_transport(error)

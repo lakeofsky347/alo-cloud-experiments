@@ -26,24 +26,34 @@ G3_ROLES = {
 }
 G2_BASE_SEED = 20261027
 SELECTION_SEED = "formal-20261028-preregistered-task-selection-v1"
-TOKEN_ESTIMATE = {"input_tokens": 12000, "output_tokens": 2048, "cache_hit_tokens": None}
+# Observed over 38 settled requests in the first live slice: about 17,800 input
+# tokens and 850 output tokens. Output is raised to 4096 because three reasoning
+# calls were censored at the completion cap and came back with empty visible text.
+TOKEN_ESTIMATE = {"input_tokens": 18000, "output_tokens": 4096, "cache_hit_tokens": None}
 CALL_CAPS = {
-    "m1_g1_b0": 6,
-    "m1_g1_b1": 3,
-    "m1_g2_b0": 8,
-    "m1_g2_b1": 4,
-    "m1_g3_b0": 8,
-    "m1_g3_b1": 4,
-    "m2_g2_learning": 6,
-    "m2_g1_reference": 6,
-    "m2_g3_reference": 6,
-    "m2_g2_probe": 4,
+    "m1_g1_b0": 12,
+    "m1_g1_b1": 8,
+    "m1_g2_b0": 12,
+    "m1_g2_b1": 8,
+    "m1_g3_b0": 12,
+    "m1_g3_b1": 8,
+    "m2_g2_learning": 8,
+    "m2_g1_reference": 8,
+    "m2_g3_reference": 8,
+    "m2_g2_probe": 6,
 }
 M1_CONDITIONS = ("g1-main", "g1-strong", "g2", "g3")
 MAX_BLOCKED_FRACTION = 0.25
 BLOCKED_FRACTION_MIN_UNITS = 4
-MIMO_MAX_COMPLETION_TOKENS = 8192
-NON_MIMO_MAX_COMPLETION_TOKENS = 4096
+MIMO_MAX_COMPLETION_TOKENS = 16384
+NON_MIMO_MAX_COMPLETION_TOKENS = 16384
+PROVIDER_TIMEOUT_S = {
+    "deepseek-flash": 300,
+    "mimo-v2.6-flash": 300,
+    "glm-5.3-flash": 300,
+    "mimo-v2.6-pro": 600,
+}
+MAX_UNKNOWN_OUTCOMES = 3
 SCHEDULE_RULE = (
     "m1-track-rotation-v1; m2-all-learning-then-references-then-probes-v1; "
     "probe prior alternates by sequence index plus probe position"
@@ -222,7 +232,9 @@ def freeze_payload():
             "probe_seeds": list(row["probe_seeds"]),
         })
     return {
-        "schema": "alo-protocol-freeze-v5",
+        "schema": "alo-protocol-freeze-v6",
+        "provider_timeout_s": dict(PROVIDER_TIMEOUT_S),
+        "max_unknown_outcomes": MAX_UNKNOWN_OUTCOMES,
         "max_blocked_fraction": MAX_BLOCKED_FRACTION,
         "blocked_fraction_min_units": BLOCKED_FRACTION_MIN_UNITS,
         "price_retrieved_on": RETRIEVED_ON,
@@ -246,6 +258,8 @@ def freeze_payload():
             "unknown_causes": ["timeout", "connection_reset", "unparseable_success", "transport_error"],
             "usage_reasoning_tokens": "top_level_or_completion_tokens_details",
             "restart_unknown_unit": "once_then_blocked",
+            "timeout_charge": "worst_case_then_continue",
+            "stream": "sse_usage_on_final_chunk",
         },
         "call_caps": dict(CALL_CAPS),
         "selection_seed": SELECTION_SEED,
@@ -257,6 +271,7 @@ def freeze_payload():
         "params_sent": {
             "glm-5.3-flash.thinking.type": "enabled",
             "mimo.max_completion_tokens": True,
+            "stream": True,
             "sampling_temperature_sent": False,
         },
         "development_tasks": "not_in_paid_schedule",

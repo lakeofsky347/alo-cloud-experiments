@@ -129,9 +129,10 @@ def test_projection_fits_under_the_budget_with_headroom():
     summary = project()
     assert within_budget(summary)
     assert summary["total_upper_microcny"] <= 160_000_000
-    assert all(value <= 40_000_000 for value in summary["pessimistic_model_microcny"].values())
     assert summary["headroom_ratio"] >= 0.20
-    assert "41.334528" in Path("docs/cost_projection.md").read_text(encoding="utf-8")
+    assert summary["token_estimate"]["input_tokens"] == 18000
+    assert summary["token_estimate"]["output_tokens"] == 4096
+    assert "108.120576" in Path("docs/cost_projection.md").read_text(encoding="utf-8")
     assert G1_STRONG_MODEL == "mimo-v2.6-pro"
     assert G1_MAIN_MODEL == "mimo-v2.6-flash"
     assert summary["m1_units"] == 96

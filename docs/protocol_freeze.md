@@ -2,9 +2,9 @@
 
 日期：2026-10-31。本文件列出付费日程的任务身份、种子、组别、模型和参数。规范载荷在 `alo_cloud.freeze.freeze_payload`。CI 重新计算其 SHA-256，必须与下面这一行一致。
 
-freeze_sha256: 19b7a7eea099c480d5fbadcf4d57decb9ca3ce4df6d0b48d679fee0826f84deb
+freeze_sha256: c52c07572724e07ce39bade88449ed0c476bca65e8a9265c44e1486ca63e27fe
 
-上一版哈希是 `cd136ed5288a416467ba312f153ac83f4f54c9c801e7774969f5c4f9f15f024b`。题单、种子、组别和标价没有改。这次改哈希是因为供应商结果不再合成一种 unknown：usage 自洽但内容为空时按报告用量结算，可解析的非 200 错误按 0 结算，只有超时、连接中断和无法解析的 200 保持预留；`reasoning_tokens` 接受顶层或 `completion_tokens_details`。unknown 打断的单元允许从头重启一次，花费留在账本里，第二次记 blocked。MiMo 的 `max_completion_tokens` 从 4096 改为 8192，因为该字段包含推理，4096 会把可见回答挤空。费用投影的 2048 输出估计没有改。
+上一版哈希是 `19b7a7eea099c480d5fbadcf4d57decb9ca3ce4df6d0b48d679fee0826f84deb`。题单、种子、组别和标价没有改。这次改哈希是因为：供应商读超时与沙箱命令的 60 秒分开，DeepSeek、MiMo-Flash 和 GLM 为 300 秒，MiMo-Pro 为 600 秒；请求改为 SSE，用量取最后一个带 usage 的块。超时按预留的最坏金额结算并自动重启该单元一次，日程继续；未知结果超过 3 次才停止整个日程。四个模型在调用方要求至少 4096 时发送 16384，因为实测推理会写满 4096 或 8192 并使可见回答为空。请求上限改为 M1 B0 12 次、B1 8 次，M2 学习与参考 8 次、probe 6 次。费用估计改为实测的 18000 输入和 4096 输出。
 
 检查：`python -m alo_cloud.freeze --check`
 
@@ -19,13 +19,13 @@ freeze_sha256: 19b7a7eea099c480d5fbadcf4d57decb9ca3ce4df6d0b48d679fee0826f84deb
 | G3 manager | `deepseek-flash` |
 | G3 Planner / Engineer / Critic / Verifier | `deepseek-flash` / `mimo-v2.6-flash` / `glm-5.3-flash` / `mimo-v2.6-pro` |
 
-发送的参数：MiMo 只送 `max_completion_tokens`，调用方要求至少 4096 时实际发送 8192；DeepSeek 与 GLM 默认仍送 4096。GLM-5.3-Flash 送 `thinking.type=enabled`。不送 temperature、`reasoning_effort`、`clear_thinking`。单元输出参数上限是 8192。价格按 2026-10-31 官方标价，`deepseek-flash` 用高峰价。计费向上取整到 microcny；没有缓存命中拆分时，输入全部按缓存未命中。
+发送的参数：四个模型都 `stream=true`。DeepSeek 另送 `stream_options.include_usage=true`。MiMo 只送 `max_completion_tokens`，GLM-5.3-Flash 送 `thinking.type=enabled`。调用方要求至少 4096 时，四个模型都实际发送 16384。不送 temperature、`reasoning_effort`、`clear_thinking`。供应商读超时：MiMo-Pro 600 秒，其余 300 秒，与沙箱单命令 60 秒分开。价格按 2026-10-31 官方标价，`deepseek-flash` 用高峰价。计费向上取整到 microcny；没有缓存命中拆分时，输入全部按缓存未命中。
 
 预算：每模型 50 CNY，合计 200 CNY。新建账本期初承诺为 0。
 
 G2 基础种子 `20261027`。选题种子 `formal-20261028-preregistered-task-selection-v1`。
 
-操作请求上限（不超过协议 32/16）：M1 的 G1 为 B0 6 次、B1 3 次；G2 为 8 与 4；G3 为 8 与 4。M2 学习每次 6 次请求，固定参考 G1 为 6、G3 为 6，probe 为 4。
+操作请求上限（不超过协议 32/16）：M1 的 G1、G2、G3 都是 B0 12 次、B1 8 次。M2 学习每次 8 次请求，固定参考 8 次，probe 为 6。
 
 ## 任务
 
