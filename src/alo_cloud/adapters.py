@@ -284,6 +284,15 @@ class HeterogeneousALO:
         probe_dir = None
         source_digest = _db_digest(source_db) if probe else None
         observations_before = copy.deepcopy(self.state["observations"]) if probe else None
+        retained = copy.deepcopy({
+            "observations": self.state.get("observations", {}),
+            "worker_transcripts": self.state.get("worker_transcripts", {}),
+            "planner_messages": self.state.get("planner_messages", []),
+            "assignments": self.state.get("assignments"),
+            "rng_state": self.state.get("rng_state"),
+            "last_native_run": self.state.get("last_native_run"),
+            "last_criterion_statuses": self.state.get("last_criterion_statuses"),
+        }) if probe else None
         if probe:
             probe_dir = tempfile.TemporaryDirectory(prefix="alo-probe-")
             db_path = Path(probe_dir.name) / "alo.sqlite3"
@@ -442,14 +451,27 @@ class HeterogeneousALO:
             if probe:
                 belief_rows = org.conn.execute("SELECT count(*) FROM belief").fetchone()[0]
                 tms_rows = org.conn.execute("SELECT count(*) FROM tms_outcomes").fetchone()[0]
-            self.state["assignments"] = {role: asdict(value) for role, value in org._assignments.items()}
-            self.state["rng_state"] = rng.getstate()
+            org_assignments = {role: asdict(value) for role, value in org._assignments.items()}
+            org_rng = rng.getstate()
             org.conn.close()
             if probe:
+                # Probe transcripts, assignments and RNG stay on the disposable
+                # organization. Checkpoint state keeps only the pre-probe learning
+                # fields plus an audit record; the caller sees run_stage's return.
+                mutated_observations = self.state["observations"] != observations_before
+                mutated_source = _db_digest(source_db) != source_digest
+                self.state["observations"] = retained["observations"]
+                self.state["worker_transcripts"] = retained["worker_transcripts"]
+                self.state["planner_messages"] = retained["planner_messages"]
+                for key in ("assignments", "rng_state", "last_native_run", "last_criterion_statuses"):
+                    if retained[key] is None:
+                        self.state.pop(key, None)
+                    else:
+                        self.state[key] = retained[key]
                 try:
-                    if self.state["observations"] != observations_before:
+                    if mutated_observations:
                         raise PilotStopped("probe_updated_policy_observations")
-                    if _db_digest(source_db) != source_digest:
+                    if mutated_source:
                         raise PilotStopped("probe_mutated_source_organization")
                     self.state["probe_isolation"] = {
                         "prior": "cold" if self.config["cold_prior"] else "learned_terminal",
@@ -458,6 +480,9 @@ class HeterogeneousALO:
                     }
                 finally:
                     probe_dir.cleanup()
+            else:
+                self.state["assignments"] = org_assignments
+                self.state["rng_state"] = org_rng
 
 
 def adapter_for(group, config=None):

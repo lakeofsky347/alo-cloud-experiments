@@ -1,5 +1,6 @@
 """Scripted service controls of preserved algorithms, never benchmark evidence."""
 import json
+import random
 from types import SimpleNamespace
 
 import pytest
@@ -173,11 +174,24 @@ def test_probe_does_not_write_source_and_cold_prior_ignores_posterior(tmp_path):
 
     learned = ScriptedServices(tmp_path, criterion="pass")
     terminal = alo(probe=True)
+    terminal.state["assignments"] = {"kept": {"role_id": "kept", "identity_id": "i",
+                                              "model_id": MODEL_POOL[0], "bandwidth": 1,
+                                              "authority": ("inspect",)}}
+    sentinel_rng = random.Random(7).getstate()
+    terminal.state["rng_state"] = sentinel_rng
+    terminal.state["worker_transcripts"] = {"kept": [{"role": "user", "content": "keep"}]}
+    terminal.state["planner_messages"] = [{"role": "system", "content": "keep"}]
+    terminal.state["observations"] = {"kept": [{"public_quality": 0.5}]}
     terminal.run_stage({"prompt": "probe"}, learned)
     assert source.read_bytes() == before
     assert terminal.state["probe_isolation"]["prior"] == "learned_terminal"
     assert terminal.state["probe_isolation"]["belief_rows"] == trained_rows
-    assert terminal.state["observations"] == {}
+    assert terminal.state["observations"] == {"kept": [{"public_quality": 0.5}]}
+    assert terminal.state["assignments"]["kept"]["role_id"] == "kept"
+    assert terminal.state["rng_state"] == sentinel_rng
+    assert terminal.state["worker_transcripts"] == {"kept": [{"role": "user", "content": "keep"}]}
+    assert terminal.state["planner_messages"] == [{"role": "system", "content": "keep"}]
+    assert "last_native_run" not in terminal.state
 
     cold_service = ScriptedServices(tmp_path, criterion="pass")
     cold = alo(probe=True, cold_prior=True)
