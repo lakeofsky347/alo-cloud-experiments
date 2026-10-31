@@ -71,7 +71,8 @@ def build(tmp_path, monkeypatch, replies, **kwargs):
         opening_commitments_microcny=opening,
         max_requests=limits["requests"], prior_requests=kwargs.get("prior_requests", 0),
         max_tokens=limits["tokens"], prior_tokens=kwargs.get("prior_tokens", 0),
-        max_seconds_ms=limits["seconds"] * 1000, prior_seconds_ms=0,
+        max_seconds_ms=limits["seconds"] * 1000,
+        prior_seconds_ms=kwargs.get("prior_seconds_ms", 0),
         max_tools=limits["tools"], prior_tools=0)
     sender, seen = scripted(replies)
     services = StudyServices(
@@ -81,7 +82,8 @@ def build(tmp_path, monkeypatch, replies, **kwargs):
         request_ceiling=kwargs.get("request_ceiling"),
         sender=None if kwargs.get("permit_network") else sender,
         permit_network=bool(kwargs.get("permit_network")),
-        sandbox=kwargs.get("sandbox"), clock=kwargs.get("clock"))
+        sandbox=kwargs.get("sandbox"), clock=kwargs.get("clock"),
+        shard_id=kwargs.get("shard_id", ""))
     return services, seen, ledger
 
 
@@ -446,3 +448,63 @@ def test_permit_network_posts_through_a_replaced_urlopen(tmp_path, monkeypatch):
     assert KEYS["ZAI_API_KEY"] not in captured["data"]
     assert '"max_tokens": 32' in captured["data"] or '"max_tokens":32' in captured["data"]
     assert '"type": "enabled"' in captured["data"] or '"type":"enabled"' in captured["data"]
+
+
+def _request_row(ledger, request_id):
+    import sqlite3
+    row = sqlite3.connect(ledger.path).execute(
+        "SELECT held, held_tokens, held_seconds_ms, status FROM requests WHERE id=?",
+        (request_id,)).fetchone()
+    return {"held": row[0], "held_tokens": row[1], "held_seconds_ms": row[2], "status": row[3]}
+
+
+def test_known_receipt_over_the_unit_token_cap_settles_and_stops_only_the_unit(tmp_path, monkeypatch):
+    limits = PROTOCOL_UNIT_LIMITS["m1_b0"]
+    services, _seen, ledger = build(
+        tmp_path, monkeypatch,
+        [chat("answer", "mimo-v2.6-flash", prompt=80, completion=20)],
+        prior_tokens=limits["tokens"] - 30, ceiling=1000, shard_id="0/4")
+    with pytest.raises(PilotStopped, match="unit_resource_exhausted"):
+        services.complete_for_model("mimo-v2.6-flash", messages(), max_tokens=16)
+    row = _request_row(ledger, "req-m1_b0-1")
+    assert row["status"] == "settled"
+    assert row["held"] == 1
+    assert row["held_tokens"] == 100
+    assert ledger.snapshot()["unresolved_request_ids"] == []
+    assert ledger.blocks_dispatch("1/4") is False
+    limits = PROTOCOL_UNIT_LIMITS["m1_b0"]
+    ledger.reserve(
+        "req-other-shard", "mimo-v2.6-flash", 1, payload_sha256="b" * 64,
+        tokens=10, seconds_ms=10, unit_id="other-unit", unit_request_cap=limits["requests"],
+        shard_id="1/4")
+    diag = tmp_path / "diagnostics" / "req-m1_b0-1.json"
+    assert not diag.exists()
+
+
+def test_known_receipt_over_the_unit_seconds_cap_settles_and_stops_only_the_unit(tmp_path, monkeypatch):
+    limits = PROTOCOL_UNIT_LIMITS["m1_b0"]
+    clock = {"t": 0.0}
+
+    def now():
+        return clock["t"]
+
+    services, _seen, ledger = build(
+        tmp_path, monkeypatch, [],
+        prior_seconds_ms=limits["seconds"] * 1000 - 50,
+        ceiling=1000, shard_id="0/4", clock=now)
+
+    def sender(url, body, headers):
+        del url, headers
+        clock["t"] = 0.2
+        return chat("answer", body["model"], prompt=2, completion=2)
+
+    services.transport._sender = sender
+    with pytest.raises(PilotStopped, match="unit_resource_exhausted"):
+        services.complete_for_model("mimo-v2.6-flash", messages(), max_tokens=16)
+    row = _request_row(ledger, "req-m1_b0-1")
+    assert row["status"] == "settled"
+    assert row["held"] == 1
+    assert row["held_seconds_ms"] == 200
+    assert row["held_tokens"] == 4
+    assert ledger.snapshot()["unresolved_request_ids"] == []
+    assert ledger.blocks_dispatch("1/4") is False

@@ -341,7 +341,7 @@ class StudyServices:
                                    settled=False, cause="charge_rejected")
                     self._mark_request_unknown(request_id)
                     raise PilotStopped("provider_outcome_unknown")
-                self.ledger.settle_known(
+                settled = self.ledger.settle_known(
                     request_id, charge, tokens=parsed["total_tokens"], seconds_ms=elapsed_ms)
                 if outcome.get("cause") == "empty_completion":
                     self._diagnose(request_id, model, outcome, latency_ms=elapsed_ms, settled=True)
@@ -353,6 +353,8 @@ class StudyServices:
                                               "reasoning_tokens": parsed["reasoning_tokens"],
                                               "charge_microcny": charge,
                                               "finish_reason": parsed.get("finish_reason")})
+                if settled.get("unit_resource_exhausted"):
+                    raise PilotStopped("unit_resource_exhausted")
                 return {"text": parsed["text"], "input_tokens": parsed["input_tokens"],
                         "output_tokens": parsed["output_tokens"],
                         "reasoning_tokens": parsed["reasoning_tokens"],
@@ -361,7 +363,7 @@ class StudyServices:
                         "length_stop": parsed["text"] == "" and parsed.get("finish_reason") == "length",
                         "vendor_error": False}
             if kind == "vendor_error":
-                self.ledger.settle_known(request_id, 0, tokens=0, seconds_ms=elapsed_ms)
+                settled = self.ledger.settle_known(request_id, 0, tokens=0, seconds_ms=elapsed_ms)
                 self._diagnose(request_id, model, outcome, latency_ms=elapsed_ms, settled=True)
                 self._note_outcome(request_id, model, "vendor_error", 0)
                 self._observed["model_requests"] += 1
@@ -369,6 +371,8 @@ class StudyServices:
                                               "input_tokens": 0, "output_tokens": 0,
                                               "reasoning_tokens": None, "charge_microcny": 0,
                                               "vendor_error": True})
+                if settled.get("unit_resource_exhausted"):
+                    raise PilotStopped("unit_resource_exhausted")
                 return {"text": "", "input_tokens": 0, "output_tokens": 0, "reasoning_tokens": None,
                         "latency_ms": elapsed_ms, "cost_microcny": 0, "currency": "CNY",
                         "finish_reason": None, "length_stop": False, "vendor_error": True}
@@ -398,6 +402,7 @@ class StudyServices:
         except PilotStopped as error:
             if str(error) in {
                 "provider_outcome_unknown", "provider_outcome_charged", "provider_deadline_charged",
+                "unit_resource_exhausted",
             }:
                 raise
             self._diagnose(request_id, model, {"cause": "transport_error"}, latency_ms=0, settled=False)
