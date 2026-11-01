@@ -171,7 +171,7 @@ def dry_run_sender(url, body, headers):
             "usage": {"prompt_tokens": 12, "completion_tokens": 8, "total_tokens": 20}}
 
 
-def _build_adapter(unit):
+def _build_adapter(unit, user_preference=None):
     if unit.arm == "g1-main":
         return adapter_for("G1", {"fixed_model": G1_MAIN_MODEL, "max_turns": unit.request_cap})
     if unit.arm == "g1-strong":
@@ -186,6 +186,7 @@ def _build_adapter(unit):
             "seed": unit.seed,
             "probe": unit.phase == "probe",
             "cold_prior": unit.m2_condition == "cold",
+            "user_preference": user_preference,
         })
     if unit.arm == "g3":
         return adapter_for("G3", {
@@ -621,17 +622,17 @@ def run_schedule(units, run_dir, *, live, data_dir=None, docker_image=None, send
                 raise BudgetStopped("partial_unit_not_retried")
             retried = False
             while True:
-                pro_cap = None
-                if batch == "r2":
-                    from .r2 import pro_call_cap
-                    pro_cap = pro_call_cap(unit)
+                preference = None
+                if batch == "r2" and unit.arm == "g2":
+                    from .r2 import USER_PREFERENCE
+                    preference = dict(USER_PREFERENCE)
                 record = _execute_unit(
                     unit, run_dir, ledger, live=live, data_dir=data_dir,
                     docker_image=docker_image, sender=sender, git_runner=git_runner,
                     sandbox_memory=sandbox_memory, sandbox_pids=sandbox_pids,
                     image_seeder=image_seeder, unknown_so_far=_unknown_count(run_dir),
                     shard_id=shard_label, limit_overrides=limit_overrides,
-                    reasoning_budget=reasoning_budget, pro_call_cap=pro_cap)
+                    reasoning_budget=reasoning_budget, user_preference=preference)
                 if record.get("charged_timeout"):
                     verdict = publish_timeout_counts(
                         run_dir, ledger, protocol_epoch=current_epoch(run_dir))
@@ -846,7 +847,7 @@ def _public_field(payload, key):
 def _execute_unit(unit, run_dir, ledger, *, live, data_dir, docker_image, sender,
                   git_runner=None, sandbox_memory=None, sandbox_pids=None, image_seeder=None,
                   unknown_so_far=0, shard_id="", limit_overrides=None, reasoning_budget=None,
-                  pro_call_cap=None):
+                  pro_call_cap=None, user_preference=None):
     record = {
         "schema": "alo-paid-unit-v1",
         "unit_id": unit.unit_id,
@@ -904,7 +905,7 @@ def _execute_unit(unit, run_dir, ledger, *, live, data_dir, docker_image, sender
         record["base_commit"] = base_commit
     image = resolve_task_image(unit.track, unit.task_id, fallback=docker_image)
     record["sandbox_image"] = image
-    adapter = _build_adapter(unit)
+    adapter = _build_adapter(unit, user_preference=user_preference)
     parent_note = _apply_parent(unit, adapter, services, run_dir)
     if parent_note in {"b0_checkpoint_missing", "parent_missing"}:
         record.update(status="blocked", reason="parent_missing" if parent_note == "parent_missing" else parent_note,
