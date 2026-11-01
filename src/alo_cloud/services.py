@@ -113,7 +113,8 @@ class StudyServices:
                  unit_id=None, request_ceiling=None, require_credentials=True, limits=None,
                  restart_count=0, protocol_epoch=0, shard_id="", infra_generation=0,
                  track_generation=0, budget_notice=None, limit_overrides=None,
-                 reasoning_budget=None, read_timeouts=None, connect_timeout_s=None):
+                 reasoning_budget=None, read_timeouts=None, connect_timeout_s=None,
+                 stream_idle_timeouts=None, continue_after_timeout=False):
         if unit not in PROTOCOL_UNIT_LIMITS:
             raise PilotStopped("unknown_protocol_unit")
         if not isinstance(ledger, BudgetLedger):
@@ -152,6 +153,9 @@ class StudyServices:
                 or not 0 < connect_timeout_s <= 60):
             raise PilotStopped("invalid_connect_timeout")
         self.connect_timeout_s = None if connect_timeout_s is None else float(connect_timeout_s)
+        self.stream_idle_timeouts = _read_timeouts(stream_idle_timeouts)
+        self.continue_after_timeout = bool(continue_after_timeout)
+        self.charged_timeouts = 0
         self.transport_counts = {}
         self.pro_call_cap = None
         self._requests_by_model = {}
@@ -303,6 +307,15 @@ class StudyServices:
         seconds = table.get(model, PROVIDER_TIMEOUT_S[model])
         return float(seconds)
 
+    def _idle_timeout(self, model):
+        table = self.stream_idle_timeouts
+        if not isinstance(table, dict):
+            return None
+        seconds = table.get(model)
+        if seconds is None:
+            return None
+        return float(seconds)
+
     def _sent_max_tokens(self, model, max_tokens):
         """Leave room for reasoning and a visible answer on every pool model.
 
@@ -317,19 +330,31 @@ class StudyServices:
 
     def _diagnose(self, request_id, model, outcome, *, latency_ms, settled, cause=None,
                   charged_timeout=False):
+        """Write one diagnostic. An unknown cause still leaves a file.
+
+        ``provider_not_reached`` used to be rejected and the ``ValueError`` was
+        swallowed, so a charged unknown could finish with no diagnostic at all.
+        """
+        named = cause or outcome.get("cause") or "transport_error"
+        fields = dict(
+            model=model, unit_id=self.unit_id,
+            http_status=outcome.get("http_status"),
+            vendor_code=outcome.get("vendor_code"),
+            vendor_message=outcome.get("vendor_message"),
+            response=outcome.get("response"),
+            finish_reason=outcome.get("finish_reason"),
+            latency_ms=latency_ms, settled=settled, charged_timeout=charged_timeout,
+            stream_progress=outcome.get("stream_progress"),
+        )
         try:
-            write_diagnostic(
-                self.ledger, request_id, model=model, unit_id=self.unit_id,
-                cause=cause or outcome.get("cause") or "transport_error",
-                http_status=outcome.get("http_status"),
-                vendor_code=outcome.get("vendor_code"),
-                vendor_message=outcome.get("vendor_message"),
-                response=outcome.get("response"),
-                finish_reason=outcome.get("finish_reason"),
-                latency_ms=latency_ms, settled=settled, charged_timeout=charged_timeout,
-                stream_progress=outcome.get("stream_progress"),
-            )
-        except (OSError, ValueError):
+            write_diagnostic(self.ledger, request_id, cause=named, **fields)
+        except ValueError:
+            fields["vendor_code"] = fields["vendor_code"] or named
+            try:
+                write_diagnostic(self.ledger, request_id, cause="transport_error", **fields)
+            except (OSError, ValueError):
+                return
+        except OSError:
             return
 
     def _note_outcome(self, request_id, model, outcome, charge_microcny):
@@ -431,7 +456,10 @@ class StudyServices:
                 raise PilotStopped("per_request_microcny_ceiling_required")
         token_hold, second_hold = self._worst_case_holds()
         deadline_s = self._read_deadline(model)
+        idle_timeout_s = self._idle_timeout(model)
         presend_released = 0
+        # One extra send of the same messages after a charged timeout. Not a unit restart.
+        charged_timeout_retries = 0
         while True:
             request_id = self._next_id("req")
             self.last_request_id = request_id
@@ -447,7 +475,7 @@ class StudyServices:
                 outcome = self.transport.complete_for_model(
                     model, messages, max_tokens=sent_max_tokens,
                     timeout_s=deadline_s, started=started, clock=self._clock,
-                    reasoning_budget=self.reasoning_budget)
+                    reasoning_budget=self.reasoning_budget, idle_timeout_s=idle_timeout_s)
                 elapsed_s = self._clock() - started
                 elapsed_ms = max(0, int(round(elapsed_s * 1000)))
                 if outcome.get("kind") == "not_reached" and outcome.get("request_sent") is False:
@@ -531,11 +559,13 @@ class StudyServices:
                 except BudgetStopped:
                     self._diagnose(request_id, model, outcome, latency_ms=elapsed_ms, settled=False)
                     raise PilotStopped("provider_outcome_unknown") from None
-                charged_timeout = cause == "deadline_timeout"
+                charged_timeout = cause in {"deadline_timeout", "provider_stream_idle"}
                 charged_unparseable = cause == "unparseable_success"
                 self._diagnose(request_id, model, outcome, latency_ms=elapsed_ms, settled=True,
                                charged_timeout=charged_timeout)
-                if charged_timeout:
+                if cause == "provider_stream_idle":
+                    outcome_name = "provider_stream_idle"
+                elif charged_timeout:
                     outcome_name = "deadline_timeout"
                 elif charged_unparseable:
                     outcome_name = "unparseable_charged"
@@ -543,12 +573,22 @@ class StudyServices:
                     outcome_name = "unknown"
                 self._note_outcome(request_id, model, outcome_name, amount)
                 if charged_timeout:
+                    self.charged_timeouts += 1
                     try:
                         publish_timeout_counts(
                             Path(self.ledger.path).parent, self.ledger,
                             protocol_epoch=self.protocol_epoch)
                     except OSError:
                         pass
+                    # freeze.py provider_outcomes.timeout_charge is
+                    # "worst_case_then_continue": the hold stays, the request
+                    # counts, and the same messages are sent once more.
+                    if self.continue_after_timeout:
+                        self._observed["model_requests"] += 1
+                        if charged_timeout_retries >= 1:
+                            raise PilotStopped("provider_timeout_exhausted")
+                        charged_timeout_retries += 1
+                        continue
                     raise PilotStopped("provider_deadline_charged")
                 if charged_unparseable:
                     try:
@@ -562,9 +602,10 @@ class StudyServices:
                 raise PilotStopped("provider_outcome_charged")
             except PilotStopped as error:
                 if str(error) in {
-                    "provider_outcome_unknown", "provider_outcome_charged", "provider_deadline_charged",
-                    "provider_unparseable_charged", "unit_resource_exhausted",
-                }:
+                "provider_outcome_unknown", "provider_outcome_charged", "provider_deadline_charged",
+                "provider_unparseable_charged", "provider_timeout_exhausted",
+                "unit_resource_exhausted",
+            }:
                     raise
                 self._diagnose(request_id, model, {"cause": "transport_error"}, latency_ms=0, settled=False)
                 self._mark_request_unknown(request_id)

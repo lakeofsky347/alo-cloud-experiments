@@ -437,7 +437,16 @@ def _wall_clock(progress):
     return error
 
 
-def _read_sse(response, model, *, deadline_s, started, clock=None, aborted=None):
+class ProviderStreamIdle(TimeoutError):
+    """No stream bytes arrived within the idle budget. The total deadline still applies."""
+
+    def __init__(self, progress):
+        super().__init__("provider_stream_idle")
+        self.stream_progress = dict(progress)
+
+
+def _read_sse(response, model, *, deadline_s, started, clock=None, aborted=None,
+              idle_timeout_s=None):
     """Read SSE until ``[DONE]`` or the wall-clock deadline.
 
     ``deadline_s`` is the whole request, not the gap between bytes. A keepalive
@@ -446,27 +455,42 @@ def _read_sse(response, model, *, deadline_s, started, clock=None, aborted=None)
     after our abort is the deadline, not a completion. A wall-clock timeout
     carries bytes read, data chunks, the age of the last chunk, and whether
     reasoning text was seen. That does not change the timeout class.
+
+    ``idle_timeout_s`` is a gap with no bytes. It does not replace ``deadline_s``.
+    A stall raises ``ProviderStreamIdle`` with the same progress fields. The
+    caller still settles the held worst case: the provider may already have billed.
     """
     clock = clock or time.monotonic
     chunks = []
     bytes_read = 0
     data_chunks = 0
     last_chunk_at = None
+    last_byte_at = started
     saw_reasoning = False
 
     def progress():
         return _stream_progress(bytes_read, data_chunks, last_chunk_at, saw_reasoning, clock)
 
+    def idle_exceeded(now):
+        return (idle_timeout_s is not None
+                and now - last_byte_at >= float(idle_timeout_s) - DEADLINE_EPSILON_S)
+
     while True:
         if aborted is not None and aborted.get("value"):
             raise _wall_clock(progress())
-        remaining = deadline_s - (clock() - started)
+        now = clock()
+        remaining = deadline_s - (now - started)
+        if idle_exceeded(now):
+            raise ProviderStreamIdle(progress())
         if remaining <= DEADLINE_EPSILON_S:
             if aborted is not None:
                 aborted["value"] = True
             _abort_socket(response)
             raise _wall_clock(progress())
-        _arm_deadline(response, remaining)
+        wait = remaining
+        if idle_timeout_s is not None:
+            wait = min(remaining, float(idle_timeout_s) - (now - last_byte_at))
+        _arm_deadline(response, wait)
         try:
             raw = response.readline()
         except Exception:
@@ -474,15 +498,20 @@ def _read_sse(response, model, *, deadline_s, started, clock=None, aborted=None)
                 raise _wall_clock(progress()) from None
             if _past_deadline(started, clock, deadline_s):
                 raise _wall_clock(progress()) from None
+            if idle_exceeded(clock()):
+                raise ProviderStreamIdle(progress()) from None
             raise
         if aborted is not None and aborted.get("value"):
             raise _wall_clock(progress())
         if not raw:
             if _past_deadline(started, clock, deadline_s):
                 raise _wall_clock(progress())
+            if idle_exceeded(clock()):
+                raise ProviderStreamIdle(progress())
             break
         if isinstance(raw, (bytes, bytearray)):
             bytes_read += len(raw)
+        last_byte_at = clock()
         line = raw.decode("utf-8", errors="replace").strip()
         if not line or line.startswith(":"):
             continue
@@ -620,7 +649,7 @@ def _not_reached(request_sent):
 
 
 def staged_https_post(url, body, headers, *, connect_timeout_s, read_timeout_s, model,
-                       started=None, clock=None, connector=None):
+                       started=None, clock=None, connector=None, idle_timeout_s=None):
     """POST one streaming completion with separate connect and read timeouts.
 
     Connect uses ``connect_timeout_s``. After the socket exists, the read
@@ -685,7 +714,8 @@ def staged_https_post(url, body, headers, *, connect_timeout_s, read_timeout_s, 
             return _read_json_body(raw), status
         adapter = _ClientResponse(response, sock)
         parsed = _read_sse(
-            adapter, model, deadline_s=read_timeout_s, started=read_started, clock=clock)
+            adapter, model, deadline_s=read_timeout_s, started=read_started, clock=clock,
+            idle_timeout_s=idle_timeout_s)
         return parsed, status
     finally:
         if response is not None:
@@ -701,9 +731,14 @@ def staged_https_post(url, body, headers, *, connect_timeout_s, read_timeout_s, 
 
 def _exception_cause(error):
     reason = getattr(error, "reason", error) if isinstance(error, urllib.error.URLError) else error
-    # Every timeout this transport raises is the deadline we armed: the wall-clock
-    # check, or the socket timeout set to the time still left. That is a charged
-    # deadline, not an ambiguous provider result.
+    # A stream stall is not the total deadline. It is still a timeout we armed.
+    if isinstance(reason, ProviderStreamIdle) or (
+            isinstance(reason, BaseException) and getattr(reason, "args", None)
+            and reason.args[0] == "provider_stream_idle"):
+        return "provider_stream_idle"
+    # Every other timeout this transport raises is the deadline we armed: the
+    # wall-clock check, or the socket timeout set to the time still left. That
+    # is a charged deadline, not an ambiguous provider result.
     if isinstance(reason, (TimeoutError, socket.timeout)):
         return "deadline_timeout"
     if isinstance(reason, (ConnectionResetError, BrokenPipeError, ConnectionAbortedError)):
@@ -782,7 +817,7 @@ class OpenAICompatibleTransport:
         self.last_http_status = None
 
     def complete_for_model(self, model, messages, *, max_tokens=4096, timeout_s=None,
-                           started=None, clock=None, reasoning_budget=None):
+                           started=None, clock=None, reasoning_budget=None, idle_timeout_s=None):
         if model not in MODEL_POOL or model not in POOL_ENDPOINTS:
             raise PilotStopped("model_outside_pool")
         env_name, url, auth = POOL_ENDPOINTS[model]
@@ -818,7 +853,7 @@ class OpenAICompatibleTransport:
                         payload, status = staged_https_post(
                             url, body, headers, connect_timeout_s=self._connect_timeout_s,
                             read_timeout_s=limit, model=model, started=started, clock=clock,
-                            connector=self._connector)
+                            connector=self._connector, idle_timeout_s=idle_timeout_s)
                     except ProviderNotReached as error:
                         self.last_http_status = None
                         return _not_reached(error.request_sent)

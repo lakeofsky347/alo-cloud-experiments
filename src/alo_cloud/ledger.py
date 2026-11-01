@@ -179,6 +179,7 @@ INFRA_STOP_REASONS = frozenset({
     "provider_outcome_charged",
     "provider_outcome_unknown",
     "second_unknown_interruption",
+    "provider_timeout_exhausted",
 })
 
 
@@ -267,9 +268,11 @@ def requeue_interrupted(run_dir, unit_ids=()):
     Automatic selection is a terminal ``stopped`` row whose reason is an infra
     halt (another shard's unknown threshold or valve, ``tool_outcome_unknown``,
     a provider outcome that never returned a receipt, or an operator stop).
-    A ``blocked`` row left by ``second_unknown_interruption`` is the same class:
-    the one protocol restart was already spent on a provider unknown. ``--unit``
-    adds a recorded unit even when its reason is different. Requeueing a unit
+    A ``blocked`` row left by ``second_unknown_interruption`` or
+    ``second_timeout_interruption`` is the same class: the one protocol restart
+    was already spent on a provider unknown or a charged timeout. ``--unit``
+    adds a recorded unit even when its reason is different, including a blocked
+    timeout or unknown that automatic selection missed. Requeueing a unit
     also requeues recorded dependents that used
     it: the same task and arm's B1-self, and an M2 persist or learned-probe
     chain that hangs off it. ``unit_restarts.json`` is not modified. Request
@@ -290,8 +293,10 @@ def requeue_interrupted(run_dir, unit_ids=()):
         reason = row.get("reason")
         provider_unknown = (
             row.get("termination_reason") == "provider_unknown" and status in {"stopped", "blocked"})
-        second_unknown = status == "blocked" and reason == "second_unknown_interruption"
-        if (status == "stopped" and reason in INFRA_STOP_REASONS) or provider_unknown or second_unknown:
+        provider_block = status == "blocked" and reason in {
+            "second_unknown_interruption", "second_timeout_interruption",
+        }
+        if (status == "stopped" and reason in INFRA_STOP_REASONS) or provider_unknown or provider_block:
             selected[unit_id] = "reason"
     for unit_id in explicit:
         if unit_id in by_id:
@@ -348,11 +353,64 @@ def requeue_interrupted(run_dir, unit_ids=()):
     after = restart_counts(run_dir) if (run_dir / "unit_restarts.json").is_file() else {}
     if after != before:
         raise RuntimeError("unit_restarts_changed")
-    return {"requeued": requeued, "count": len(requeued), "restart_counts_unchanged": True}
+    outcome_epoch = current_outcome_epoch(run_dir)
+    if requeued:
+        outcome_epoch = begin_outcome_epoch(run_dir, reason="requeue-interrupted")["epoch"]
+    return {"requeued": requeued, "count": len(requeued), "restart_counts_unchanged": True,
+            "outcome_epoch": outcome_epoch}
 
 
 def _epoch_path(run_dir):
     return Path(run_dir) / "protocol_epoch.json"
+
+
+def _outcome_epoch_path(run_dir):
+    return Path(run_dir) / "progress" / "outcome_epoch.json"
+
+
+def _read_outcome_epoch(run_dir):
+    path = _outcome_epoch_path(run_dir)
+    if not path.is_file():
+        return 0
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return 0
+    epoch = value.get("epoch") if isinstance(value, dict) else None
+    if type(epoch) is not int or epoch < 0:
+        return 0
+    return epoch
+
+
+def current_outcome_epoch(run_dir):
+    """Gate epoch for unknown and blocked-fraction counts. Historical lines stay."""
+    with exclusive_lock(run_dir, "outcome_epoch"):
+        return _read_outcome_epoch(run_dir)
+
+
+def begin_outcome_epoch(run_dir, *, reason):
+    """Start a new gate epoch without deleting unknown lines or archiving units.
+
+    ``unknown_outcomes.jsonl`` keeps every line. New lines carry ``outcome_epoch``.
+    Counts for the unknown threshold and the blocked-fraction gate use only the
+    current epoch. Untagged lines belong to epoch 0. An audit row is appended to
+    ``progress/outcome_epochs.jsonl``. This is not ``new-epoch``: that command
+    archives the protocol generation and moves the unknown log aside.
+    """
+    if not isinstance(reason, str) or not reason.strip():
+        raise ValueError("outcome_epoch_reason_required")
+    run_dir = Path(run_dir)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    with exclusive_lock(run_dir, "outcome_epoch"):
+        epoch = _read_outcome_epoch(run_dir) + 1
+        path = _outcome_epoch_path(run_dir)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        body = {"epoch": epoch, "reason": reason.strip()}
+        path.write_text(json.dumps(body, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
+        audit = {"epoch": epoch, "reason": reason.strip()}
+        _append_text(run_dir / "progress" / "outcome_epochs.jsonl",
+                     json.dumps(audit, ensure_ascii=False, sort_keys=True) + "\n")
+        return body
 
 
 def current_epoch(run_dir):
@@ -618,8 +676,8 @@ def requeue_track(run_dir, benchmark, *, reason):
 def _parser():
     parser = argparse.ArgumentParser(description="Resolve an unknown hold or restart one unit.")
     parser.add_argument("command", choices=(
-        "resolve", "archive-finished", "new-epoch", "drain", "requeue-interrupted",
-        "requeue-track", "clear-halt"))
+        "resolve", "archive-finished", "new-epoch", "outcome-epoch", "drain",
+        "requeue-interrupted", "requeue-track", "clear-halt"))
     parser.add_argument("--run-dir", required=True)
     parser.add_argument("--request-id", default=None)
     parser.add_argument("--charge-microcny", type=int, default=None)
@@ -642,6 +700,16 @@ def main(argv=None):
         else:
             path = set_drain(args.run_dir)
             print(json.dumps({"drain": True, "path": path}, sort_keys=True))
+        return 0
+    if args.command == "outcome-epoch":
+        if not args.reason:
+            parser.error("--reason is required")
+        try:
+            result = begin_outcome_epoch(args.run_dir, reason=args.reason)
+        except ValueError as error:
+            print(str(error))
+            return 2
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
         return 0
     if args.command == "clear-halt":
         removed = clear_halt(args.run_dir)

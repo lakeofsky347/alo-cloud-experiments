@@ -18,6 +18,8 @@ CAUSES = frozenset({
     "vendor_error",
     "timeout",
     "deadline_timeout",
+    "provider_stream_idle",
+    "provider_not_reached",
     "connection_reset",
     "unparseable_success",
     "transport_error",
