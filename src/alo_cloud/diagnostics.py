@@ -78,9 +78,33 @@ def redact(value, secrets):
     return "[unsupported]"
 
 
+def _clean_stream_progress(value):
+    """The four stream-timeout counters, or None when the caller did not record any."""
+    if not isinstance(value, dict):
+        return None
+    bytes_read = value.get("bytes_read")
+    chunks = value.get("chunks")
+    age = value.get("last_chunk_age_s")
+    saw = value.get("saw_reasoning")
+    if type(bytes_read) is not int or isinstance(bytes_read, bool) or bytes_read < 0:
+        return None
+    if type(chunks) is not int or isinstance(chunks, bool) or chunks < 0:
+        return None
+    if age is not None and (isinstance(age, bool) or type(age) not in (int, float) or age < 0):
+        return None
+    if type(saw) is not bool:
+        return None
+    return {
+        "bytes_read": bytes_read,
+        "chunks": chunks,
+        "last_chunk_age_s": None if age is None else float(age),
+        "saw_reasoning": saw,
+    }
+
+
 def write_diagnostic(ledger, request_id, *, cause, http_status, vendor_code, vendor_message,
                      response, finish_reason, latency_ms, settled, model, unit_id,
-                     charged_timeout=False):
+                     charged_timeout=False, stream_progress=None):
     """Persist one redacted JSON file named ``<request_id>.json``."""
     if cause not in CAUSES:
         raise ValueError("diagnostic_cause_rejected")
@@ -102,6 +126,9 @@ def write_diagnostic(ledger, request_id, *, cause, http_status, vendor_code, ven
         "charged_timeout": bool(charged_timeout),
         "response": redact(response, secrets) if isinstance(response, dict) else None,
     }
+    progress = _clean_stream_progress(stream_progress)
+    if progress is not None:
+        body["stream_progress"] = progress
     path = diagnostics_directory(ledger) / f"{request_id}.json"
     temporary = path.with_suffix(".json.tmp")
     temporary.write_text(json.dumps(body, ensure_ascii=False, sort_keys=True, indent=2) + "\n",

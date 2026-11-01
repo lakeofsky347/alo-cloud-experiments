@@ -5,6 +5,7 @@ import pytest
 
 from alo_cloud.budget import BudgetLedger, BudgetStopped
 from alo_cloud.errors import PilotStopped
+from alo_cloud.freeze import PROVIDER_TIMEOUT_S
 from alo_cloud.ledger import requeue_interrupted
 from alo_cloud.providers import ProviderNotReached, staged_https_post
 from alo_cloud.r2 import R2_CONNECT_TIMEOUT_S, R2_READ_TIMEOUT_S
@@ -13,16 +14,13 @@ from tests.test_services import build, messages
 
 def test_r2_timeouts_stay_out_of_the_freeze_and_split_connect_from_read():
     assert R2_CONNECT_TIMEOUT_S == 15
-    assert R2_READ_TIMEOUT_S == {
-        "deepseek-flash": 300,
-        "mimo-v2.6-pro": 300,
-        "mimo-v2.6-flash": 180,
-        "glm-5.3-flash": 180,
-    }
+    assert R2_READ_TIMEOUT_S == PROVIDER_TIMEOUT_S
+    assert R2_READ_TIMEOUT_S is not PROVIDER_TIMEOUT_S
     from alo_cloud.r2 import r2_freeze_payload
     payload = r2_freeze_payload()
     assert "read_timeout" not in payload
     assert "connect_timeout" not in payload
+    assert "provider_timeout_s" not in payload
 
 
 class _Sock:
@@ -32,11 +30,18 @@ class _Sock:
     def settimeout(self, value):
         self.timeouts.append(value)
 
+    def shutdown(self, how):
+        return None
+
+    def close(self):
+        return None
+
 
 class _Lines:
-    def __init__(self, lines):
+    def __init__(self, lines, *, arm_on_last=False):
         self.status = 200
         self._lines = list(lines)
+        self.arm_on_last = arm_on_last
 
     def readline(self):
         if not self._lines:
@@ -44,15 +49,39 @@ class _Lines:
         line = self._lines.pop(0)
         if isinstance(line, BaseException):
             raise line
+        if self.arm_on_last and not self._lines and ScriptedHTTPS.clock is not None:
+            ScriptedHTTPS.clock.arm()
         return line
 
     def close(self):
         return None
 
 
+class JumpClock:
+    """Stays at zero until armed, then the next call is still zero and later calls jump."""
+
+    def __init__(self):
+        self.now = 0.0
+        self._skip = 0
+        self._jump = False
+
+    def arm(self):
+        self._skip = 1
+        self._jump = True
+
+    def __call__(self):
+        if self._jump:
+            if self._skip > 0:
+                self._skip -= 1
+                return self.now
+            return 1000.0
+        return self.now
+
+
 class ScriptedHTTPS:
     script = []
     made = []
+    clock = None
 
     def __init__(self, host, port, timeout=None):
         self.host = host
@@ -85,6 +114,8 @@ class ScriptedHTTPS:
                 b'data: {"choices":[{"delta":{"content":"x"},"finish_reason":null}]}\n',
                 socket_timeout(),
             ])
+        if self.mode == "sse_progress":
+            return _Lines(_progress_lines(), arm_on_last=True)
         return _Lines(self.mode)
 
     def close(self):
@@ -98,6 +129,12 @@ def socket_timeout():
 
 def _usage():
     return {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}
+
+
+def _progress_lines():
+    first = json.dumps({"choices": [{"delta": {"reasoning_content": "think"}, "finish_reason": None}]})
+    second = json.dumps({"choices": [{"delta": {"content": "x"}, "finish_reason": None}]})
+    return [f"data: {first}\n".encode(), f"data: {second}\n".encode()]
 
 
 def _ok_lines():
@@ -222,7 +259,30 @@ def test_bytes_then_timeout_stays_a_charged_deadline(tmp_path, monkeypatch):
         services.complete_for_model("glm-5.3-flash", messages(), max_tokens=128)
     assert ledger.request_rows()[0]["status"] == "settled"
     assert ledger.unit_usage("unit-a")["requests"] == 1
-    assert ScriptedHTTPS.made[0].sock.timeouts[0] == 180
+    assert ScriptedHTTPS.made[0].sock.timeouts[0] == PROVIDER_TIMEOUT_S["glm-5.3-flash"]
+
+
+def test_stream_timeout_records_progress_without_changing_the_charge(tmp_path, monkeypatch):
+    services, _seen, ledger = build(tmp_path, monkeypatch, [])
+    _install(services, ["sse_progress"], monkeypatch)
+    clock = JumpClock()
+    ScriptedHTTPS.clock = clock
+    services._clock = clock
+    lines = _progress_lines()
+    with pytest.raises(PilotStopped, match="provider_deadline_charged"):
+        services.complete_for_model("glm-5.3-flash", messages(), max_tokens=128)
+    row = ledger.request_rows()[0]
+    assert row["status"] == "settled"
+    assert row["held_microcny"] == 1000
+    record = json.loads((tmp_path / "diagnostics" / f"{row['id']}.json").read_text(encoding="utf-8"))
+    assert record["cause"] == "deadline_timeout"
+    assert record["charged_timeout"] is True
+    assert record["stream_progress"] == {
+        "bytes_read": sum(len(line) for line in lines),
+        "chunks": 2,
+        "last_chunk_age_s": 1000.0,
+        "saw_reasoning": True,
+    }
 
 
 def test_requeue_interrupted_selects_provider_unknown_units(tmp_path):

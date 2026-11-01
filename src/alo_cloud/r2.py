@@ -16,7 +16,7 @@ import sys
 
 from .budget import MICROCNY_PER_CNY
 from .contracts import G1_MAIN_MODEL, G1_STRONG_MODEL, MODEL_POOL
-from .freeze import G2_BASE_SEED, PlannedUnit, FREEZE_PATH
+from .freeze import G2_BASE_SEED, PROVIDER_TIMEOUT_S, PlannedUnit, FREEZE_PATH
 from .images import swebench_instance_image
 from .prices import PRICE_TABLE
 from .swebench_lite_frame import SWEBENCH_LITE_FRAME, SWEBENCH_LITE_REVISION
@@ -37,14 +37,10 @@ R2_PRO_SOFT_HALT_CNY = 48
 PRIOR_SPEND_CNY = {model: "0.000" for model in MODEL_POOL}
 PRIOR_SPEND_TOTAL_CNY = "0.000"
 USER_PREFERENCE = {"first_try": "deepseek-flash", "strong": "mimo-v2.6-pro"}
-# Infra only. Not part of the freeze payload. Read is the SSE body budget
-# after connect. Connect fails fast when no socket is established.
-R2_READ_TIMEOUT_S = {
-    "deepseek-flash": 300,
-    "mimo-v2.6-pro": 300,
-    "mimo-v2.6-flash": 180,
-    "glm-5.3-flash": 180,
-}
+# Infra only. Not part of the freeze payload. The read budget equals frozen
+# provider_timeout_s, measured from connect success. Connect fails fast when
+# no socket is established.
+R2_READ_TIMEOUT_S = dict(PROVIDER_TIMEOUT_S)
 R2_CONNECT_TIMEOUT_S = 15
 # Round-1 settled means, used only to print a cost estimate. Not a draw input.
 R1_CNY_PER_REQUEST = {
