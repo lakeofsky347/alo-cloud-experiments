@@ -67,7 +67,9 @@ def main(argv=None):
     if marker.is_file():
         print(marker.read_text(encoding="utf-8").strip())
         return 0
-    ledger = open_run_ledger(run_dir / "budget.sqlite3", "live")
+    # Not the study ledger. Shards open budget.sqlite3 with the r2 prior map,
+    # and a zero file created here first is a prior_spend_mismatch.
+    ledger = open_run_ledger(run_dir / "smoke-budget.sqlite3", "live")
     messages = [{"role": "user", "content": PROMPT}]
     services = StudyServices(
         run_dir / "smoke-state", ledger, unit="m2",

@@ -41,6 +41,22 @@ PROTOCOL_UNIT_LIMITS = {
 }
 
 
+def _read_timeouts(value):
+    """Per-model read budgets. None keeps the protocol table."""
+    if value is None:
+        return None
+    if not isinstance(value, dict) or not value:
+        raise PilotStopped("invalid_read_timeouts")
+    checked = {}
+    for model, seconds in value.items():
+        if model not in MODEL_POOL:
+            raise PilotStopped("invalid_read_timeouts")
+        if type(seconds) not in (int, float) or isinstance(seconds, bool) or not 0 < seconds <= 600:
+            raise PilotStopped("invalid_read_timeouts")
+        checked[model] = float(seconds)
+    return checked
+
+
 def _merge_limits(unit, limits, overrides=None):
     merged = dict(PROTOCOL_UNIT_LIMITS[unit])
     if overrides:
@@ -97,7 +113,7 @@ class StudyServices:
                  unit_id=None, request_ceiling=None, require_credentials=True, limits=None,
                  restart_count=0, protocol_epoch=0, shard_id="", infra_generation=0,
                  track_generation=0, budget_notice=None, limit_overrides=None,
-                 reasoning_budget=None):
+                 reasoning_budget=None, read_timeouts=None, connect_timeout_s=None):
         if unit not in PROTOCOL_UNIT_LIMITS:
             raise PilotStopped("unknown_protocol_unit")
         if not isinstance(ledger, BudgetLedger):
@@ -130,6 +146,12 @@ class StudyServices:
         if reasoning_budget is not None and (type(reasoning_budget) is not int or not 1 <= reasoning_budget <= 8192):
             raise PilotStopped("invalid_reasoning_budget")
         self.reasoning_budget = reasoning_budget
+        self.read_timeouts = _read_timeouts(read_timeouts)
+        if connect_timeout_s is not None and (
+                type(connect_timeout_s) not in (int, float) or isinstance(connect_timeout_s, bool)
+                or not 0 < connect_timeout_s <= 60):
+            raise PilotStopped("invalid_connect_timeout")
+        self.connect_timeout_s = None if connect_timeout_s is None else float(connect_timeout_s)
         self.transport_counts = {}
         self.pro_call_cap = None
         self._requests_by_model = {}
@@ -151,7 +173,7 @@ class StudyServices:
         self._require_credentials = bool(require_credentials)
         self.transport = OpenAICompatibleTransport(
             sender=sender, permit_network=permit_network, timeout_s=max(PROVIDER_TIMEOUT_S.values()),
-            require_credentials=require_credentials)
+            require_credentials=require_credentials, connect_timeout_s=self.connect_timeout_s)
         if sender is None and not permit_network:
             raise PilotStopped("provider_sender_required")
         self.sandbox = sandbox
@@ -275,6 +297,11 @@ class StudyServices:
             self.ledger.mark_unknown(request_id)
         except BudgetStopped as error:
             self._stop(error)
+
+    def _read_deadline(self, model):
+        table = self.read_timeouts if isinstance(self.read_timeouts, dict) else PROVIDER_TIMEOUT_S
+        seconds = table.get(model, PROVIDER_TIMEOUT_S[model])
+        return float(seconds)
 
     def _sent_max_tokens(self, model, max_tokens):
         """Leave room for reasoning and a visible answer on every pool model.
@@ -402,131 +429,150 @@ class StudyServices:
             if type(amount) is not int or not 1 <= amount <= self.per_request_microcny_ceiling:
                 raise PilotStopped("per_request_microcny_ceiling_required")
         token_hold, second_hold = self._worst_case_holds()
-        request_id = self._next_id("req")
-        self.last_request_id = request_id
-        deadline_s = PROVIDER_TIMEOUT_S[model]
-        try:
-            self.ledger.reserve(request_id, model, amount,
-                                payload_sha256=_digest(body), tokens=token_hold, seconds_ms=second_hold,
-                                **self._resource_kwargs())
-        except BudgetStopped as error:
-            self._stop(error)
-        # The hold is open now. Connect, stream and settle share this clock.
-        started = self._clock()
-        try:
-            outcome = self.transport.complete_for_model(
-                model, messages, max_tokens=sent_max_tokens,
-                timeout_s=deadline_s, started=started, clock=self._clock,
-                reasoning_budget=self.reasoning_budget)
-            elapsed_s = self._clock() - started
-            # Monotonic time, same clock as the transport. A return at the deadline
-            # is a charged timeout even when the read looks like a reset, an empty
-            # body, or a partial completion. A VM pause can make wall-clock age
-            # longer than this elapsed time; it does not change the class.
-            if elapsed_s >= deadline_s - DEADLINE_EPSILON_S:
-                outcome = {"kind": "unknown", "cause": "deadline_timeout", "http_status": None,
-                           "vendor_code": None, "vendor_message": None, "finish_reason": None,
-                           "response": None, "parsed": None}
-            elapsed_ms = max(0, int(round((self._clock() - started) * 1000)))
-            kind = outcome.get("kind")
-            if kind == "completion":
-                parsed = outcome["parsed"]
-                charge = self._usage_charge(model, parsed)
-                if charge is None:
-                    self._diagnose(request_id, model, outcome, latency_ms=elapsed_ms,
-                                   settled=False, cause="charge_rejected")
-                    self._mark_request_unknown(request_id)
-                    raise PilotStopped("provider_outcome_unknown")
-                settled = self.ledger.settle_known(
-                    request_id, charge, tokens=parsed["total_tokens"], seconds_ms=elapsed_ms)
-                if outcome.get("cause") == "empty_completion":
-                    self._diagnose(request_id, model, outcome, latency_ms=elapsed_ms, settled=True)
-                self._remember(parsed, charge)
-                self._requests_by_model[model] = self._requests_by_model.get(model, 0) + 1
-                self._note_outcome(request_id, model, "completion", charge)
-                self.event("model_settled", {"model": model, "request_id": request_id,
-                                              "input_tokens": parsed["input_tokens"],
-                                              "output_tokens": parsed["output_tokens"],
-                                              "reasoning_tokens": parsed["reasoning_tokens"],
-                                              "charge_microcny": charge,
-                                              "finish_reason": parsed.get("finish_reason")})
-                if settled.get("unit_resource_exhausted"):
-                    raise PilotStopped("unit_resource_exhausted")
-                return {"text": parsed["text"], "input_tokens": parsed["input_tokens"],
-                        "output_tokens": parsed["output_tokens"],
-                        "reasoning_tokens": parsed["reasoning_tokens"],
-                        "latency_ms": elapsed_ms, "cost_microcny": charge, "currency": "CNY",
-                        "finish_reason": parsed.get("finish_reason"),
-                        "length_stop": parsed["text"] == "" and parsed.get("finish_reason") == "length",
-                        "vendor_error": False}
-            if kind == "vendor_error":
-                settled = self.ledger.settle_known(request_id, 0, tokens=0, seconds_ms=elapsed_ms)
-                self._diagnose(request_id, model, outcome, latency_ms=elapsed_ms, settled=True)
-                self._note_outcome(request_id, model, "vendor_error", 0)
-                self._observed["model_requests"] += 1
-                self.event("model_settled", {"model": model, "request_id": request_id,
-                                              "input_tokens": 0, "output_tokens": 0,
-                                              "reasoning_tokens": None, "charge_microcny": 0,
-                                              "vendor_error": True})
-                if settled.get("unit_resource_exhausted"):
-                    raise PilotStopped("unit_resource_exhausted")
-                return {"text": "", "input_tokens": 0, "output_tokens": 0, "reasoning_tokens": None,
-                        "latency_ms": elapsed_ms, "cost_microcny": 0, "currency": "CNY",
-                        "finish_reason": None, "length_stop": False, "vendor_error": True}
-            self._mark_request_unknown(request_id)
-            cause = outcome.get("cause") or "transport_error"
+        deadline_s = self._read_deadline(model)
+        presend_released = 0
+        while True:
+            request_id = self._next_id("req")
+            self.last_request_id = request_id
             try:
-                self.ledger.resolve_unknown(
-                    request_id, None, reason=cause, worst_case=True)
-            except BudgetStopped:
-                self._diagnose(request_id, model, outcome, latency_ms=elapsed_ms, settled=False)
+                self.ledger.reserve(request_id, model, amount,
+                                    payload_sha256=_digest(body), tokens=token_hold, seconds_ms=second_hold,
+                                    **self._resource_kwargs())
+            except BudgetStopped as error:
+                self._stop(error)
+            # The hold is open now. A provably unsent call releases it and retries once.
+            started = self._clock()
+            try:
+                outcome = self.transport.complete_for_model(
+                    model, messages, max_tokens=sent_max_tokens,
+                    timeout_s=deadline_s, started=started, clock=self._clock,
+                    reasoning_budget=self.reasoning_budget)
+                elapsed_s = self._clock() - started
+                elapsed_ms = max(0, int(round(elapsed_s * 1000)))
+                if outcome.get("kind") == "not_reached" and outcome.get("request_sent") is False:
+                    self.ledger.release_not_sent(request_id)
+                    self._diagnose(request_id, model, outcome, latency_ms=elapsed_ms, settled=True)
+                    self._note_outcome(request_id, model, "not_sent", 0)
+                    if presend_released < 1:
+                        presend_released += 1
+                        continue
+                    return {"text": "", "input_tokens": 0, "output_tokens": 0, "reasoning_tokens": None,
+                            "latency_ms": elapsed_ms, "cost_microcny": 0, "currency": "CNY",
+                            "finish_reason": None, "length_stop": False, "vendor_error": False,
+                            "provider_not_reached": True}
+                # Monotonic time, same clock as the transport. A return at the deadline
+                # is a charged timeout even when the read looks like a reset, an empty
+                # body, or a partial completion. A failure before any response bytes
+                # stays not_reached: unsent is released above, and a request that may
+                # have been sent stays an unknown worst-case hold. Connect time is
+                # outside the read budget when the two timeouts are split.
+                read_limit = deadline_s
+                if self.connect_timeout_s is not None:
+                    read_limit = deadline_s + self.connect_timeout_s
+                if (outcome.get("kind") != "not_reached"
+                        and elapsed_s >= read_limit - DEADLINE_EPSILON_S):
+                    outcome = {"kind": "unknown", "cause": "deadline_timeout", "http_status": None,
+                               "vendor_code": None, "vendor_message": None, "finish_reason": None,
+                               "response": None, "parsed": None}
+                kind = outcome.get("kind")
+                if kind == "completion":
+                    parsed = outcome["parsed"]
+                    charge = self._usage_charge(model, parsed)
+                    if charge is None:
+                        self._diagnose(request_id, model, outcome, latency_ms=elapsed_ms,
+                                       settled=False, cause="charge_rejected")
+                        self._mark_request_unknown(request_id)
+                        raise PilotStopped("provider_outcome_unknown")
+                    settled = self.ledger.settle_known(
+                        request_id, charge, tokens=parsed["total_tokens"], seconds_ms=elapsed_ms)
+                    if outcome.get("cause") == "empty_completion":
+                        self._diagnose(request_id, model, outcome, latency_ms=elapsed_ms, settled=True)
+                    self._remember(parsed, charge)
+                    self._requests_by_model[model] = self._requests_by_model.get(model, 0) + 1
+                    self._note_outcome(request_id, model, "completion", charge)
+                    self.event("model_settled", {"model": model, "request_id": request_id,
+                                                  "input_tokens": parsed["input_tokens"],
+                                                  "output_tokens": parsed["output_tokens"],
+                                                  "reasoning_tokens": parsed["reasoning_tokens"],
+                                                  "charge_microcny": charge,
+                                                  "finish_reason": parsed.get("finish_reason")})
+                    if settled.get("unit_resource_exhausted"):
+                        raise PilotStopped("unit_resource_exhausted")
+                    return {"text": parsed["text"], "input_tokens": parsed["input_tokens"],
+                            "output_tokens": parsed["output_tokens"],
+                            "reasoning_tokens": parsed["reasoning_tokens"],
+                            "latency_ms": elapsed_ms, "cost_microcny": charge, "currency": "CNY",
+                            "finish_reason": parsed.get("finish_reason"),
+                            "length_stop": parsed["text"] == "" and parsed.get("finish_reason") == "length",
+                            "vendor_error": False}
+                if kind == "vendor_error":
+                    settled = self.ledger.settle_known(request_id, 0, tokens=0, seconds_ms=elapsed_ms)
+                    self._diagnose(request_id, model, outcome, latency_ms=elapsed_ms, settled=True)
+                    self._note_outcome(request_id, model, "vendor_error", 0)
+                    self._observed["model_requests"] += 1
+                    self.event("model_settled", {"model": model, "request_id": request_id,
+                                                  "input_tokens": 0, "output_tokens": 0,
+                                                  "reasoning_tokens": None, "charge_microcny": 0,
+                                                  "vendor_error": True})
+                    if settled.get("unit_resource_exhausted"):
+                        raise PilotStopped("unit_resource_exhausted")
+                    return {"text": "", "input_tokens": 0, "output_tokens": 0, "reasoning_tokens": None,
+                            "latency_ms": elapsed_ms, "cost_microcny": 0, "currency": "CNY",
+                            "finish_reason": None, "length_stop": False, "vendor_error": True}
+                self._mark_request_unknown(request_id)
+                cause = outcome.get("cause") or "transport_error"
+                try:
+                    self.ledger.resolve_unknown(
+                        request_id, None, reason=cause, worst_case=True)
+                except BudgetStopped:
+                    self._diagnose(request_id, model, outcome, latency_ms=elapsed_ms, settled=False)
+                    raise PilotStopped("provider_outcome_unknown") from None
+                charged_timeout = cause == "deadline_timeout"
+                charged_unparseable = cause == "unparseable_success"
+                self._diagnose(request_id, model, outcome, latency_ms=elapsed_ms, settled=True,
+                               charged_timeout=charged_timeout)
+                if charged_timeout:
+                    outcome_name = "deadline_timeout"
+                elif charged_unparseable:
+                    outcome_name = "unparseable_charged"
+                else:
+                    outcome_name = "unknown"
+                self._note_outcome(request_id, model, outcome_name, amount)
+                if charged_timeout:
+                    try:
+                        publish_timeout_counts(
+                            Path(self.ledger.path).parent, self.ledger,
+                            protocol_epoch=self.protocol_epoch)
+                    except OSError:
+                        pass
+                    raise PilotStopped("provider_deadline_charged")
+                if charged_unparseable:
+                    try:
+                        from .progress import publish_unparseable_counts
+                        publish_unparseable_counts(
+                            Path(self.ledger.path).parent, self.ledger,
+                            protocol_epoch=self.protocol_epoch)
+                    except OSError:
+                        pass
+                    raise PilotStopped("provider_unparseable_charged")
+                raise PilotStopped("provider_outcome_charged")
+            except PilotStopped as error:
+                if str(error) in {
+                    "provider_outcome_unknown", "provider_outcome_charged", "provider_deadline_charged",
+                    "provider_unparseable_charged", "unit_resource_exhausted",
+                }:
+                    raise
+                self._diagnose(request_id, model, {"cause": "transport_error"}, latency_ms=0, settled=False)
+                self._mark_request_unknown(request_id)
                 raise PilotStopped("provider_outcome_unknown") from None
-            charged_timeout = cause == "deadline_timeout"
-            charged_unparseable = cause == "unparseable_success"
-            self._diagnose(request_id, model, outcome, latency_ms=elapsed_ms, settled=True,
-                           charged_timeout=charged_timeout)
-            if charged_timeout:
-                outcome_name = "deadline_timeout"
-            elif charged_unparseable:
-                outcome_name = "unparseable_charged"
-            else:
-                outcome_name = "unknown"
-            self._note_outcome(request_id, model, outcome_name, amount)
-            if charged_timeout:
-                try:
-                    publish_timeout_counts(
-                        Path(self.ledger.path).parent, self.ledger,
-                        protocol_epoch=self.protocol_epoch)
-                except OSError:
-                    pass
-                raise PilotStopped("provider_deadline_charged")
-            if charged_unparseable:
-                try:
-                    from .progress import publish_unparseable_counts
-                    publish_unparseable_counts(
-                        Path(self.ledger.path).parent, self.ledger,
-                        protocol_epoch=self.protocol_epoch)
-                except OSError:
-                    pass
-                raise PilotStopped("provider_unparseable_charged")
-            raise PilotStopped("provider_outcome_charged")
-        except PilotStopped as error:
-            if str(error) in {
-                "provider_outcome_unknown", "provider_outcome_charged", "provider_deadline_charged",
-                "provider_unparseable_charged", "unit_resource_exhausted",
-            }:
-                raise
-            self._diagnose(request_id, model, {"cause": "transport_error"}, latency_ms=0, settled=False)
-            self._mark_request_unknown(request_id)
-            raise PilotStopped("provider_outcome_unknown") from None
-        except BudgetStopped:
-            self._diagnose(request_id, model, {"cause": "charge_rejected"}, latency_ms=0,
-                           settled=False, cause="charge_rejected")
-            raise PilotStopped("provider_outcome_unknown") from None
-        except Exception:
-            self._diagnose(request_id, model, {"cause": "transport_error"}, latency_ms=0, settled=False)
-            self._mark_request_unknown(request_id)
-            raise PilotStopped("provider_outcome_unknown") from None
+            except BudgetStopped:
+                self._diagnose(request_id, model, {"cause": "charge_rejected"}, latency_ms=0,
+                               settled=False, cause="charge_rejected")
+                raise PilotStopped("provider_outcome_unknown") from None
+            except Exception:
+                self._diagnose(request_id, model, {"cause": "transport_error"}, latency_ms=0, settled=False)
+                self._mark_request_unknown(request_id)
+                raise PilotStopped("provider_outcome_unknown") from None
 
     def resources(self):
         return {"model_requests": self._observed["model_requests"],

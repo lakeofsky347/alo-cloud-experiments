@@ -84,7 +84,18 @@ def test_length_stop_continues_and_an_empty_turn_continues():
     result = persistent_tool_loop(empty, "public task", messages, max_turns=3)
     assert result["status"] == "completed"
     assert result["summary"] == "after empty"
-    assert json.loads(messages[3]["content"])["public_tool_error"] == "empty_assistant_turn"
+    assert result["length_stops"] == 0
+    assert "Reply with ONE short action." in messages[3]["content"]
+    assert "empty_assistant_turn" not in messages[3]["content"]
+    missed = LoopServices([
+        {"text": "", "provider_not_reached": True},
+        '{"final":"after reach"}',
+    ])
+    messages = []
+    result = persistent_tool_loop(missed, "public task", messages, max_turns=3)
+    assert result["status"] == "completed"
+    assert result["summary"] == "after reach"
+    assert "not reached before the request was sent" in messages[3]["content"]
     rejected = LoopServices([
         {"text": "", "vendor_error": True},
         '{"final":"after error"}',
