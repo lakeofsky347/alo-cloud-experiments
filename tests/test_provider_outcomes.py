@@ -567,6 +567,97 @@ def test_charged_timeout_valves(tmp_path):
     assert above_cap["charged_timeout_microcny"] == 10_000_001
 
 
+def test_outcome_epoch_baselines_the_charged_timeout_cap(tmp_path):
+    from alo_cloud.contracts import MODEL_POOL, PER_MODEL_LIMIT_MICROCNY, STUDY_TOTAL_LIMIT_MICROCNY
+    from alo_cloud.ledger import requeue_interrupted
+    from alo_cloud.progress import assess_charged_timeouts, publish_timeout_counts
+
+    run = tmp_path / "run"
+    run.mkdir()
+    ledger = BudgetLedger.create(
+        run / "budget.sqlite3",
+        model_limits_microcny={model: PER_MODEL_LIMIT_MICROCNY for model in MODEL_POOL},
+        opening_commitments_microcny={model: 0 for model in MODEL_POOL},
+        max_requests=80, prior_requests=0, max_tokens=900_000, prior_tokens=0,
+        max_seconds_ms=1_200_000, prior_seconds_ms=0, max_tools=120, prior_tools=0,
+        total_limit_microcny=STUDY_TOTAL_LIMIT_MICROCNY, run_mode="dry-run")
+
+    def add(request_id, held, cause):
+        ledger.reserve(request_id, "mimo-v2.6-flash", held, payload_sha256="ab" * 32,
+                       tokens=10, seconds_ms=10, unit_id="unit-a", unit_request_cap=80)
+        ledger.settle_known(request_id, held, tokens=10, seconds_ms=10)
+        if cause:
+            dest = run / "diagnostics" / f"{request_id}.json"
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(json.dumps({
+                "schema": "alo-provider-diagnostic-v1", "request_id": request_id,
+                "cause": cause, "settled": True, "model": "mimo-v2.6-flash",
+            }), encoding="utf-8")
+
+    add("req-cap-1", 10_000_001, "deadline_timeout")
+    before = assess_charged_timeouts(ledger, protocol_epoch=0)
+    assert before["halt_reason"] == "charged_timeout_cny"
+    assert before["charged_timeout_since_baseline_microcny"] == 10_000_001
+
+    (run / "progress").mkdir(exist_ok=True)
+    (run / "progress" / "outcome_epoch.json").write_text(
+        json.dumps({"epoch": 2, "reason": "old"}) + "\n", encoding="utf-8")
+    old = assess_charged_timeouts(ledger, protocol_epoch=0)
+    assert old["outcome_epoch"] == 2
+    assert old["charged_timeout_baseline_microcny"] == 0
+    assert old["halt_reason"] == "charged_timeout_cny"
+
+    (run / "records.jsonl").write_text(json.dumps({
+        "unit_id": "m1.stopped", "status": "stopped", "reason": "operator_halt",
+    }) + "\n", encoding="utf-8")
+    requeued = requeue_interrupted(run)
+    assert requeued["count"] == 1
+    stored = json.loads((run / "progress" / "outcome_epoch.json").read_text(encoding="utf-8"))
+    assert stored["charged_timeout_baseline_microcny"] == 10_000_001
+    assert stored["charged_unparseable_baseline_microcny"] == 0
+    cleared = publish_timeout_counts(run, ledger, protocol_epoch=0)
+    assert cleared["halt_reason"] is None
+    assert cleared["outcome_epoch"] == stored["epoch"]
+    assert cleared["charged_timeout_microcny"] == 10_000_001
+    assert cleared["charged_timeout_since_baseline_microcny"] == 0
+
+    add("req-cap-2", 10_000_001, "deadline_timeout")
+    again = assess_charged_timeouts(ledger, protocol_epoch=0)
+    assert again["halt_reason"] == "charged_timeout_cny"
+    assert again["charged_timeout_microcny"] == 20_000_002
+    assert again["charged_timeout_since_baseline_microcny"] == 10_000_001
+
+    rate_run = tmp_path / "rate"
+    rate_run.mkdir()
+    rate_ledger = BudgetLedger.create(
+        rate_run / "budget.sqlite3",
+        model_limits_microcny={model: PER_MODEL_LIMIT_MICROCNY for model in MODEL_POOL},
+        opening_commitments_microcny={model: 0 for model in MODEL_POOL},
+        max_requests=80, prior_requests=0, max_tokens=900_000, prior_tokens=0,
+        max_seconds_ms=1_200_000, prior_seconds_ms=0, max_tools=120, prior_tools=0,
+        total_limit_microcny=STUDY_TOTAL_LIMIT_MICROCNY, run_mode="dry-run")
+    for index in range(40):
+        request_id = "req-rate-%02d" % index
+        cause = "deadline_timeout" if index < 11 else None
+        rate_ledger.reserve(request_id, "mimo-v2.6-flash", 1, payload_sha256="cd" * 32,
+                            tokens=1, seconds_ms=1, unit_id="unit-b", unit_request_cap=80)
+        rate_ledger.settle_known(request_id, 1, tokens=1, seconds_ms=1)
+        if cause:
+            dest = rate_run / "diagnostics" / f"{request_id}.json"
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(json.dumps({
+                "schema": "alo-provider-diagnostic-v1", "request_id": request_id,
+                "cause": cause, "settled": True, "model": "mimo-v2.6-flash",
+            }), encoding="utf-8")
+    (rate_run / "records.jsonl").write_text(json.dumps({
+        "unit_id": "m1.rate", "status": "stopped", "reason": "operator_halt",
+    }) + "\n", encoding="utf-8")
+    requeue_interrupted(rate_run)
+    rated = assess_charged_timeouts(rate_ledger, protocol_epoch=0)
+    assert rated["halt_reason"] == "charged_timeout_rate"
+    assert rated["charged_timeout_since_baseline_microcny"] == 0
+
+
 def test_timeout_rate_halts_the_schedule_once_the_window_is_full(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "urllib.request.urlopen", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("network")))
