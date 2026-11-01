@@ -25,6 +25,8 @@ from .errors import PilotStopped
 from .public_tools import ACTION_INSTRUCTIONS, PublicToolCodeExecutor
 from .native_bridge import ROLE_INSTRUCTIONS, SHARED_INSTRUCTIONS, _terminated
 from .policy import ConstrainedThompsonPolicy, POLICY_VERSION
+from .public_check import public_quality_signal, quality_from_signal
+from .public_tools import WORK_ORDER, coerce_actions, dispatch_action
 from .tool_loop import TOOL_LOOP_VERSION, persistent_tool_loop
 
 ROLE_ORDER = ("Planner", "Engineer", "Critic", "Verifier")
@@ -104,6 +106,8 @@ class FixedSingleAgent:
             raise PilotStopped("fixed_model_required")
         if self.fixed_model not in models:
             raise PilotStopped("fixed_model_outside_common_pool")
+        services.current_role = "g1"
+        services.current_node = "g1"
         return persistent_tool_loop(BoundModel(services, self.fixed_model),
             json.dumps(stage, ensure_ascii=False), self.messages, max_turns=self.max_turns)
 
@@ -167,8 +171,43 @@ class HeterogeneousGroupChat:
             llm_config=config(model), code_execution_config=False, human_input_mode="NEVER",
             is_termination_msg=_terminated) for name in ROLE_ORDER if name in self.role_models
             for model in [self.role_models[name]]]
+        if not isinstance(getattr(services, "g3_request_split", None), dict):
+            services.g3_request_split = {"manager_selection": 0, "role": 0, "dispatches": 0}
+
+        def _execute_role_text(role_name, text):
+            if not isinstance(text, str) or "[action_executed]" in text:
+                return text
+            found = coerce_actions(text)
+            if not found or not found.get("actions") or "tool" not in found["actions"][0]:
+                return text
+            action = found["actions"][0]
+            services.current_role = role_name
+            services.current_node = role_name
+            try:
+                result = dispatch_action(services, action)
+            except (ValueError, TypeError, KeyError) as error:
+                result = {"public_tool_error": type(error).__name__, "detail": str(error)[:500]}
+            split = services.g3_request_split
+            split["dispatches"] = split.get("dispatches", 0) + 1
+            extra = len(found["actions"]) - 1
+            note = f"\nignored {extra} extra actions" if extra else ""
+            rendered = json.dumps({"tool": action["tool"], "result": result}, ensure_ascii=False)
+            return text + "\n" + rendered + note + "\n[action_executed]"
+
         for agent in agents:
             agent.register_model_client(model_client_cls=client)
+            original = agent.generate_reply
+
+            def generate_reply(messages=None, sender=None, *args, _agent=agent, _original=original, **kwargs):
+                reply = _original(messages, sender, *args, **kwargs)
+                if isinstance(reply, str):
+                    return _execute_role_text(_agent.name, reply)
+                content = getattr(reply, "content", None)
+                if isinstance(content, str):
+                    reply.content = _execute_role_text(_agent.name, content)
+                return reply
+
+            agent.generate_reply = generate_reply
         workspace = native.UserProxyAgent(name="Workspace", human_input_mode="NEVER", llm_config=False,
             code_execution_config={"executor": PublicToolCodeExecutor(services, PublicActionExtractor()),
                                    "last_n_messages": 1},
@@ -337,8 +376,11 @@ class HeterogeneousALO:
                     messages.append({"role": "assistant", "content": reply["text"]})
                     return Completion(reply["text"], reply["input_tokens"], reply["output_tokens"], reply["latency_ms"])
                 messages = adapter.state.setdefault("worker_transcripts", {}).setdefault(active["role_id"], [])
+                services.current_role = active.get("role_id")
+                services.current_node = last.get("node_id")
                 result = persistent_tool_loop(BoundModel(services, self.model), prompt, messages,
-                    system=system, max_turns=adapter.config["max_turns"])
+                    system=system + "\n" + WORK_ORDER, max_turns=adapter.config["max_turns"])
+                last["termination"] = result.get("termination")
                 last.update(model=self.model, submission_status=result["status"],
                             tool_index_after=getattr(services, "tools", None))
                 return Completion(result["summary"], 0, 0, 0)
@@ -348,6 +390,27 @@ class HeterogeneousALO:
             quality_after = _quality(services)
             context = {key: last.get(key) for key in ("node_id", "role_id", "role_goal", "attempt",
                 "tool_index_before", "tool_index_after", "submission_status")}
+            signal = "unknown"
+            signal_fn = getattr(services, "public_signal", None)
+            if callable(signal_fn):
+                try:
+                    signal = signal_fn()
+                except Exception:
+                    signal = "unknown"
+            else:
+                changed = []
+                log = getattr(services, "edit_log", None)
+                if isinstance(log, list):
+                    for row in log:
+                        if isinstance(row, dict):
+                            changed.extend(path for path in row.get("paths") or [] if isinstance(path, str))
+                root = getattr(getattr(services, "workspace", None), "root", None)
+                if root is not None:
+                    signal = public_quality_signal(root, changed_paths=changed)
+            if signal not in {"pass", "fail", "unknown"}:
+                signal = "unknown"
+            last["public_signal"] = signal
+            signal_quality = quality_from_signal(signal)
             evidence = {"status": "unknown", "reason": "no_reliable_local_criterion"}
             hook = getattr(services, "local_criterion", None)
             if callable(hook):
@@ -363,6 +426,8 @@ class HeterogeneousALO:
             adapter.state["last_criterion_statuses"].append({"node_id": last["node_id"],
                 "role_id": role.role_id, "model_id": last["model"], "attempt": last["attempt"],
                 "local_contract_status": local_status})
+            if signal_quality is not None:
+                quality_after = signal_quality
             after = services.resources()
             before = last["resources_before"]
             input_tokens = _delta(after, before, "observed_input_tokens")
@@ -385,6 +450,20 @@ class HeterogeneousALO:
                 "global_quality_scope": "resulting_workspace_not_role_local_capability", **observation})
             # Core Boolean success describes execution/contract flow. The
             # instance-local stores above separately gate objective learning.
+            diff_nonempty = False
+            reader = getattr(services, "diff_nonempty", None)
+            if callable(reader):
+                try:
+                    diff_nonempty = bool(reader())
+                except Exception:
+                    diff_nonempty = False
+            node_id = str(last.get("node_id") or "")
+            role_id = str(role.role_id or "")
+            verifier = node_id in {"s2", "verify", "verifier"} or "verif" in role_id.lower()
+            if signal == "fail" and verifier:
+                return False
+            if diff_nonempty and not verifier:
+                return True
             return local_status == "pass" or (local_status == "unknown" and last.get("submission_status") == "completed")
 
         @contextmanager
@@ -412,16 +491,37 @@ class HeterogeneousALO:
             include_prior_output = True
 
             def decide(self, ctx):
-                if last.get("local_contract_status") == "unknown":
-                    return Decision("stop", reason="unknown_local_contract_no_failure_reassignment")
+                remaining = {}
+                try:
+                    remaining = services.budget_remaining(last.get("model")) or {}
+                except Exception:
+                    remaining = {}
+                budget_left = (isinstance(remaining, dict)
+                               and all(isinstance(remaining.get(key), (int, float)) and remaining.get(key) > 0
+                                       for key in ("requests", "cny")))
+                record = {"node_id": last.get("node_id"), "attempt": ctx.attempt,
+                          "public_signal": last.get("public_signal"), "budget_left": budget_left,
+                          "local_contract_status": last.get("local_contract_status"),
+                          "tried_models": list(ctx.tried_models)}
+                if last.get("public_signal") != "fail" or not budget_left:
+                    reason = "public_check_not_failed" if last.get("public_signal") != "fail" else "budget_exhausted"
+                    record["action"] = "stop"
+                    record["reason"] = reason
+                    services.event("alo_decision", record)
+                    adapter.state.setdefault("decision_records", []).append(record)
+                    return Decision("stop", reason=reason)
                 untried = [m for m in ctx.eligible_models if m not in ctx.tried_models]
                 if not untried:
+                    record.update(action="stop", reason="all_eligible_models_tried")
+                    services.event("alo_decision", record)
+                    adapter.state.setdefault("decision_records", []).append(record)
                     return Decision("stop", reason="all_eligible_models_tried")
-                # Same exception as first assignment and later nodes. run.py
-                # stops only this unit for unit_resource_exhausted, and halts
-                # the schedule for a real CNY-cap failure.
                 target, trace = policy.select(org, pool, untried, "remediation", (), "default-user", rng)
+                record.update(action="reassign", reason="constrained_ts_reassignment",
+                              target_model=target, trace=trace)
+                services.event("alo_decision", record)
                 services.event("alo_remediation_selection", trace)
+                adapter.state.setdefault("decision_records", []).append(record)
                 return Decision("reassign", target_model=target, reason="constrained_ts_reassignment")
 
         pool = {model: Bridge(model) for model in models}
@@ -429,8 +529,10 @@ class HeterogeneousALO:
         pool[planner.info.id] = planner
         try:
             task = json.dumps(stage, ensure_ascii=False) + (
-                "\nUse at most two implementation/validation DAG nodes. Every node must attempt "
-                "concrete workspace work and explicit public syntax/build/tests. Use task_description, "
+                "\n" + WORK_ORDER + " "
+                "Use exactly two DAG nodes named s1 and s2. s1 localizes and edits. "
+                "s2 depends on s1 and verifies with public commands. "
+                "Every node must attempt concrete workspace work. Use task_description, "
                 "goal and persistent_workspace scopes, and choose topics from coding, implementation, "
                 "testing, validation. All roles share public tools; do not request credentials.")
             result = run_task(org, pool, task, planner_id=planner.info.id, rng=rng,
@@ -453,9 +555,12 @@ class HeterogeneousALO:
             org_rng = rng.getstate()
             org.conn.close()
             if probe:
-                # Probe transcripts, assignments and RNG stay on the disposable
-                # organization. Checkpoint state keeps only the pre-probe learning
-                # fields plus an audit record; the caller sees run_stage's return.
+                # Learning fields stay as they were. The probe's own transcript is
+                # kept beside them so an interrupted probe can be read later.
+                probe_transcripts = {
+                    "worker_transcripts": copy.deepcopy(self.state.get("worker_transcripts", {})),
+                    "planner_messages": copy.deepcopy(self.state.get("planner_messages", [])),
+                }
                 mutated_observations = self.state["observations"] != observations_before
                 mutated_source = _db_digest(source_db) != source_digest
                 self.state["observations"] = retained["observations"]
@@ -466,6 +571,7 @@ class HeterogeneousALO:
                         self.state.pop(key, None)
                     else:
                         self.state[key] = retained[key]
+                self.state["probe_transcripts"] = probe_transcripts
                 try:
                     if mutated_observations:
                         raise PilotStopped("probe_updated_policy_observations")
