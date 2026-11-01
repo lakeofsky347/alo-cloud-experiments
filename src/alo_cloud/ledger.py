@@ -294,9 +294,11 @@ def requeue_interrupted(run_dir, unit_ids=()):
         reason = row.get("reason")
         provider_unknown = (
             row.get("termination_reason") == "provider_unknown" and status in {"stopped", "blocked"})
+        # A wrong image base is skipped, not requeued. swe_image_git_failed is
+        # still an infra block. skipped/unavailable rows are never selected here.
         provider_block = status == "blocked" and reason in {
             "second_unknown_interruption", "second_timeout_interruption",
-            "swe_image_base_commit_mismatch", "swe_image_git_failed",
+            "swe_image_git_failed",
         }
         if (status == "stopped" and reason in INFRA_STOP_REASONS) or provider_unknown or provider_block:
             selected[unit_id] = "reason"
@@ -675,11 +677,67 @@ def requeue_track(run_dir, benchmark, *, reason):
             "archive": str(dest) if dest is not None else ""}
 
 
+def mark_unavailable(run_dir, *, task_id=None, unit_ids=()):
+    """Append a skipped record over a blocked image-base mismatch.
+
+    The previous ``blocked`` line stays in ``records.jsonl``. The latest line
+    for that unit is ``skipped`` / ``swe_image_base_unavailable``, so the
+    blocked-fraction gate no longer counts it and ``requeue-interrupted`` does
+    not select it. An audit row is appended to ``progress/unavailable.jsonl``.
+    """
+    if not task_id and not unit_ids:
+        raise ValueError("mark_unavailable_target_required")
+    if task_id is not None and (not isinstance(task_id, str) or not task_id or "/" in task_id):
+        raise ValueError("mark_unavailable_task_rejected")
+    named = []
+    for unit_id in unit_ids or ():
+        _check_unit_id(unit_id)
+        named.append(unit_id)
+    named_set = set(named)
+    run_dir = Path(run_dir)
+    latest = {}
+    for row in _load_record_rows(run_dir):
+        latest[row["unit_id"]] = row
+    chosen = []
+    for unit_id, row in latest.items():
+        if row.get("status") != "blocked" or row.get("reason") != "swe_image_base_commit_mismatch":
+            continue
+        if task_id and row.get("task_id") != task_id:
+            continue
+        if named_set and unit_id not in named_set:
+            continue
+        chosen.append(row)
+    if not chosen:
+        return {"skipped": [], "count": 0, "task_id": task_id or ""}
+    records = []
+    audits = []
+    for row in chosen:
+        updated = dict(row)
+        updated["status"] = "skipped"
+        updated["reason"] = "swe_image_base_unavailable"
+        updated["termination_reason"] = "skipped"
+        updated["unavailable_from"] = "swe_image_base_commit_mismatch"
+        records.append(json.dumps(updated, ensure_ascii=False, sort_keys=True))
+        audits.append(json.dumps({
+            "unit_id": row["unit_id"],
+            "task_id": row.get("task_id") or "",
+            "previous_status": row.get("status"),
+            "previous_reason": row.get("reason"),
+            "status": "skipped",
+            "reason": "swe_image_base_unavailable",
+        }, ensure_ascii=False, sort_keys=True))
+    with exclusive_lock(run_dir, "records"):
+        _append_text(run_dir / "records.jsonl", "".join(line + "\n" for line in records))
+        _append_text(run_dir / "progress" / "unavailable.jsonl", "".join(line + "\n" for line in audits))
+    return {"skipped": [row["unit_id"] for row in chosen], "count": len(chosen),
+            "task_id": task_id or ""}
+
+
 def _parser():
     parser = argparse.ArgumentParser(description="Resolve an unknown hold or restart one unit.")
     parser.add_argument("command", choices=(
         "resolve", "archive-finished", "new-epoch", "outcome-epoch", "drain",
-        "requeue-interrupted", "requeue-track", "clear-halt"))
+        "requeue-interrupted", "requeue-track", "clear-halt", "mark-unavailable"))
     parser.add_argument("--run-dir", required=True)
     parser.add_argument("--request-id", default=None)
     parser.add_argument("--charge-microcny", type=int, default=None)
@@ -689,6 +747,7 @@ def _parser():
     parser.add_argument("--restart-unit", default=None)
     parser.add_argument("--unit", action="append", default=[])
     parser.add_argument("--benchmark", default=None)
+    parser.add_argument("--task", default=None)
     return parser
 
 
@@ -708,6 +767,16 @@ def main(argv=None):
             parser.error("--reason is required")
         try:
             result = begin_outcome_epoch(args.run_dir, reason=args.reason)
+        except ValueError as error:
+            print(str(error))
+            return 2
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        return 0
+    if args.command == "mark-unavailable":
+        if not args.task and not args.unit:
+            parser.error("pass --task or --unit")
+        try:
+            result = mark_unavailable(args.run_dir, task_id=args.task, unit_ids=args.unit)
         except ValueError as error:
             print(str(error))
             return 2

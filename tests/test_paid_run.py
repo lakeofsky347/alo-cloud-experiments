@@ -526,7 +526,8 @@ def test_mode_only_binary_child_is_the_patch_base(tmp_path):
 
 def test_git_failure_is_not_reported_as_a_base_mismatch(tmp_path):
     from alo_cloud.errors import PilotStopped
-    from alo_cloud.ledger import requeue_interrupted
+    from alo_cloud.ledger import mark_unavailable, requeue_interrupted
+    from alo_cloud.run import blocked_fraction_exceeded
     from alo_cloud.workspace_prep import resolve_image_head
     def boom(argv):
         raise PilotStopped("workspace_prepare_failed")
@@ -535,13 +536,52 @@ def test_git_failure_is_not_reported_as_a_base_mismatch(tmp_path):
     run = tmp_path / "run"
     run.mkdir()
     rows = [
-        {"unit_id": "m1.sphinx.g1-main", "status": "blocked", "reason": "swe_image_base_commit_mismatch"},
-        {"unit_id": "m1.kept", "status": "completed", "reason": ""},
+        {"unit_id": f"m1.SWE-bench_Lite.sphinx-doc__sphinx-7686.{arm}.B0",
+         "task_id": "sphinx-doc__sphinx-7686", "status": "blocked",
+         "reason": "swe_image_base_commit_mismatch", "termination_reason": "blocked"}
+        for arm in ("g1-main", "g1-strong", "g2", "g3")
     ]
+    rows.append({"unit_id": "m1.kept", "task_id": "other", "status": "completed", "reason": ""})
     (run / "records.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
-    result = requeue_interrupted(run)
-    assert result["requeued"] == ["m1.sphinx.g1-main"]
-    assert "m1.sphinx.g1-main" not in (run / "records.jsonl").read_text(encoding="utf-8")
+    assert requeue_interrupted(run)["requeued"] == []
+    converted = mark_unavailable(run, task_id="sphinx-doc__sphinx-7686")
+    assert converted["count"] == 4
+    text = (run / "records.jsonl").read_text(encoding="utf-8")
+    assert text.count('"reason": "swe_image_base_commit_mismatch"') == 4
+    assert text.count('"reason": "swe_image_base_unavailable"') == 4
+    latest = {}
+    for line in text.splitlines():
+        row = json.loads(line)
+        latest[row["unit_id"]] = row
+    assert all(row["status"] == "skipped" and row["reason"] == "swe_image_base_unavailable"
+               for row in latest.values() if row["task_id"] == "sphinx-doc__sphinx-7686")
+    assert requeue_interrupted(run)["requeued"] == []
+    sample = list(latest.values()) + [{"unit_id": f"done-{index}", "status": "completed"} for index in range(11)]
+    assert blocked_fraction_exceeded(sample) is False
+
+
+def test_unreconciled_image_base_is_skipped_not_blocked(tmp_path, monkeypatch):
+    monkeypatch.setattr("urllib.request.urlopen", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("network")))
+    repo = tmp_path / "repo"
+    base = _git_commit(repo, "a.py", "print(1)\n")
+    (repo / "a.py").write_text("print(2)\n", encoding="utf-8")
+    subprocess.check_call(["git", "-C", str(repo), "add", "a.py"])
+    subprocess.check_call(["git", "-C", str(repo), "commit", "-q", "-m", "content"])
+    docker, _calls = _copying_docker(repo)
+    data = tmp_path / "data" / "SWE-bench_Lite"
+    data.mkdir(parents=True)
+    (data / "django__django-11583.json").write_text(json.dumps({
+        "repo": "django/django", "base_commit": base, "problem_statement": "public bug",
+    }), encoding="utf-8")
+    units = select_units("m1", arms=("g1-main",), tasks=("django__django-11583",))
+    rows = run_schedule(units[:1], tmp_path / "run", live=False, data_dir=tmp_path / "data",
+                        sender=dry_run_sender, image_seeder=docker)
+    assert rows[0]["status"] == "skipped"
+    assert rows[0]["reason"] == "swe_image_base_unavailable"
+    assert rows[0]["termination_reason"] == "skipped"
+    from alo_cloud.r2 import R2_IMAGE_BASE_UNAVAILABLE, r2_freeze_payload
+    assert "sphinx-doc__sphinx-7686" in R2_IMAGE_BASE_UNAVAILABLE
+    assert "swe_image_base_unavailable" not in r2_freeze_payload()
 
 
 def test_content_commit_on_base_is_rejected(tmp_path):
