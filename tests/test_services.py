@@ -343,7 +343,7 @@ def test_syntax_validator_uses_compile_and_ignores_unattributed_writes(tmp_path,
             assert secret not in rendered
         image_at = argv.index("example.invalid/alo:test")
         assert argv.index("--network=none") < image_at
-        assert argv[image_at + 1] == "python"
+        assert argv[image_at + 1] == "python3"
         return {"returncode": 0, "stdout": "ok", "stderr": ""}
 
     # The runner closure captures tmp_path before StudyServices creates the workspace.
@@ -376,11 +376,13 @@ def test_syntax_validator_uses_compile_and_ignores_unattributed_writes(tmp_path,
     assert (services.workspace.root / "sneak.py").is_file()
     assert services.local_criterion(role_id="n", model_id="m", output="", context={})["status"] == "unknown"
     assert calls and calls[0][1] == 5
-    with pytest.raises(ProtocolError, match="command_timeout"):
-        services.command(["python", "-c", "print(1)"], timeout_s=61)
+    clamped = services.command(["python", "-c", "print(1)"], timeout_s=61)
+    assert clamped["returncode"] == 0
+    assert calls[1][1] == 60
+    assert any("clamped" in warning for warning in services.tool_warnings)
     with pytest.raises(ProtocolError, match="unsupported_execute_language"):
         services.execute_code("ruby", "puts 1", timeout_s=5)
-    assert len(calls) == 1
+    assert len(calls) == 2
 
     bare, _seen, _ledger = build(tmp_path / "bare", monkeypatch, [])
     with pytest.raises(PilotStopped, match="sandbox_not_configured"):
@@ -417,7 +419,9 @@ def test_tool_loop_uses_the_metered_service(tmp_path, monkeypatch):
         chat('{"final":"submitted work"}', "mimo-v2.6-flash"),
     ])
     result = persistent_tool_loop(BoundModel(services, "mimo-v2.6-flash"), "public task", [], max_turns=2)
-    assert result == {"status": "completed", "summary": "submitted work"}
+    assert result["status"] == "completed"
+    assert result["summary"] == "submitted work"
+    assert result["termination"] == "final"
     assert len(seen) == 1
     assert services.resources()["observed_input_tokens"] == 3
     assert services.resources()["estimated_cost_cny"] == 1 / 1_000_000

@@ -10,7 +10,13 @@
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
-RUN_DIR=${ALO_RUN_DIR:-"$HOME/alo-m1-m2-run"}
+# r2 is a new batch. It does not resume an r1 run directory.
+BATCH=${ALO_BATCH:-r2}
+if [ "$BATCH" = "r2" ]; then
+  RUN_DIR=${ALO_RUN_DIR:-/workspace/alo-r2-run}
+else
+  RUN_DIR=${ALO_RUN_DIR:-"$HOME/alo-m1-m2-run"}
+fi
 DATA_DIR=${ALO_DATA_DIR:-"$RUN_DIR/public_tasks"}
 N=${NUM_SHARDS:-4}
 if [ -n "${PYTHON:-}" ]; then
@@ -30,7 +36,11 @@ if [ "$N" -lt 1 ]; then
   exit 2
 fi
 
-"$PY" -m alo_cloud.freeze --check
+if [ "$BATCH" = "r2" ]; then
+  "$PY" -m alo_cloud.r2 --check
+else
+  "$PY" -m alo_cloud.freeze --check
+fi
 if [ "${CLEAR_HALT:-}" = "1" ]; then
   "$PY" -m alo_cloud.ledger clear-halt --run-dir "$RUN_DIR"
   echo "Cleared schedule_halt.json because CLEAR_HALT=1."
@@ -41,7 +51,16 @@ if [ -f "$RUN_DIR/drain.json" ]; then
 fi
 "$PY" scripts/smoke_test.py --live --run-dir "$RUN_DIR"
 
-if [ ! -d "$DATA_DIR/SWE-bench_Lite" ] || [ ! -d "$DATA_DIR/ProgramBench" ]; then
+need_pb=1
+case "${ALO_BENCHMARKS:-}" in
+  SWE-bench|SWE-bench_Lite) need_pb=0 ;;
+esac
+if [ "$BATCH" = "r2" ] && [ "$need_pb" -eq 0 ]; then
+  if [ ! -d "$DATA_DIR/SWE-bench_Lite" ]; then
+    echo "Stage public task JSON at $DATA_DIR/SWE-bench_Lite/<task_id>.json"
+    exit 2
+  fi
+elif [ ! -d "$DATA_DIR/SWE-bench_Lite" ] || [ ! -d "$DATA_DIR/ProgramBench" ]; then
   echo "Stage public task JSON at $DATA_DIR/<track>/<task_id>.json"
   exit 2
 fi
@@ -56,10 +75,10 @@ run_study() {
   index=$2
   if [ -n "${ALO_BENCHMARKS:-}" ]; then
     "$PY" -m alo_cloud.run --study "$study" --live --run-dir "$RUN_DIR" \
-      --data-dir "$DATA_DIR" --shard "$index/$N" --benchmarks "$ALO_BENCHMARKS"
+      --data-dir "$DATA_DIR" --shard "$index/$N" --batch "$BATCH" --benchmarks "$ALO_BENCHMARKS"
   else
     "$PY" -m alo_cloud.run --study "$study" --live --run-dir "$RUN_DIR" \
-      --data-dir "$DATA_DIR" --shard "$index/$N"
+      --data-dir "$DATA_DIR" --shard "$index/$N" --batch "$BATCH"
   fi
 }
 

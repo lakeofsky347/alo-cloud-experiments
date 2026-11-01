@@ -62,7 +62,9 @@ def test_settled_tool_exception_returns_to_the_agent(tmp_path, monkeypatch):
     assert "Traceback" in recorded["vendor_message"]
     assert secret not in json.dumps(recorded)
     result = persistent_tool_loop(BoundModel(services, "mimo-v2.6-flash"), "public task", [], max_turns=3)
-    assert result == {"status": "completed", "summary": "submitted work"}
+    assert result["status"] == "completed"
+    assert result["summary"] == "submitted work"
+    assert result["termination"] == "final"
     assert len(seen) == 2
 
     units = _b0_pair()

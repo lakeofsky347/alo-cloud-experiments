@@ -48,6 +48,51 @@ requirements-cloud.txt    轻量开发依赖
 [OpenAI 官方 Cloud environments 文档](https://learn.chatgpt.com/docs/environments/cloud-environments)。
 环境准备与发布、软件测试、原生评分接受、正式冻结和真实采集分别判定。
 
+## Round 2 runbook
+
+r2 is a new batch. It is not comparable with round 1 and must not be pooled with r1 scores, records, or ledgers. The model request name stays `deepseek-flash`. Endpoints stay the mainland-China pay-as-you-go URLs. The ledger is still cumulative: 50 CNY per model, 200 CNY total. `mimo-v2.6-pro` also soft-halts at 48 CNY between units. The freeze is [docs/protocol_freeze_r2.md](docs/protocol_freeze_r2.md).
+
+Use a fresh run directory. Do not point r2 at an r1 run directory.
+
+```sh
+export ALO_RUN_DIR=/workspace/alo-r2-run
+export ALO_BATCH=r2
+python -m alo_cloud.r2 --check
+python scripts/replay_transport.py
+```
+
+Pre-pull the instance images for the tasks that were not in the round-1 SWE schedule:
+
+```sh
+python -m alo_cloud.r2 --images | xargs -n 1 docker pull
+```
+
+Scored collection is SWE-bench only. ProgramBench stays out of this run. Four shards, clearing a stale halt:
+
+```sh
+CLEAR_HALT=1 NUM_SHARDS=4 ALO_BENCHMARKS=SWE-bench ALO_BATCH=r2 ALO_RUN_DIR=/workspace/alo-r2-run bash scripts/run_sharded.sh
+```
+
+`ALO_BATCH` defaults to `r2` and the default run directory for that batch is `/workspace/alo-r2-run`. Stage public task JSON at `$ALO_RUN_DIR/public_tasks/SWE-bench_Lite/<task_id>.json` before the live command. The optional ProgramBench smoke is not part of the scored schedule:
+
+```sh
+python -m alo_cloud.run --pb-smoke --dry-run --run-dir /tmp/alo-r2-pb-smoke
+```
+
+That unit is `kisielk__errcheck.dacab89`, `g1-main`, B0, 40 requests.
+
+Cost estimate from the frozen caps and the round-1 mean CNY per request (deepseek 0.009, mimo-flash 0.005, glm 0.015, mimo-pro 0.0335). G1 calls are pinned. One G2 request per unit is the planner on `deepseek-flash` and the rest is split evenly. G3 splits each cap evenly across the four roles. This split is not fit to round-1 scores.
+
+| Model | Requests | CNY |
+| --- | ---: | ---: |
+| `deepseek-flash` | 818 | 7.362 |
+| `mimo-v2.6-flash` | 2042 | 10.210 |
+| `glm-5.3-flash` | 730 | 10.950 |
+| `mimo-v2.6-pro` | 1466 | 49.111 |
+| total |  | 77.633 |
+
+The pro figure is above the 48 CNY soft halt and under the 50 CNY hard cap. The ten G1-strong M2 reference units run last (160 requests, about 5.4 CNY) so that stop cuts them first.
+
 ## 继续实现的原则
 
 G1 固定单模型、G2 ALO、G3 原生 GroupChat 的定义保持独立；G2／G3 使用

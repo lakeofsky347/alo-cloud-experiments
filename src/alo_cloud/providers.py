@@ -73,7 +73,10 @@ def messages_contain_credential(model, messages):
         key = None
 
 
-def request_body(model, messages, max_tokens):
+REASONING_BUDGET_MAX = 8192
+
+
+def request_body(model, messages, max_tokens, *, reasoning_budget=None):
     """Chat-completions JSON. No key and no sampling freeze.
 
     MiMo's published field is ``max_completion_tokens`` and already includes
@@ -93,6 +96,12 @@ def request_body(model, messages, max_tokens):
         body["max_tokens"] = max_tokens
     if model == "glm-5.3-flash":
         body["thinking"] = {"type": "enabled"}
+    # A numeric reasoning budget is sent only where the published body already
+    # has a thinking object we can extend without inventing a MiMo field.
+    # MiMo's max_completion_tokens already counts reasoning plus visible text.
+    if (model == "deepseek-flash" and type(reasoning_budget) is int
+            and 1 <= reasoning_budget <= REASONING_BUDGET_MAX):
+        body["thinking"] = {"type": "enabled", "budget_tokens": reasoning_budget}
     return body
 
 
@@ -582,13 +591,13 @@ class OpenAICompatibleTransport:
         self.last_http_status = None
 
     def complete_for_model(self, model, messages, *, max_tokens=4096, timeout_s=None,
-                           started=None, clock=None):
+                           started=None, clock=None, reasoning_budget=None):
         if model not in MODEL_POOL or model not in POOL_ENDPOINTS:
             raise PilotStopped("model_outside_pool")
         env_name, url, auth = POOL_ENDPOINTS[model]
         key = os.environ.get(env_name)
         try:
-            body = request_body(model, messages, max_tokens)
+            body = request_body(model, messages, max_tokens, reasoning_budget=reasoning_budget)
             encoded = json.dumps(body, ensure_ascii=False)
             if self._require_credentials:
                 if not _key_ok(key):

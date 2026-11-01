@@ -45,7 +45,9 @@ def test_final_completes_and_malformed_text_stays_in_the_transcript():
     services = LoopServices(["not json", '{"final":"submitted work"}'])
     messages = []
     result = persistent_tool_loop(services, "public task", messages, max_turns=2)
-    assert result == {"status": "completed", "summary": "submitted work"}
+    assert result["status"] == "completed"
+    assert result["summary"] == "submitted work"
+    assert result["termination"] == "final"
     feedback = json.loads(messages[3]["content"])
     assert feedback["error_phase"] == "response_validation"
     assert feedback["tool_dispatched"] is False
@@ -61,18 +63,27 @@ def test_provider_tool_calls_are_not_executed():
     assert services.calls == [("complete", 2, 4096)]
 
 
-def test_length_stop_ends_the_loop_and_an_empty_turn_continues():
-    stopped = LoopServices([{"text": "", "length_stop": True, "finish_reason": "length"}])
-    result = persistent_tool_loop(stopped, "public task", [], max_turns=3)
-    assert result == {"status": "failed", "summary": "length_stop"}
-    assert len(stopped.calls) == 1
+def test_length_stop_continues_and_an_empty_turn_continues():
+    stopped = LoopServices([
+        {"text": "", "length_stop": True, "finish_reason": "length"},
+        '{"final":"after length"}',
+    ])
+    messages = []
+    result = persistent_tool_loop(stopped, "public task", messages, max_turns=3)
+    assert result["status"] == "completed"
+    assert result["summary"] == "after length"
+    assert result["termination"] == "final"
+    assert result["length_stops"] == 1
+    assert any("Your output budget was used by reasoning" in message["content"] for message in messages)
+    assert len(stopped.calls) == 2
     empty = LoopServices([
         {"text": "", "finish_reason": "stop"},
         '{"final":"after empty"}',
     ])
     messages = []
     result = persistent_tool_loop(empty, "public task", messages, max_turns=3)
-    assert result == {"status": "completed", "summary": "after empty"}
+    assert result["status"] == "completed"
+    assert result["summary"] == "after empty"
     assert json.loads(messages[3]["content"])["public_tool_error"] == "empty_assistant_turn"
     rejected = LoopServices([
         {"text": "", "vendor_error": True},
@@ -81,6 +92,7 @@ def test_length_stop_ends_the_loop_and_an_empty_turn_continues():
     messages = []
     result = persistent_tool_loop(rejected, "public task", messages, max_turns=3)
     assert result["status"] == "completed"
+    assert result["termination"] == "final"
     assert json.loads(messages[3]["content"])["provider_error"] == "vendor_error"
 
 

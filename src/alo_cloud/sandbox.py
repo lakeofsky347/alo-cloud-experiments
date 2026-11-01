@@ -22,7 +22,15 @@ MAX_FILE_BYTES = 1_048_576
 MAX_SEARCH_CHARS = 10_000
 MAX_LISTED_FILES = 200
 MAX_READ_CHARS = 32_000
+MAX_SEARCH_FILE_BYTES = 2_000_000
+MAX_SEARCH_HITS = 100
+MAX_SEARCH_LINE_CHARS = 500
 MAX_TOOL_OUTPUT_CHARS = 1_048_576
+_BINARY_SUFFIXES = {
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".pdf", ".zip", ".gz", ".tgz",
+    ".bz2", ".xz", ".7z", ".whl", ".jar", ".so", ".o", ".a", ".pyc", ".pyo", ".exe",
+    ".bin", ".dylib", ".dll", ".class", ".wasm",
+}
 CREDENTIAL_ENV_NAMES = ("DEEPSEEK_API_KEY", "MIMO_API_KEY", "ZAI_API_KEY")
 DEFAULT_SANDBOX_MEMORY = "4g"
 DEFAULT_SANDBOX_PIDS = "512"
@@ -63,73 +71,179 @@ class Workspace:
         self.root.mkdir(parents=True, exist_ok=True)
         self.attributed = []
 
-    def _file_paths(self):
+    def _file_paths(self, under=None):
         found = []
         root = self.root.resolve()
-        for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
-            dirnames[:] = sorted(name for name in dirnames
-                                 if not (Path(dirpath) / name).is_symlink())
+        start = root if under is None else under
+        for dirpath, dirnames, filenames in os.walk(start, followlinks=False):
+            dirnames[:] = sorted(
+                name for name in dirnames
+                if name != ".git" and not (Path(dirpath) / name).is_symlink()
+            )
+            if Path(dirpath).name == ".git":
+                continue
             for name in sorted(filenames):
                 candidate = Path(dirpath) / name
                 if candidate.is_symlink():
                     continue
                 resolved = candidate.resolve()
                 if resolved.is_file() and resolved.is_relative_to(root):
-                    found.append(resolved.relative_to(root).as_posix())
+                    relative = resolved.relative_to(root).as_posix()
+                    if relative == ".git" or relative.startswith(".git/"):
+                        continue
+                    found.append(relative)
         return found
 
-    def list_files(self):
-        """Return workspace paths. A large tree is capped so it cannot fill the next prompt."""
-        found = self._file_paths()
+    def list_files(self, path=None):
+        """Return workspace paths. ``.git`` is omitted. ``path`` selects a subdirectory."""
+        start = None
+        if path:
+            relative, candidate = _relative(self.root, path)
+            if candidate.is_symlink():
+                raise ProtocolError("workspace_path_rejected")
+            if not candidate.exists():
+                raise ProtocolError("workspace_file_missing")
+            if candidate.is_file():
+                return [relative]
+            start = candidate
+        found = self._file_paths(start)
         if len(found) <= MAX_LISTED_FILES:
             return found
         return {"paths": found[:MAX_LISTED_FILES], "truncated": True,
                 "omitted": len(found) - MAX_LISTED_FILES}
 
-    def read_file(self, path):
-        _relative_path, candidate = _relative(self.root, path)
-        if candidate.is_symlink() or not candidate.is_file():
-            raise ProtocolError("workspace_file_missing")
+    def _read_text(self, candidate):
         try:
-            text = candidate.read_text(encoding="utf-8")
-            if len(text) > MAX_READ_CHARS:
-                return text[:MAX_READ_CHARS] + "\n...[truncated]"
-            return text
+            return candidate.read_text(encoding="utf-8")
         except (OSError, UnicodeError) as error:
             raise ProtocolError("workspace_file_unreadable") from error
 
-    def write_file(self, path, content):
+    def read_file(self, path, start_line=None, end_line=None):
+        _relative_path, candidate = _relative(self.root, path)
+        if candidate.is_symlink() or not candidate.is_file():
+            raise ProtocolError("workspace_file_missing")
+        text = self._read_text(candidate)
+        lines = text.splitlines()
+        total = len(lines)
+        if start_line is None and end_line is None:
+            if len(text) <= MAX_READ_CHARS:
+                return text
+            shown = text[:MAX_READ_CHARS]
+            shown_lines = shown.count("\n") + (0 if shown.endswith("\n") else 1)
+            return (shown + f"\n[truncated] showing about {shown_lines} lines of {total}. "
+                    "Pass start_line and end_line to page.")
+        start = 1 if start_line is None else start_line
+        end = total if end_line is None else end_line
+        if start > end:
+            raise ProtocolError("workspace_line_range_rejected")
+        chunk = lines[start - 1:end]
+        body = "\n".join(chunk)
+        shown_end = min(end, total)
+        if len(body) > MAX_READ_CHARS:
+            body = body[:MAX_READ_CHARS]
+            return (body + f"\n[truncated] lines {start}-{shown_end} of {total} exceed one page. "
+                    "Narrow start_line and end_line.")
+        if start > 1 or shown_end < total:
+            return body + f"\n[page] lines {start}-{shown_end} of {total}. Pass start_line and end_line to page."
+        return body
+
+    def write_file(self, path, content, append=False):
         if not isinstance(content, str):
             raise ProtocolError("workspace_content_must_be_text")
-        encoded = content.encode()
-        if len(encoded) > MAX_FILE_BYTES:
-            raise ProtocolError("workspace_content_too_large")
+        if not isinstance(append, bool):
+            raise ProtocolError("workspace_append_must_be_boolean")
         relative, candidate = _relative(self.root, path)
         candidate.parent.mkdir(parents=True, exist_ok=True)
         if candidate.is_symlink():
             raise ProtocolError("workspace_path_rejected")
+        if append and candidate.is_file():
+            try:
+                content = candidate.read_text(encoding="utf-8") + content
+            except (OSError, UnicodeError) as error:
+                raise ProtocolError("workspace_file_unreadable") from error
+        encoded = content.encode()
+        if len(encoded) > MAX_FILE_BYTES:
+            raise ProtocolError("workspace_content_too_large")
         try:
             candidate.write_text(content, encoding="utf-8")
         except OSError as error:
             raise SandboxUnknown("workspace_write_failed") from error
         self.attributed.append(relative)
-        return {"path": relative, "bytes": len(encoded)}
+        return {"path": relative, "bytes": len(encoded), "append": append}
+
+    def edit_file(self, path, old_str, new_str):
+        """Replace one exact match. Zero matches and repeated matches are errors."""
+        if not isinstance(old_str, str) or not isinstance(new_str, str) or old_str == "":
+            raise ProtocolError("edit_old_str_empty")
+        relative, candidate = _relative(self.root, path)
+        if candidate.is_symlink() or not candidate.is_file():
+            raise ProtocolError("workspace_file_missing")
+        text = self._read_text(candidate)
+        count = text.count(old_str)
+        if count == 0:
+            raise ProtocolError("edit_old_str_not_found")
+        if count > 1:
+            raise ProtocolError("edit_old_str_not_unique")
+        updated = text.replace(old_str, new_str, 1)
+        encoded = updated.encode()
+        if len(encoded) > MAX_FILE_BYTES:
+            raise ProtocolError("workspace_content_too_large")
+        try:
+            candidate.write_text(updated, encoding="utf-8")
+        except OSError as error:
+            raise SandboxUnknown("workspace_write_failed") from error
+        self.attributed.append(relative)
+        return {"path": relative, "replacements": 1, "bytes": len(encoded)}
+
+    def _search_skip(self, relative, candidate):
+        suffix = Path(relative).suffix.lower()
+        if suffix in _BINARY_SUFFIXES:
+            return True
+        try:
+            size = candidate.stat().st_size
+        except OSError:
+            return True
+        if size > MAX_SEARCH_FILE_BYTES:
+            return True
+        try:
+            sample = candidate.open("rb").read(8192)
+        except OSError:
+            return True
+        return b"\0" in sample
+
+    @staticmethod
+    def _test_path(relative):
+        parts = relative.split("/")
+        name = parts[-1]
+        if name.startswith("test_") or name.endswith("_test.py") or name in {"tests.py", "conftest.py"}:
+            return True
+        return any(part in {"tests", "test", "testing"} for part in parts[:-1])
 
     def search(self, text):
+        """Scan full file contents. Tests sort after other source. At most 100 hits."""
         if not isinstance(text, str) or not text or len(text) > MAX_SEARCH_CHARS:
             raise ProtocolError("workspace_search_text_rejected")
         matches = []
+        root = self.root.resolve()
         for relative in self._file_paths():
+            candidate = (root / relative).resolve()
+            if self._search_skip(relative, candidate):
+                continue
             try:
-                content = self.read_file(relative)
-            except ProtocolError:
+                content = candidate.read_text(encoding="utf-8")
+            except (OSError, UnicodeError):
                 continue
             for index, line in enumerate(content.splitlines(), start=1):
-                if text in line:
-                    matches.append({"path": relative, "line": index})
-                    if len(matches) >= 50:
-                        return matches
-        return matches
+                if text not in line:
+                    continue
+                shown = line if len(line) <= MAX_SEARCH_LINE_CHARS else line[:MAX_SEARCH_LINE_CHARS]
+                matches.append({"path": relative, "line": index, "text": shown,
+                                "_test": self._test_path(relative)})
+        matches.sort(key=lambda item: (item["_test"], item["path"], item["line"]))
+        trimmed = []
+        for item in matches[:MAX_SEARCH_HITS]:
+            trimmed.append({"path": item["path"], "line": item["line"], "text": item["text"]})
+        return trimmed
 
     def take_attributed(self):
         found = list(self.attributed)
@@ -354,6 +468,8 @@ class DockerSandbox:
         return command
 
     def command(self, argv, timeout_s):
+        if isinstance(argv, list) and argv and argv[0] in {"python", "py"}:
+            argv = ["python3", *argv[1:]]
         if not isinstance(argv, list) or not argv or any(not isinstance(item, str) for item in argv):
             raise ProtocolError("sandbox_argv_rejected")
         if any("\0" in item for item in argv):

@@ -28,6 +28,10 @@ The official scorer runs: chmod +x ./compile.sh && ./compile.sh
 If compile.sh fails to compile on a fresh checkout, the submission has failed.
 A Makefile or cargo project alone is not enough: compile.sh has to produce ./executable.
 Do not ship a prebuilt ./executable. The scorer deletes ./executable before it runs compile.sh.
+
+The image's ./executable may be owned by root. Do not try to overwrite it.
+Create ./build/ and make compile.sh write the program there (./build/executable or another file under ./build/).
+./build is the writable target. Use python3 when you invoke Python; the image may not have a python command.
 """
 
 PROGRAMBENCH_BUDGET_NOTICE = (

@@ -41,8 +41,16 @@ PROTOCOL_UNIT_LIMITS = {
 }
 
 
-def _merge_limits(unit, limits):
+def _merge_limits(unit, limits, overrides=None):
     merged = dict(PROTOCOL_UNIT_LIMITS[unit])
+    if overrides:
+        if not isinstance(overrides, dict):
+            raise PilotStopped("unit_limit_outside_protocol")
+        for key, value in overrides.items():
+            if key not in merged or type(value) is not int or value < 1:
+                raise PilotStopped("unit_limit_outside_protocol")
+            if value > merged[key]:
+                merged[key] = value
     if limits is None:
         return merged
     if not isinstance(limits, dict):
@@ -52,6 +60,15 @@ def _merge_limits(unit, limits):
             raise PilotStopped("unit_limit_outside_protocol")
         merged[key] = value
     return merged
+
+
+def _map_python_argv(argv):
+    """Use python3 inside the sandbox. ``python`` is not on every image PATH."""
+    if not isinstance(argv, list) or not argv or not isinstance(argv[0], str):
+        return argv
+    if argv[0] in {"python", "py"}:
+        return ["python3", *argv[1:]]
+    return argv
 
 
 def _digest(body):
@@ -79,7 +96,8 @@ class StudyServices:
                  sender=None, permit_network=False, sandbox=None, clock=None, public_quality=None,
                  unit_id=None, request_ceiling=None, require_credentials=True, limits=None,
                  restart_count=0, protocol_epoch=0, shard_id="", infra_generation=0,
-                 track_generation=0, budget_notice=None):
+                 track_generation=0, budget_notice=None, limit_overrides=None,
+                 reasoning_budget=None):
         if unit not in PROTOCOL_UNIT_LIMITS:
             raise PilotStopped("unknown_protocol_unit")
         if not isinstance(ledger, BudgetLedger):
@@ -102,13 +120,24 @@ class StudyServices:
             raise PilotStopped("invalid_protocol_epoch")
         if not isinstance(shard_id, str) or (shard_id and "/" not in shard_id):
             raise PilotStopped("invalid_shard")
-        self.limits = _merge_limits(unit, limits)
+        self.limits = _merge_limits(unit, limits, overrides=limit_overrides)
         self.shard_id = shard_id
         self.restart_count = restart_count
         self.infra_generation = infra_generation
         self.track_generation = track_generation
         self.budget_notice = budget_notice if isinstance(budget_notice, str) and budget_notice else None
         self.budget_notice_sent = False
+        if reasoning_budget is not None and (type(reasoning_budget) is not int or not 1 <= reasoning_budget <= 8192):
+            raise PilotStopped("invalid_reasoning_budget")
+        self.reasoning_budget = reasoning_budget
+        self.transport_counts = {}
+        self.length_stops = 0
+        self.edit_log = []
+        self.g3_request_split = {"manager_selection": 0, "role": 0, "dispatches": 0}
+        self.current_role = None
+        self.current_node = None
+        self.seal_patch = None
+        self.tool_warnings = []
         self.protocol_epoch = protocol_epoch
         self.unit = unit
         self.unit_id = unit_id
@@ -337,7 +366,7 @@ class StudyServices:
             raise PilotStopped("provider_credential_missing")
         if messages_contain_credential(model, messages):
             raise PilotStopped("provider_credential_in_prompt")
-        body = request_body(model, messages, sent_max_tokens)
+        body = request_body(model, messages, sent_max_tokens, reasoning_budget=self.reasoning_budget)
         if self._request_ceiling is None:
             amount = self.per_request_microcny_ceiling
         else:
@@ -362,7 +391,8 @@ class StudyServices:
         try:
             outcome = self.transport.complete_for_model(
                 model, messages, max_tokens=sent_max_tokens,
-                timeout_s=deadline_s, started=started, clock=self._clock)
+                timeout_s=deadline_s, started=started, clock=self._clock,
+                reasoning_budget=self.reasoning_budget)
             elapsed_s = self._clock() - started
             # Monotonic time, same clock as the transport. A return at the deadline
             # is a charged timeout even when the read looks like a reset, an empty
@@ -492,12 +522,23 @@ class StudyServices:
     def event(self, event, payload):
         self.events.append((event, payload))
 
-    def _validate_timeout(self, timeout_s):
+    def clamp_timeout(self, timeout_s):
+        """Clamp a tool timeout to the unit command limit and return warnings."""
         limit = self.limits["command_seconds"]
-        if isinstance(timeout_s, bool) or type(timeout_s) not in (int, float) or not 0 < timeout_s <= limit:
+        if isinstance(timeout_s, bool) or type(timeout_s) not in (int, float) or not timeout_s > 0:
             raise ProtocolError("command_timeout_outside_unit_limit")
+        warnings = []
+        if timeout_s > limit:
+            warnings.append(f"timeout_s clamped from {timeout_s} to {limit}")
+            self.tool_warnings.append(warnings[-1])
+            timeout_s = limit
         if timeout_s > self._wall_remaining():
             raise PilotStopped("command_timeout_exceeds_remaining_unit_seconds")
+        return timeout_s, warnings
+
+    def _validate_timeout(self, timeout_s):
+        timeout_s, _warnings = self.clamp_timeout(timeout_s)
+        return timeout_s
 
     def _close_tool(self, tool_id, started, error, *, sandbox_unknown):
         """Settle the time hold and store a redacted traceback. Return whether it settled.
@@ -524,11 +565,13 @@ class StudyServices:
             latency_ms=elapsed_ms, settled=settled, cause="tool_exception")
         return settled
 
-    def _use_tool(self, action):
+    def _use_tool(self, action, tool="tool"):
         self._ensure_not_blocked()
         self._ensure_wall_clock()
         token_hold, second_hold = self._worst_case_holds()
         del token_hold
+        before_count = len(self.workspace.attributed)
+        self._active_tool = tool
         tool_id = self._next_id("tool")
         try:
             self.ledger.reserve_tool(
@@ -561,22 +604,73 @@ class StudyServices:
         except BudgetStopped:
             raise PilotStopped("tool_outcome_unknown") from None
         self.tools += 1
+        self._record_edit(getattr(self, "_active_tool", "tool"), before_count)
         return result
 
-    def list_files(self):
-        return self._use_tool(self.workspace.list_files)
+    def _record_edit(self, tool, before_count):
+        paths = list(self.workspace.attributed[before_count:])
+        patch = ""
+        root = self.workspace.root
+        if (root / ".git").is_dir():
+            try:
+                from .collect import workspace_patch
+                base = getattr(self, "image_head", None) or ""
+                if isinstance(base, str) and base:
+                    patch = workspace_patch(root, base)
+            except Exception:
+                patch = ""
+        digest = hashlib.sha256(patch.encode("utf-8")).hexdigest()
+        self.edit_log.append({
+            "tool": tool,
+            "diff_sha256": digest,
+            "paths": paths,
+            "role": self.current_role,
+            "node": self.current_node,
+        })
+        sealer = self.seal_patch
+        if callable(sealer):
+            try:
+                sealer(patch)
+            except Exception:
+                self.tool_warnings.append("patch_seal_failed")
 
-    def read_file(self, path):
-        return self._use_tool(lambda: self.workspace.read_file(path))
+    def diff_nonempty(self):
+        if any(row.get("paths") for row in self.edit_log):
+            return True
+        root = self.workspace.root
+        if not (root / ".git").is_dir():
+            return False
+        try:
+            from .collect import workspace_patch
+            base = getattr(self, "image_head", None) or ""
+            if not isinstance(base, str) or not base:
+                return False
+            return bool(workspace_patch(root, base).strip())
+        except Exception:
+            return False
 
-    def write_file(self, path, content):
-        return self._use_tool(lambda: self.workspace.write_file(path, content))
+    def list_files(self, path=None):
+        if path is None:
+            return self._use_tool(self.workspace.list_files, tool="list_files")
+        return self._use_tool(lambda: self.workspace.list_files(path), tool="list_files")
+
+    def read_file(self, path, start_line=None, end_line=None):
+        return self._use_tool(
+            lambda: self.workspace.read_file(path, start_line=start_line, end_line=end_line),
+            tool="read_file")
+
+    def write_file(self, path, content, append=False):
+        return self._use_tool(lambda: self.workspace.write_file(path, content, append=append), tool="write_file")
+
+    def edit_file(self, path, old_str, new_str):
+        return self._use_tool(lambda: self.workspace.edit_file(path, old_str, new_str), tool="edit_file")
 
     def search(self, text):
-        return self._use_tool(lambda: self.workspace.search(text))
+        return self._use_tool(lambda: self.workspace.search(text), tool="search")
 
     def command(self, argv, timeout_s=30):
-        self._validate_timeout(timeout_s)
+        timeout_s = self._validate_timeout(timeout_s)
+        argv = _map_python_argv(argv)
         if not isinstance(argv, list) or not argv or any(not isinstance(item, str) for item in argv):
             raise ProtocolError("sandbox_argv_rejected")
         if self.sandbox is None:
@@ -587,11 +681,11 @@ class StudyServices:
         def run():
             return self.sandbox.command(argv, timeout_s)
 
-        return self._use_tool(run)
+        return self._use_tool(run, tool="command")
 
     def execute_code(self, language, code, timeout_s=30):
         if language in {"python", "py", "python3"}:
-            argv = ["python", "-c", code if isinstance(code, str) else ""]
+            argv = ["python3", "-c", code if isinstance(code, str) else ""]
         elif language in {"sh", "shell", "bash"}:
             argv = ["sh", "-c", code if isinstance(code, str) else ""]
         else:

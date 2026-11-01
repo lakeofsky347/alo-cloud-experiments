@@ -130,7 +130,7 @@ class ServiceCodeExecutor:
         for block in code_blocks:
             language = block.language.lower()
             if language in ("python", "py", "python3"):
-                argv = ["python", "-c", block.code]
+                argv = ["python3", "-c", block.code]
             elif language in ("sh", "shell", "bash"):
                 argv = ["sh", "-c", block.code]
             else:
@@ -172,12 +172,29 @@ class BoundModel:
     def complete(self, messages, *, max_tokens=4096):
         return self.services.complete_for_model(self.model, messages, max_tokens=max_tokens)
 
+def classify_group_turn(messages):
+    """Manager selection prompts are not role turns. Tool dispatches are separate."""
+    blob = ""
+    if isinstance(messages, list):
+        for message in messages:
+            if isinstance(message, dict) and isinstance(message.get("content"), str):
+                blob += message["content"]
+    if "role play game" in blob or "select the next" in blob.lower():
+        return "manager_selection"
+    return "role"
+
+
 def native_client(services):
     class HeterogeneousPilotModelClient:
         def __init__(self, config, **kwargs):
             self.delegate = _client_class(BoundModel(services, config["model"]))(config, **kwargs)
 
         def create(self, params):
+            messages = params.get("messages") if isinstance(params, dict) else None
+            kind = classify_group_turn(messages)
+            split = getattr(services, "g3_request_split", None)
+            if isinstance(split, dict):
+                split[kind] = split.get(kind, 0) + 1
             return self.delegate.create(params)
 
         def message_retrieval(self, response):

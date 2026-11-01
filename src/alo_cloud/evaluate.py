@@ -404,6 +404,11 @@ def _score_programbench(run_dir, repo):
     return result
 
 
+def counts_as_failure(status):
+    """A track that did not run is not a failed score."""
+    return status not in {"finished", "not_run", "not_executed"}
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Score sealed artifacts without calling a model.")
     parser.add_argument("--run-dir", required=True)
@@ -429,7 +434,7 @@ def main(argv=None):
         programbench_repo=args.programbench_repo, benchmarks=benchmarks)
     print(json.dumps(report, ensure_ascii=False, sort_keys=True))
     failed = [report["swebench"]["status"], report["programbench"]["status"]]
-    if args.execute and any(status not in {"finished", "not_run"} for status in failed):
+    if args.execute and any(counts_as_failure(status) for status in failed):
         return 2
     return 0
 
