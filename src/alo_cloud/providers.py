@@ -402,40 +402,87 @@ def _arm_deadline(response, seconds):
             return
 
 
+def _saw_reasoning(chunk):
+    """True when one SSE event carries non-empty reasoning text."""
+    if not isinstance(chunk, dict):
+        return False
+    choices = chunk.get("choices") or []
+    if not choices or not isinstance(choices[0], dict):
+        return False
+    choice = choices[0]
+    for key in ("delta", "message"):
+        body = choice.get(key)
+        if not isinstance(body, dict):
+            continue
+        text = body.get("reasoning_content")
+        if isinstance(text, str) and text:
+            return True
+    return False
+
+
+def _stream_progress(bytes_read, data_chunks, last_chunk_at, saw_reasoning, clock):
+    age = None if last_chunk_at is None else clock() - last_chunk_at
+    return {
+        "bytes_read": bytes_read,
+        "chunks": data_chunks,
+        "last_chunk_age_s": age,
+        "saw_reasoning": saw_reasoning,
+    }
+
+
+def _wall_clock(progress):
+    """Deadline timeout that still reports how far the stream got."""
+    error = TimeoutError("provider_wall_clock")
+    error.stream_progress = dict(progress)
+    return error
+
+
 def _read_sse(response, model, *, deadline_s, started, clock=None, aborted=None):
     """Read SSE until ``[DONE]`` or the wall-clock deadline.
 
     ``deadline_s`` is the whole request, not the gap between bytes. A keepalive
     or a trickle still counts. The socket timeout is pulled in to whatever time
     remains so a silent poll cannot outlive the deadline either. An empty read
-    after our abort is the deadline, not a completion.
+    after our abort is the deadline, not a completion. A wall-clock timeout
+    carries bytes read, data chunks, the age of the last chunk, and whether
+    reasoning text was seen. That does not change the timeout class.
     """
     clock = clock or time.monotonic
     chunks = []
+    bytes_read = 0
+    data_chunks = 0
+    last_chunk_at = None
+    saw_reasoning = False
+
+    def progress():
+        return _stream_progress(bytes_read, data_chunks, last_chunk_at, saw_reasoning, clock)
+
     while True:
         if aborted is not None and aborted.get("value"):
-            raise TimeoutError("provider_wall_clock")
+            raise _wall_clock(progress())
         remaining = deadline_s - (clock() - started)
         if remaining <= DEADLINE_EPSILON_S:
             if aborted is not None:
                 aborted["value"] = True
             _abort_socket(response)
-            raise TimeoutError("provider_wall_clock")
+            raise _wall_clock(progress())
         _arm_deadline(response, remaining)
         try:
             raw = response.readline()
         except Exception:
             if aborted is not None and aborted.get("value"):
-                raise TimeoutError("provider_wall_clock") from None
+                raise _wall_clock(progress()) from None
             if _past_deadline(started, clock, deadline_s):
-                raise TimeoutError("provider_wall_clock") from None
+                raise _wall_clock(progress()) from None
             raise
         if aborted is not None and aborted.get("value"):
-            raise TimeoutError("provider_wall_clock")
+            raise _wall_clock(progress())
         if not raw:
             if _past_deadline(started, clock, deadline_s):
-                raise TimeoutError("provider_wall_clock")
+                raise _wall_clock(progress())
             break
+        if isinstance(raw, (bytes, bytearray)):
+            bytes_read += len(raw)
         line = raw.decode("utf-8", errors="replace").strip()
         if not line or line.startswith(":"):
             continue
@@ -445,9 +492,14 @@ def _read_sse(response, model, *, deadline_s, started, clock=None, aborted=None)
         if data == "[DONE]":
             break
         try:
-            chunks.append(json.loads(data))
+            parsed = json.loads(data)
         except json.JSONDecodeError:
             return None
+        data_chunks += 1
+        last_chunk_at = clock()
+        if _saw_reasoning(parsed):
+            saw_reasoning = True
+        chunks.append(parsed)
     return assemble_stream(chunks, model)
 
 
@@ -628,7 +680,7 @@ def staged_https_post(url, body, headers, *, connect_timeout_s, read_timeout_s, 
                 raw = response.read()
             except Exception as error:
                 if _past_deadline(read_started, clock, read_timeout_s):
-                    raise TimeoutError("provider_wall_clock") from error
+                    raise _wall_clock(_stream_progress(0, 0, None, False, clock)) from error
                 raise
             return _read_json_body(raw), status
         adapter = _ClientResponse(response, sock)
@@ -686,10 +738,24 @@ def interpret_response(payload, model, *, http_status):
             "response": response, "parsed": parsed}
 
 
+def _attached_stream_progress(error):
+    progress = getattr(error, "stream_progress", None)
+    if not isinstance(progress, dict):
+        reason = getattr(error, "reason", None)
+        progress = getattr(reason, "stream_progress", None)
+    if not isinstance(progress, dict):
+        return None
+    return dict(progress)
+
+
 def _unknown_transport(error):
-    return {"kind": "unknown", "cause": _exception_cause(error), "http_status": None,
-            "vendor_code": None, "vendor_message": None, "finish_reason": None,
-            "response": None, "parsed": None}
+    outcome = {"kind": "unknown", "cause": _exception_cause(error), "http_status": None,
+               "vendor_code": None, "vendor_message": None, "finish_reason": None,
+               "response": None, "parsed": None}
+    progress = _attached_stream_progress(error)
+    if progress is not None:
+        outcome["stream_progress"] = progress
+    return outcome
 
 
 class OpenAICompatibleTransport:

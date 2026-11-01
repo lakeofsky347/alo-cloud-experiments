@@ -327,6 +327,7 @@ class StudyServices:
                 response=outcome.get("response"),
                 finish_reason=outcome.get("finish_reason"),
                 latency_ms=latency_ms, settled=settled, charged_timeout=charged_timeout,
+                stream_progress=outcome.get("stream_progress"),
             )
         except (OSError, ValueError):
             return
@@ -471,9 +472,12 @@ class StudyServices:
                     read_limit = deadline_s + self.connect_timeout_s
                 if (outcome.get("kind") != "not_reached"
                         and elapsed_s >= read_limit - DEADLINE_EPSILON_S):
+                    progress = outcome.get("stream_progress")
                     outcome = {"kind": "unknown", "cause": "deadline_timeout", "http_status": None,
                                "vendor_code": None, "vendor_message": None, "finish_reason": None,
                                "response": None, "parsed": None}
+                    if isinstance(progress, dict):
+                        outcome["stream_progress"] = progress
                 kind = outcome.get("kind")
                 if kind == "completion":
                     parsed = outcome["parsed"]
