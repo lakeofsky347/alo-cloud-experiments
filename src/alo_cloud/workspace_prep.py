@@ -33,6 +33,10 @@ def subprocess_git(argv):
     env = dict(os.environ)
     env["LC_ALL"] = "C"
     env["LANG"] = "C"
+    # docker cp keeps the image owner's uid. Git then refuses the copy as
+    # dubious ownership. The config is per command, not a global safe.directory.
+    if argv and argv[0] == "git":
+        argv = ["git", "-c", "safe.directory=*", *argv[1:]]
     completed = subprocess.run(argv, check=False, capture_output=True, text=True, env=env)
     # ``git diff A B`` exits 0 when it prints a diff. Exit 1 is also a
     # successful diff for wrappers that pass ``--exit-code``.
@@ -136,14 +140,18 @@ def _same_commit(left, right):
     return left == right or left.startswith(right) or right.startswith(left)
 
 
-def _git_stdout(run, dest, *args):
+def _git_stdout(run, dest, *args, strict=False):
     try:
         completed = run(["git", "-C", str(dest), *args])
-    except PilotStopped:
+    except PilotStopped as error:
+        if strict:
+            raise PilotStopped("swe_image_git_failed") from error
         return None
     code = getattr(completed, "returncode", 0)
     diff_with_changes = code == 1 and bool(args) and args[0] == "diff"
     if code not in (0, None) and not diff_with_changes:
+        if strict:
+            raise PilotStopped("swe_image_git_failed")
         return None
     return getattr(completed, "stdout", "") or ""
 
@@ -151,8 +159,9 @@ def _git_stdout(run, dest, *args):
 def _mode_only_parent_diff(text_summary, text_numstat):
     """True when HEAD^..HEAD changes file modes only.
 
-    ``git diff --summary`` lists mode changes. ``--numstat`` is zero on both
-    sides when the blob is unchanged. Any added or removed line blocks.
+    ``git diff --summary`` lists mode changes. ``--numstat`` is ``0`` when the
+    blob is unchanged, and ``-`` for a binary file whose blob is unchanged.
+    Any added or removed line blocks. A binary mode change is still mode-only.
     """
     for line in (text_numstat or "").splitlines():
         if not line.strip():
@@ -180,18 +189,20 @@ def resolve_image_head(dest, base_commit, *, git=None):
     if not _commit_ok(base_commit):
         return None
     run = git or subprocess_git
-    head = (_git_stdout(run, dest, "rev-parse", "HEAD") or "").strip()
+    head = (_git_stdout(run, dest, "rev-parse", "HEAD", strict=True) or "").strip()
     if not head:
-        return None
+        raise PilotStopped("swe_image_git_failed")
     if _same_commit(head, base_commit):
         return head
-    parent = (_git_stdout(run, dest, "rev-parse", "HEAD^") or "").strip()
+    parent = (_git_stdout(run, dest, "rev-parse", "HEAD^", strict=True) or "").strip()
+    if not parent:
+        raise PilotStopped("swe_image_git_failed")
     if not _same_commit(parent, base_commit):
         return None
-    summary = _git_stdout(run, dest, "diff", "--summary", "HEAD^", "HEAD")
-    numstat = _git_stdout(run, dest, "diff", "--numstat", "HEAD^", "HEAD")
+    summary = _git_stdout(run, dest, "diff", "--summary", "HEAD^", "HEAD", strict=True)
+    numstat = _git_stdout(run, dest, "diff", "--numstat", "HEAD^", "HEAD", strict=True)
     if summary is None or numstat is None:
-        return None
+        raise PilotStopped("swe_image_git_failed")
     if not _mode_only_parent_diff(summary, numstat):
         return None
     return head

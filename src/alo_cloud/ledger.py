@@ -180,6 +180,7 @@ INFRA_STOP_REASONS = frozenset({
     "provider_outcome_unknown",
     "second_unknown_interruption",
     "provider_timeout_exhausted",
+    "command_timeout_exceeds_remaining_unit_seconds",
 })
 
 
@@ -295,6 +296,7 @@ def requeue_interrupted(run_dir, unit_ids=()):
             row.get("termination_reason") == "provider_unknown" and status in {"stopped", "blocked"})
         provider_block = status == "blocked" and reason in {
             "second_unknown_interruption", "second_timeout_interruption",
+            "swe_image_base_commit_mismatch", "swe_image_git_failed",
         }
         if (status == "stopped" and reason in INFRA_STOP_REASONS) or provider_unknown or provider_block:
             selected[unit_id] = "reason"

@@ -48,6 +48,19 @@ from .state import export_learning_state, import_learning_state
 
 
 KEY_ENVS = ("DEEPSEEK_API_KEY", "MIMO_API_KEY", "ZAI_API_KEY")
+# One unit ran out of its own clock, request cap, or a single provider retry.
+# These must not write schedule_halt.json. A global CNY stop is BudgetStopped.
+UNIT_LOCAL_STOPS = frozenset({
+    "cumulative_request_or_model_limit",
+    "unit_resource_exhausted",
+    "unit_seconds_exhausted",
+    "command_timeout_exceeds_remaining_unit_seconds",
+    "provider_timeout_exhausted",
+    "provider_outcome_charged",
+    "provider_deadline_charged",
+    "provider_unparseable_charged",
+    "pro_share_cap",
+})
 FORBIDDEN_PUBLIC_KEYS = frozenset({
     "patch", "test_patch", "fail_to_pass", "pass_to_pass", "gold_patch", "reference_patch",
     "test_content", "test_blob", "expected_output", "hints_text_hidden",
@@ -1007,11 +1020,7 @@ def _execute_unit(unit, run_dir, ledger, *, live, data_dir, docker_image, sender
     except PilotStopped as error:
         reason = str(error)
         status = "stopped"
-        halt = reason not in {
-            "cumulative_request_or_model_limit", "unit_resource_exhausted",
-            "unit_seconds_exhausted", "provider_outcome_charged", "provider_deadline_charged",
-            "provider_unparseable_charged", "pro_share_cap",
-        }
+        halt = reason not in UNIT_LOCAL_STOPS
         if reason == "provider_timeout_exhausted":
             # Same messages were retried once inside the unit. That is not a restart.
             status = "stopped"

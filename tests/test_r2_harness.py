@@ -154,6 +154,22 @@ def test_r2_schedule_is_separate_from_r1():
     assert {unit.arm for unit in units if unit.study == "m1"} == {"g1-main", "g1-strong", "g2", "g3"}
     parts = [filter_r2_shard(units, index, 4) for index in range(4)]
     assert sorted(unit.unit_id for part in parts for unit in part) == sorted(unit.unit_id for unit in units)
+    m2 = [unit for unit in units if unit.study == "m2"]
+    m2_parts = [filter_r2_shard(m2, index, 4) for index in range(4)]
+    assert all(m2_parts)
+    assert max(len(part) for part in m2_parts) < len(m2)
+    for order_id in ("order-1", "order-2"):
+        chained = [unit for unit in m2 if unit.order_id == order_id and unit.m2_condition in {"persist", "learned"}]
+        homes = {next(index for index, part in enumerate(m2_parts) if unit in part) for unit in chained}
+        assert len(homes) == 1
+        home = m2_parts[homes.pop()]
+        position = {unit.unit_id: index for index, unit in enumerate(home)}
+        for unit in chained:
+            if unit.parent_unit_id:
+                assert position[unit.parent_unit_id] < position[unit.unit_id]
+    free = [unit for unit in m2 if not (unit.m2_condition in {"persist", "learned"})]
+    free_homes = {next(index for index, part in enumerate(m2_parts) if unit in part) for unit in free}
+    assert free_homes == {0, 1, 2, 3}
     text = Path("docs/protocol_freeze_r2.md").read_text(encoding="utf-8")
     assert f"freeze_sha256: {r2_freeze_sha256()}" in text
     assert "not comparable" in text

@@ -374,6 +374,43 @@ def test_blocking_close_cannot_keep_the_hold_open(tmp_path, monkeypatch):
     assert record["latency_ms"] <= 1000
 
 
+def test_unit_time_exhaustion_does_not_halt_the_schedule(tmp_path, monkeypatch):
+    from alo_cloud.adapters import HeterogeneousALO
+    from alo_cloud.run import UNIT_LOCAL_STOPS
+    monkeypatch.setattr(
+        "urllib.request.urlopen", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("network")))
+    assert "command_timeout_exceeds_remaining_unit_seconds" in UNIT_LOCAL_STOPS
+    assert "provider_timeout_exhausted" in UNIT_LOCAL_STOPS
+    assert "unit_seconds_exhausted" in UNIT_LOCAL_STOPS
+    assert "budget_infeasible_all_models" not in UNIT_LOCAL_STOPS
+    units = select_units("m1", arms=("g2",), tasks=("scikit-learn__scikit-learn-13584",))
+
+    def stop_unit(self, stage, services):
+        del self, stage, services
+        raise PilotStopped("command_timeout_exceeds_remaining_unit_seconds")
+
+    monkeypatch.setattr(HeterogeneousALO, "run_stage", stop_unit)
+    rows = run_schedule(units[:2], tmp_path / "time", live=False,
+                        sender=lambda *args: (_ for _ in ()).throw(AssertionError("send")))
+    assert [row["reason"] for row in rows] == [
+        "command_timeout_exceeds_remaining_unit_seconds",
+        "command_timeout_exceeds_remaining_unit_seconds",
+    ]
+    assert all(row["halt_schedule"] is False for row in rows)
+    assert not (tmp_path / "time" / "schedule_halt.json").exists()
+
+    def stop_timeout(self, stage, services):
+        del self, stage, services
+        raise PilotStopped("provider_timeout_exhausted")
+
+    monkeypatch.setattr(HeterogeneousALO, "run_stage", stop_timeout)
+    rows = run_schedule(units[:2], tmp_path / "retry", live=False,
+                        sender=lambda *args: (_ for _ in ()).throw(AssertionError("send")))
+    assert [row["reason"] for row in rows] == ["provider_timeout_exhausted", "provider_timeout_exhausted"]
+    assert all(row["halt_schedule"] is False and row["status"] == "stopped" for row in rows)
+    assert not (tmp_path / "retry" / "schedule_halt.json").exists()
+
+
 def test_unit_request_cap_does_not_halt_the_schedule(tmp_path, monkeypatch):
     from alo_cloud.adapters import HeterogeneousALO
     monkeypatch.setattr(
