@@ -81,17 +81,18 @@ python -m alo_cloud.run --pb-smoke --dry-run --run-dir /tmp/alo-r2-pb-smoke
 
 That unit is `kisielk__errcheck.dacab89`, `g1-main`, B0, 40 requests.
 
-Cost estimate from the frozen caps and the round-1 mean CNY per request (deepseek 0.009, mimo-flash 0.005, glm 0.015, mimo-pro 0.0335). G1 calls are pinned. One G2 request per unit is the planner on `deepseek-flash` and the rest is split evenly. G3 splits each cap evenly across the four roles. This split is not fit to round-1 scores.
+The r2 ledger is created with round 1's settled spend as its opening commitment, so the 50 CNY, 200 CNY, and 48 CNY Pro checks are cumulative. The frozen carry-in is deepseek 4.619, mimo-flash 3.732, glm 2.524, mimo-pro 16.955 (27.830 CNY). `ALO_PRIOR_LEDGER` can point at the round-1 `budget.sqlite3`; that file is read only, and a higher settled total replaces the frozen map. G1-strong M1 is 12 tasks, including the 6 round-1 tasks. G1-strong M2 references are not scheduled. In each G2 and G3 unit, Pro may make at most `floor(request_cap / 5)` billed calls.
 
-| Model | Requests | CNY |
-| --- | ---: | ---: |
-| `deepseek-flash` | 818 | 7.362 |
-| `mimo-v2.6-flash` | 2042 | 10.210 |
-| `glm-5.3-flash` | 730 | 10.950 |
-| `mimo-v2.6-pro` | 1466 | 49.111 |
-| total |  | 77.633 |
+Cost estimate from those caps and the round-1 mean CNY per request (deepseek 0.009, mimo-flash 0.005, glm 0.015, mimo-pro 0.0335), assuming every unit uses its full cap. This is not fit to round-1 scores. Pro's new headroom before the 48 CNY halt is 31.045 CNY. The full-cap Pro total is 26.733 CNY.
 
-The pro figure is above the 48 CNY soft halt and under the 50 CNY hard cap. The ten G1-strong M2 reference units run last (160 requests, about 5.4 CNY) so that stop cuts them first.
+| Model | Prior | Expected new | Expected cumulative | Worst-case new | Worst-case cumulative |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `deepseek-flash` | 4.619 | 8.022 | 12.641 | 22.482 | 27.101 |
+| `mimo-v2.6-flash` | 3.732 | 10.577 | 14.309 | 18.610 | 22.342 |
+| `glm-5.3-flash` | 2.524 | 12.050 | 14.574 | 36.150 | 38.674 |
+| `mimo-v2.6-pro` | 16.955 | 26.733 | 43.688 | 26.733 | 43.688 |
+
+Expected new spend together is 57.382 CNY (85.212 cumulative). The worst-case column is each model's own ceiling, not one combined bill. Pro's expected and worst case match because the one-in-five cap binds. Cumulative Pro, 43.688 CNY, is under the 48 CNY halt by 4.312 CNY.
 
 ## 继续实现的原则
 

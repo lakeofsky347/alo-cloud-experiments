@@ -139,7 +139,7 @@ def test_r2_schedule_is_separate_from_r1():
     assert len(m1) == 48
     assert [task_id for task_id, _stratum in R1_M1] == [task_id for task_id, _stratum in m1[:6]]
     strong = set(strong_task_ids())
-    assert len(strong) == 24
+    assert len(strong) == 12
     assert {task_id for task_id, _stratum in R1_M1} <= strong
     probes = probe_tasks()
     assert len(probes) == 6
@@ -149,8 +149,9 @@ def test_r2_schedule_is_separate_from_r1():
     assert {unit.phase for unit in units if unit.study == "m1"} == {"B0"}
     assert sum(1 for unit in units if unit.phase == "learning") == 16
     assert sum(1 for unit in units if unit.phase == "probe") == 24
-    assert sum(1 for unit in units if unit.phase == "reference") == 30
-    assert [unit.arm for unit in units if unit.phase == "reference"][-1] == "g1-strong"
+    assert sum(1 for unit in units if unit.phase == "reference") == 20
+    assert not any(unit.arm == "g1-strong" and unit.phase == "reference" for unit in units)
+    assert {unit.arm for unit in units if unit.study == "m1"} == {"g1-main", "g1-strong", "g2", "g3"}
     parts = [filter_r2_shard(units, index, 4) for index in range(4)]
     assert sorted(unit.unit_id for part in parts for unit in part) == sorted(unit.unit_id for unit in units)
     text = Path("docs/protocol_freeze_r2.md").read_text(encoding="utf-8")
@@ -161,8 +162,12 @@ def test_r2_schedule_is_separate_from_r1():
     assert manifest["comparable_with_r1"] is False
     assert manifest["freeze_sha256"] == r2_freeze_sha256()
     estimate = cost_estimate()
-    assert estimate["cny"]["mimo-v2.6-pro"] > 48
-    assert estimate["cny"]["mimo-v2.6-pro"] < 50
+    pro_worst = estimate["worst_case"]["cny_new"]["mimo-v2.6-pro"]
+    pro_expected = estimate["expected"]["cny_new"]["mimo-v2.6-pro"]
+    assert pro_worst <= 29
+    assert pro_expected <= pro_worst
+    assert estimate["worst_case"]["cny_cumulative"]["mimo-v2.6-pro"] < 48
+    assert estimate["prior_cny"]["mimo-v2.6-pro"] == 16.955
     assert smoke_unit().request_cap == 40
     assert smoke_unit().task_id == "kisielk__errcheck.dacab89"
 
@@ -281,6 +286,101 @@ def test_pb_smoke_dry_run_does_not_call_the_network(tmp_path, monkeypatch):
     assert rows[0]["request_cap"] == 40
     assert rows[0]["termination_reason"] == "final"
     assert rows[0]["track"] == "ProgramBench"
+
+
+def test_prior_spend_is_in_the_new_ledger_and_the_manifest(tmp_path, monkeypatch):
+    from alo_cloud.budget import BudgetLedger
+    from alo_cloud.r2 import frozen_prior_microcny
+    monkeypatch.delenv("ALO_PRIOR_LEDGER", raising=False)
+    unit = next(unit for unit in iter_r2_m1_units() if unit.arm == "g1-main")
+    rows = run_schedule([unit], tmp_path, live=False, sender=dry_run_sender, batch="r2")
+    assert rows[0]["status"] == "completed"
+    ledger = BudgetLedger(tmp_path / "budget.sqlite3")
+    opening = ledger.opening_microcny()
+    frozen = frozen_prior_microcny()
+    assert opening == frozen
+    assert opening["mimo-v2.6-pro"] == 16_955_000
+    assert sum(opening.values()) == 27_830_000
+    snap = ledger.snapshot()
+    assert snap["committed_or_reserved_microcny"]["mimo-v2.6-pro"] == 16_955_000
+    assert snap["remaining_microcny"]["mimo-v2.6-pro"] == 50_000_000 - 16_955_000
+    assert snap["total_committed_microcny"] >= 27_830_000
+    manifest = json.loads((tmp_path / "r2_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["prior_spend"]["frozen_microcny"]["mimo-v2.6-pro"] == 16_955_000
+    assert manifest["prior_spend"]["applied_microcny"] == frozen
+
+
+def test_prior_ledger_is_read_only_and_cannot_under_count(tmp_path, monkeypatch):
+    from alo_cloud.budget import BudgetLedger
+    from alo_cloud.contracts import MODEL_POOL
+    from alo_cloud.errors import PilotStopped
+    prior = tmp_path / "r1" / "budget.sqlite3"
+    prior.parent.mkdir()
+    ledger = BudgetLedger.create(
+        prior, model_limits_microcny={model: 50_000_000 for model in MODEL_POOL},
+        opening_commitments_microcny={model: 0 for model in MODEL_POOL},
+        max_requests=40, prior_requests=0, total_limit_microcny=200_000_000, run_mode="dry-run")
+    ledger.reserve("req-r1-pro", "mimo-v2.6-pro", 20_000_000, payload_sha256="ab" * 32,
+                   unit_id="old-unit", unit_request_cap=4)
+    ledger.settle_known("req-r1-pro", 20_000_000)
+    before = prior.stat().st_mtime_ns
+    monkeypatch.setenv("ALO_PRIOR_LEDGER", str(prior))
+    unit = next(unit for unit in iter_r2_m1_units() if unit.arm == "g1-main")
+    rows = run_schedule([unit], tmp_path / "r2", live=False, sender=dry_run_sender, batch="r2")
+    assert rows[0]["status"] == "completed"
+    assert prior.stat().st_mtime_ns == before
+    opened = BudgetLedger(tmp_path / "r2" / "budget.sqlite3").opening_microcny()
+    assert opened["mimo-v2.6-pro"] == 20_000_000
+    assert opened["deepseek-flash"] == 4_619_000
+    short = tmp_path / "short.sqlite3"
+    small = BudgetLedger.create(
+        short, model_limits_microcny={model: 50_000_000 for model in MODEL_POOL},
+        opening_commitments_microcny={model: 0 for model in MODEL_POOL},
+        max_requests=40, prior_requests=0, total_limit_microcny=200_000_000, run_mode="dry-run")
+    small.reserve("req-open", "mimo-v2.6-pro", 100, payload_sha256="cd" * 32,
+                  unit_id="open-unit", unit_request_cap=4)
+    monkeypatch.setenv("ALO_PRIOR_LEDGER", str(short))
+    with pytest.raises(PilotStopped, match="prior_ledger_unsettled"):
+        run_schedule([unit], tmp_path / "blocked", live=False, sender=dry_run_sender, batch="r2")
+
+
+def test_pro_share_cap_is_not_billed_and_the_soft_halt_is_cumulative(tmp_path, monkeypatch):
+    from alo_cloud.budget import BudgetLedger
+    from tests.test_services import build
+    monkeypatch.delenv("ALO_PRIOR_LEDGER", raising=False)
+    services, seen, ledger = build(tmp_path, monkeypatch, [
+        {"model": "mimo-v2.6-pro", "choices": [{"message": {"content": "ok"}}],
+         "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}},
+        {"model": "mimo-v2.6-pro", "choices": [{"message": {"content": "again"}}],
+         "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}},
+    ])
+    services.pro_call_cap = 1
+    first = services.complete_for_model("mimo-v2.6-pro", [{"role": "user", "content": "go"}])
+    assert first["text"] == "ok"
+    second = services.complete_for_model("mimo-v2.6-pro", [{"role": "user", "content": "go"}])
+    assert second["pro_share_cap"] is True
+    assert second["cost_microcny"] == 0
+    assert len(seen) == 1
+    assert ledger.snapshot()["requests"] == 1
+    assert services.budget_remaining("mimo-v2.6-pro")["requests"] == 0
+
+    calls = {"n": 0}
+
+    def sender(url, body, headers):
+        calls["n"] += 1
+        return dry_run_sender(url, body, headers)
+
+    strong = [unit for unit in iter_r2_m1_units() if unit.arm == "g1-strong"][:2]
+    run = tmp_path / "halt"
+    rows = run_schedule(
+        strong, run, live=False, sender=sender, batch="r2",
+        model_soft_halts={"mimo-v2.6-pro": 16_955_000 + 1})
+    assert len(rows) == 1
+    assert calls["n"] == 1
+    halt = json.loads((run / "schedule_halt.json").read_text(encoding="utf-8"))
+    assert halt["hard"] is False
+    assert halt["reason"] == "model_soft_halt:mimo-v2.6-pro"
+    assert BudgetLedger(run / "budget.sqlite3").opening_microcny()["mimo-v2.6-pro"] == 16_955_000
 
 
 def test_group_turn_split_and_probe_transcript_field():

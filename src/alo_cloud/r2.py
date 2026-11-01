@@ -8,6 +8,8 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
+import sqlite3
 import subprocess
 from pathlib import Path
 import sys
@@ -30,6 +32,24 @@ R2_M2_REFERENCE_REQUESTS = 16
 R2_M2_PROBE_REQUESTS = 12
 R2_STRONG_M1_COUNT = 24
 R2_PRO_SOFT_HALT_CNY = 48
+# G1-strong M1 is 12 tasks: the 6 round-1 tasks plus 6 drawn with DRAW_SEED.
+# 12 is the low end of the 12–16 range. A larger subset does not leave Pro
+# under the cumulative 48 CNY halt once round-1 spend is carried in.
+R2_STRONG_M1_COUNT = 12
+# Last-resort share cap. Even-split G2/G3 would still put Pro over the halt
+# after the subset shrink and after dropping G1-strong M2 references.
+# floor(request_cap / 5) is the loosest one-in-k rule whose full-cap Pro
+# total stays at or under 29 CNY of new spend.
+R2_PRO_G2_G3_CAP_DENOMINATOR = 5
+# Round-1 settled spend. Per-model figures are milli-CNY. Their sum is 27.830;
+# the operator total 27.830317 is the same amount before that rounding.
+PRIOR_SPEND_CNY = {
+    "deepseek-flash": "4.619",
+    "mimo-v2.6-flash": "3.732",
+    "glm-5.3-flash": "2.524",
+    "mimo-v2.6-pro": "16.955",
+}
+PRIOR_SPEND_TOTAL_CNY = "27.830317"
 # Round-1 settled means, used only to print a cost estimate. Not a draw input.
 R1_CNY_PER_REQUEST = {
     "deepseek-flash": 0.009,
@@ -132,7 +152,8 @@ def draw_r2_tasks():
     probe_ids = {instance_id for instance_id, _repo in new_probes}
     m1_pool = [(instance_id, repo) for instance_id, repo in eligible if instance_id not in probe_ids]
     m1_extra = stratified_sample(m1_pool, 42, DRAW_SEED, "m1-extra")
-    strong_extra = stratified_sample(m1_extra, 18, DRAW_SEED, "g1-strong")
+    strong_extra = stratified_sample(
+        m1_extra, R2_STRONG_M1_COUNT - len(R1_M1), DRAW_SEED, "g1-strong")
     return {"new_probes": new_probes, "m1_extra": m1_extra, "strong_extra": strong_extra}
 
 
@@ -225,10 +246,10 @@ def _learning_units(order_id, sequence_index):
 
 
 def iter_r2_m2_units():
-    """Learning, then non-strong references, then probes, then G1-strong references.
+    """Learning, then g1-main and g3 references, then probes.
 
-    Strong references are last so a mimo-pro soft halt cuts them before the
-    learning and probe units.
+    G1-strong M2 references are not scheduled. With round-1 Pro spend carried
+    in, those units do not fit under the 48 CNY cumulative soft halt.
     """
     learning = []
     last_persist = {}
@@ -261,12 +282,6 @@ def iter_r2_m2_units():
                     request_cap=R2_M2_PROBE_REQUESTS, order_id=order_id,
                     m2_condition=condition, parent_unit_id=parent,
                 )
-    for index, task_id in enumerate(references):
-        yield PlannedUnit(
-            study="m2", arm="g1-strong", track="SWE-bench_Lite", task_id=task_id,
-            stratum=_stratum_for(task_id), phase="reference", position=index,
-            seed=G2_BASE_SEED + 200 + index, request_cap=R2_M2_REFERENCE_REQUESTS,
-        )
 
 
 def iter_r2_units(study):
@@ -331,6 +346,86 @@ def filter_r2_shard(units, index, num_shards):
     return tuple(unit for unit in units if shard_of.get((unit.track, unit.task_id), 0) == index)
 
 
+def cny_text_to_micro(text):
+    """Milli-or-finer CNY text to microcny, without binary float rounding."""
+    if not isinstance(text, str) or text.count(".") != 1:
+        raise ValueError("prior_spend_cny")
+    whole, frac = text.split(".")
+    if not whole.isdigit() or not frac.isdigit() or not 1 <= len(frac) <= 6:
+        raise ValueError("prior_spend_cny")
+    return int(whole) * MICROCNY_PER_CNY + int(frac.ljust(6, "0"))
+
+
+def frozen_prior_microcny():
+    """Declared round-1 settled spend, keyed by request model name."""
+    found = {model: cny_text_to_micro(PRIOR_SPEND_CNY[model]) for model in MODEL_POOL}
+    if set(found) != set(MODEL_POOL):
+        raise ValueError("prior_spend_pool")
+    return found
+
+
+def pro_call_cap(unit):
+    """Maximum billed mimo-v2.6-pro calls in one unit. None means no extra cap."""
+    if getattr(unit, "arm", "") in {"g2", "g3"}:
+        return unit.request_cap // R2_PRO_G2_G3_CAP_DENOMINATOR
+    return None
+
+
+def read_settled_prior(path):
+    """Settled CNY totals from a ledger file. The file is opened read-only.
+
+    Opening commitments in that file are included. An unsettled request row
+    refuses the read so a partial r1 ledger cannot under-count the carry-in.
+    """
+    from .budget import SCHEMA
+    path = Path(path)
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("prior_ledger_unreadable")
+    uri = path.resolve().as_uri() + "?mode=ro"
+    conn = sqlite3.connect(uri, uri=True)
+    try:
+        conn.execute("PRAGMA query_only=ON")
+        schema = conn.execute("SELECT value FROM meta WHERE key='schema'").fetchone()
+        if schema is None or schema[0] != SCHEMA:
+            raise ValueError("prior_ledger_schema")
+        opening = json.loads(conn.execute("SELECT value FROM meta WHERE key='opening'").fetchone()[0])
+        rows = list(conn.execute("SELECT model, held, status FROM requests"))
+    finally:
+        conn.close()
+    if any(status != "settled" for _model, _held, status in rows):
+        raise ValueError("prior_ledger_unsettled")
+    totals = {model: int(opening.get(model, 0)) for model in MODEL_POOL}
+    for model, held, _status in rows:
+        if model not in totals:
+            raise ValueError("prior_ledger_model")
+        totals[model] += int(held)
+    return totals
+
+
+def resolve_prior_spend(environ=None):
+    """Frozen map, raised by ``ALO_PRIOR_LEDGER`` when that file settled more.
+
+    The applied total is never below the frozen map. A smaller file cannot
+    erase declared round-1 spend.
+    """
+    source = os.environ if environ is None else environ
+    frozen = frozen_prior_microcny()
+    raw_path = source.get("ALO_PRIOR_LEDGER") if source is not None else None
+    ledger_totals = None
+    if isinstance(raw_path, str) and raw_path.strip():
+        ledger_totals = read_settled_prior(raw_path.strip())
+    applied = dict(frozen)
+    if ledger_totals is not None:
+        for model in MODEL_POOL:
+            applied[model] = max(frozen[model], int(ledger_totals[model]))
+    return {
+        "frozen_microcny": frozen,
+        "applied_microcny": applied,
+        "ledger_path": raw_path.strip() if isinstance(raw_path, str) and raw_path.strip() else None,
+        "ledger_settled_microcny": ledger_totals,
+    }
+
+
 def r2_model_soft_halts():
     return {"mimo-v2.6-pro": R2_PRO_SOFT_HALT_CNY * MICROCNY_PER_CNY}
 
@@ -364,8 +459,22 @@ def r2_freeze_payload():
             "g2_planner": "deepseek-flash",
             "model_name_deepseek": "deepseek-flash",
         },
-        "budget_cny": {"per_model": 50, "total": 200, "opening_commitments": 0},
-        "soft_halt_cny": {"mimo-v2.6-pro": R2_PRO_SOFT_HALT_CNY, "hard": False, "when": "between_units"},
+        "budget_cny": {
+            "per_model": 50,
+            "total": 200,
+            "cumulative_with_r1": True,
+            "prior_spend_cny": dict(PRIOR_SPEND_CNY),
+            "prior_spend_total_cny": PRIOR_SPEND_TOTAL_CNY,
+        },
+        "soft_halt_cny": {
+            "mimo-v2.6-pro": R2_PRO_SOFT_HALT_CNY,
+            "hard": False,
+            "when": "between_units",
+            "includes_prior_spend": True,
+        },
+        "g1_strong_m1_count": R2_STRONG_M1_COUNT,
+        "g1_strong_m2_references": "dropped",
+        "pro_g2_g3_call_cap": "floor(request_cap/%d)" % R2_PRO_G2_G3_CAP_DENOMINATOR,
         "command_seconds": R2_COMMAND_SECONDS,
         "reasoning_budget_tokens": R2_REASONING_BUDGET,
         "request_caps": {
@@ -385,7 +494,7 @@ def r2_freeze_payload():
         "m1_extra": [instance_id for instance_id, _repo in drawn["m1_extra"]],
         "prices_cny_per_million_tokens": _prices_for_payload(),
         "parent_rule": "m1_b1_patch_only; m2_whitelist_statistics; missing_parent_blocks_chain",
-        "schedule_order": "m1_then_m2_learning_then_g1main_g3_references_then_probes_then_g1strong_references",
+        "schedule_order": "m1_then_m2_learning_then_g1main_g3_references_then_probes",
         "r1_freeze_doc": str(FREEZE_PATH.name),
     }
 
@@ -437,6 +546,7 @@ def r2_manifest(root=None):
         "task_ids_sha256": task_ids_sha256(),
         "swebench_lite_revision": SWEBENCH_LITE_REVISION,
         "draw_seed": DRAW_SEED,
+        "prior_spend": resolve_prior_spend(),
     }
 
 
@@ -455,39 +565,78 @@ def new_task_images():
     return tuple(swebench_instance_image(instance_id) for instance_id in ids)
 
 
+def _money(calls):
+    prior = {model: cny_text_to_micro(PRIOR_SPEND_CNY[model]) / MICROCNY_PER_CNY for model in MODEL_POOL}
+    new = {model: calls[model] * R1_CNY_PER_REQUEST[model] for model in MODEL_POOL}
+    cumulative = {model: new[model] + prior[model] for model in MODEL_POOL}
+    return {
+        "calls": calls,
+        "cny_new": new,
+        "cny_cumulative": cumulative,
+        "total_cny_new": sum(new.values()),
+        "total_cny_cumulative": sum(cumulative.values()),
+    }
+
+
 def cost_estimate():
-    """Per-model CNY from the frozen caps and the round-1 mean CNY per request.
+    """Full-cap CNY using the round-1 mean price per request, plus the r1 carry-in.
 
-    G1 calls are pinned. G2 counts one planner request on deepseek-flash and
-    splits the rest evenly across the four pool models. G3 splits the cap
-    evenly across the four roles. This is not fit to round-1 task scores.
+    Expected: G1 pinned; G2's planner call is deepseek-flash; other G2 calls and
+    every G3 call are split evenly, then Pro is clipped to floor(cap/5) and the
+    refused calls are split across the other three models. Worst case: each
+    model receives every flexible call it is allowed to receive. Pro's worst
+    case is its G1-strong calls plus that floor(cap/5) allowance. Neither
+    figure is fit to round-1 task scores.
     """
-    calls = {model: 0.0 for model in MODEL_POOL}
     units = tuple(iter_r2_m1_units()) + tuple(iter_r2_m2_units())
-
-    def add_even(count):
-        for model in MODEL_POOL:
-            calls[model] += count / len(MODEL_POOL)
-
+    expected = {model: 0.0 for model in MODEL_POOL}
+    pinned = {model: 0.0 for model in MODEL_POOL}
+    pro_allowance = 0.0
+    flexible_rest = 0.0
+    others = [model for model in MODEL_POOL if model != "mimo-v2.6-pro"]
     for unit in units:
         cap = unit.request_cap
         if unit.arm == "g1-main":
-            calls["mimo-v2.6-flash"] += cap
+            expected["mimo-v2.6-flash"] += cap
+            pinned["mimo-v2.6-flash"] += cap
         elif unit.arm == "g1-strong":
-            calls["mimo-v2.6-pro"] += cap
+            expected["mimo-v2.6-pro"] += cap
+            pinned["mimo-v2.6-pro"] += cap
         elif unit.arm == "g2":
-            calls["deepseek-flash"] += 1
-            add_even(cap - 1)
+            expected["deepseek-flash"] += 1
+            pinned["deepseek-flash"] += 1
+            workers = cap - 1
+            pro_max = min(cap // R2_PRO_G2_G3_CAP_DENOMINATOR, workers)
+            rest = workers - pro_max
+            pro_allowance += pro_max
+            flexible_rest += rest
+            expected["mimo-v2.6-pro"] += pro_max
+            for model in others:
+                expected[model] += rest / len(others)
         elif unit.arm == "g3":
-            add_even(cap)
-    by_model = {model: calls[model] * R1_CNY_PER_REQUEST[model] for model in MODEL_POOL}
+            pro_max = cap // R2_PRO_G2_G3_CAP_DENOMINATOR
+            rest = cap - pro_max
+            pro_allowance += pro_max
+            flexible_rest += rest
+            expected["mimo-v2.6-pro"] += pro_max
+            for model in others:
+                expected[model] += rest / len(others)
+    worst_calls = {}
+    for model in MODEL_POOL:
+        if model == "mimo-v2.6-pro":
+            worst_calls[model] = pinned[model] + pro_allowance
+        else:
+            worst_calls[model] = pinned[model] + flexible_rest
+    prior = {model: cny_text_to_micro(PRIOR_SPEND_CNY[model]) / MICROCNY_PER_CNY for model in MODEL_POOL}
     return {
-        "calls": calls,
-        "cny": by_model,
-        "total_cny": sum(by_model.values()),
+        "expected": _money(expected),
+        "worst_case": _money(worst_calls),
+        "prior_cny": prior,
+        "pro_new_headroom_to_48_cny": R2_PRO_SOFT_HALT_CNY - prior["mimo-v2.6-pro"],
         "rates_cny_per_request": dict(R1_CNY_PER_REQUEST),
         "units": len(units),
-        "note": "round-1 mean CNY per request; not used to choose tasks or caps",
+        "pro_g2_g3_cap": "floor(request_cap/%d)" % R2_PRO_G2_G3_CAP_DENOMINATOR,
+        "note": "round-1 mean CNY per request at a full unit cap; not used to choose tasks",
     }
 
 

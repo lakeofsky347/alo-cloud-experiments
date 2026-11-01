@@ -66,8 +66,12 @@ DRY_PLAN = """subtasks:
 """
 
 
-def open_run_ledger(path, mode):
-    """Create or reopen the study ledger. Opening commitments are zero only on create."""
+def open_run_ledger(path, mode, opening_commitments_microcny=None):
+    """Create or reopen the study ledger.
+
+    A missing opening map means zero, which is the r1 file. An r2 file passes
+    the round-1 settled totals and a reopen must still be carrying them.
+    """
     path = Path(path)
     if path.exists():
         ledger = BudgetLedger(path)
@@ -80,15 +84,20 @@ def open_run_ledger(path, mode):
             raise BudgetStopped("ledger_model_pool_mismatch")
         if any(value != PER_MODEL_LIMIT_MICROCNY for value in state["limits_microcny"].values()):
             raise BudgetStopped("study_model_cap_must_be_50_cny")
+        if opening_commitments_microcny is not None and ledger.opening_microcny() != dict(opening_commitments_microcny):
+            raise BudgetStopped("prior_spend_mismatch")
         return ledger
     path.parent.mkdir(parents=True, exist_ok=True)
     limits = PROTOCOL_UNIT_LIMITS["m1_b0"]
+    opening = {model: 0 for model in MODEL_POOL}
+    if opening_commitments_microcny is not None:
+        opening = dict(opening_commitments_microcny)
     # The file ceiling must cover the optional ProgramBench smoke (40). Paid
     # units still stop at their own request_cap. The protocol table stays 32.
     return BudgetLedger.create(
         path,
         model_limits_microcny={model: PER_MODEL_LIMIT_MICROCNY for model in MODEL_POOL},
-        opening_commitments_microcny={model: 0 for model in MODEL_POOL},
+        opening_commitments_microcny=opening,
         max_requests=max(limits["requests"], 40), prior_requests=0,
         max_tokens=limits["tokens"], prior_tokens=0,
         max_seconds_ms=limits["seconds"] * 1000, prior_seconds_ms=0,
@@ -549,14 +558,24 @@ def run_schedule(units, run_dir, *, live, data_dir=None, docker_image=None, send
         _require_batch(run_dir, batch)
         if batch == "r2":
             from .r2 import R2_COMMAND_SECONDS, R2_REASONING_BUDGET, r2_model_soft_halts, write_r2_manifest
-            write_r2_manifest(run_dir)
+            try:
+                write_r2_manifest(run_dir)
+            except ValueError as error:
+                raise PilotStopped(str(error)) from None
             if limit_overrides is None:
                 limit_overrides = {"command_seconds": R2_COMMAND_SECONDS}
             if reasoning_budget is None:
                 reasoning_budget = R2_REASONING_BUDGET
             if model_soft_halts is None:
                 model_soft_halts = r2_model_soft_halts()
-    ledger = open_run_ledger(run_dir / "budget.sqlite3", mode)
+    prior_opening = None
+    if batch == "r2":
+        from .r2 import resolve_prior_spend
+        try:
+            prior_opening = resolve_prior_spend()["applied_microcny"]
+        except ValueError as error:
+            raise PilotStopped(str(error)) from None
+    ledger = open_run_ledger(run_dir / "budget.sqlite3", mode, prior_opening)
     if live:
         missing = [name for name in KEY_ENVS if not os.environ.get(name)]
         if missing:
@@ -602,13 +621,17 @@ def run_schedule(units, run_dir, *, live, data_dir=None, docker_image=None, send
                 raise BudgetStopped("partial_unit_not_retried")
             retried = False
             while True:
+                pro_cap = None
+                if batch == "r2":
+                    from .r2 import pro_call_cap
+                    pro_cap = pro_call_cap(unit)
                 record = _execute_unit(
                     unit, run_dir, ledger, live=live, data_dir=data_dir,
                     docker_image=docker_image, sender=sender, git_runner=git_runner,
                     sandbox_memory=sandbox_memory, sandbox_pids=sandbox_pids,
                     image_seeder=image_seeder, unknown_so_far=_unknown_count(run_dir),
                     shard_id=shard_label, limit_overrides=limit_overrides,
-                    reasoning_budget=reasoning_budget)
+                    reasoning_budget=reasoning_budget, pro_call_cap=pro_cap)
                 if record.get("charged_timeout"):
                     verdict = publish_timeout_counts(
                         run_dir, ledger, protocol_epoch=current_epoch(run_dir))
@@ -822,7 +845,8 @@ def _public_field(payload, key):
 
 def _execute_unit(unit, run_dir, ledger, *, live, data_dir, docker_image, sender,
                   git_runner=None, sandbox_memory=None, sandbox_pids=None, image_seeder=None,
-                  unknown_so_far=0, shard_id="", limit_overrides=None, reasoning_budget=None):
+                  unknown_so_far=0, shard_id="", limit_overrides=None, reasoning_budget=None,
+                  pro_call_cap=None):
     record = {
         "schema": "alo-paid-unit-v1",
         "unit_id": unit.unit_id,
@@ -868,6 +892,9 @@ def _execute_unit(unit, run_dir, ledger, *, live, data_dir, docker_image, sender
         track_generation=track_generation,
         budget_notice=PROGRAMBENCH_BUDGET_NOTICE if unit.track == "ProgramBench" else None,
     )
+    if type(pro_call_cap) is int:
+        services.pro_call_cap = pro_call_cap
+        record["pro_call_cap"] = pro_call_cap
     payload = load_public_payload(data_dir, unit.track, unit.task_id)
     repo = _public_field(payload, "repo")
     base_commit = _public_field(payload, "base_commit")
@@ -925,7 +952,7 @@ def _execute_unit(unit, run_dir, ledger, *, live, data_dir, docker_image, sender
         halt = reason not in {
             "cumulative_request_or_model_limit", "unit_resource_exhausted",
             "unit_seconds_exhausted", "provider_outcome_charged", "provider_deadline_charged",
-            "provider_unparseable_charged",
+            "provider_unparseable_charged", "pro_share_cap",
         }
         if reason == "provider_deadline_charged":
             record["charged_timeout"] = True

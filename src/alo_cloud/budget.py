@@ -291,6 +291,12 @@ class BudgetLedger:
             state["remaining_total_microcny"] = state["total_limit_microcny"] - state["total_committed_microcny"]
         return state
 
+    def opening_microcny(self):
+        """The carry-in stored when this file was created. Later holds are separate."""
+        with self._transaction() as conn:
+            meta = dict(conn.execute("SELECT key,value FROM meta"))
+        return {model: int(amount) for model, amount in json.loads(meta["opening"]).items()}
+
     def snapshot(self):
         """Return cumulative opening commitments plus all held new attempts."""
         with self._transaction() as conn:

@@ -131,6 +131,9 @@ class StudyServices:
             raise PilotStopped("invalid_reasoning_budget")
         self.reasoning_budget = reasoning_budget
         self.transport_counts = {}
+        self.pro_call_cap = None
+        self._requests_by_model = {}
+        self.pro_share_yields = 0
         self.length_stops = 0
         self.edit_log = []
         self.g3_request_split = {"manager_selection": 0, "role": 0, "dispatches": 0}
@@ -242,6 +245,10 @@ class StudyServices:
                 remaining = self.ledger.remaining_resources(model, **kwargs)
         except BudgetStopped as error:
             self._stop(error)
+        if (model == "mimo-v2.6-pro" and type(self.pro_call_cap) is int
+                and self._requests_by_model.get(model, 0) >= self.pro_call_cap):
+            remaining = dict(remaining)
+            remaining["requests"] = 0
         return self._with_wall(remaining)
 
     def _worst_case_holds(self):
@@ -326,6 +333,22 @@ class StudyServices:
             self._observed["reasoning_tokens"] += parsed["reasoning_tokens"]
         self._observed["microcny"] += charge
 
+    def _pro_share_blocked(self, model):
+        return (model == "mimo-v2.6-pro" and type(self.pro_call_cap) is int
+                and self._requests_by_model.get(model, 0) >= self.pro_call_cap)
+
+    def _unbilled_pro_share(self):
+        """Refuse another Pro call before a reservation. The refusal is not a request."""
+        self.pro_share_yields += 1
+        if self.pro_share_yields > 4:
+            raise PilotStopped("pro_share_cap")
+        return {
+            "text": "pro_share_cap: choose another model. This call was not billed.",
+            "input_tokens": 0, "output_tokens": 0, "reasoning_tokens": None,
+            "cost_microcny": 0, "currency": "CNY", "pro_share_cap": True,
+            "length_stop": False, "vendor_error": False,
+        }
+
     def _inject_budget_notice(self, messages):
         """Tell a ProgramBench agent to finish compile.sh when 3 calls remain.
 
@@ -354,6 +377,8 @@ class StudyServices:
     def complete_for_model(self, model, messages, *, max_tokens=4096):
         if model not in self.available_models:
             raise PilotStopped("model_outside_pool")
+        if self._pro_share_blocked(model):
+            return self._unbilled_pro_share()
         if type(max_tokens) is not int or not 1 <= max_tokens <= self.limits["max_output_tokens"]:
             raise PilotStopped("output_token_parameter_outside_unit_limit")
         sent_max_tokens = self._sent_max_tokens(model, max_tokens)
@@ -417,6 +442,7 @@ class StudyServices:
                 if outcome.get("cause") == "empty_completion":
                     self._diagnose(request_id, model, outcome, latency_ms=elapsed_ms, settled=True)
                 self._remember(parsed, charge)
+                self._requests_by_model[model] = self._requests_by_model.get(model, 0) + 1
                 self._note_outcome(request_id, model, "completion", charge)
                 self.event("model_settled", {"model": model, "request_id": request_id,
                                               "input_tokens": parsed["input_tokens"],

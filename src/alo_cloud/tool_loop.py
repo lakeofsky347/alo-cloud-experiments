@@ -188,6 +188,8 @@ def persistent_tool_loop(services, prompt, messages, *, system="", max_turns=10)
         # Retain the received text before parsing/dispatch. No provider-level
         # tool_calls are inspected or invoked, even if present in reply.
         messages.append({"role": "assistant", "content": text if isinstance(text, str) else ""})
+        if isinstance(reply, dict) and reply.get("pro_share_cap"):
+            return _finish("failed", "pro_share_cap", "budget", services)
         if isinstance(reply, dict) and reply.get("length_stop") and not (isinstance(text, str) and text.strip()):
             _bump_length_stop(services)
             _append(messages, LENGTH_STOP_NUDGE, services)
