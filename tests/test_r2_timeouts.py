@@ -1,5 +1,7 @@
 """Client timeouts and pre-send release. No network and no credentials leave the machine."""
 import json
+import socket
+import time
 
 import pytest
 
@@ -115,6 +117,11 @@ class ScriptedHTTPS:
     def getresponse(self):
         if self.mode == "response_timeout":
             raise TimeoutError("headers")
+        if self.mode == "header_wait":
+            time.sleep(0.08)
+            raise socket.timeout("headers")
+        if self.mode == "reset":
+            raise ConnectionResetError("reset")
         if self.mode == "sse_timeout":
             return _Lines([
                 b'data: {"choices":[{"delta":{"content":"x"},"finish_reason":null}]}\n',
@@ -171,13 +178,12 @@ def test_connect_timeout_is_unsent_and_a_written_request_may_have_been_sent():
     assert ScriptedHTTPS.made[0].timeout == 15
 
     ScriptedHTTPS.script = ["response_timeout"]
-    with pytest.raises(ProviderNotReached) as sent:
+    with pytest.raises(TimeoutError, match="provider_wall_clock"):
         staged_https_post(
             "https://api.deepseek.com/chat/completions", {"model": "deepseek-flash", "stream": True},
             {"Authorization": "Bearer secret"},
             connect_timeout_s=15, read_timeout_s=300, model="deepseek-flash",
             connector=ScriptedHTTPS)
-    assert sent.value.request_sent is True
     assert ScriptedHTTPS.made[-1].requested is True
     assert ScriptedHTTPS.made[-1].headers["Accept"] == "text/event-stream"
     assert ScriptedHTTPS.made[-1].headers["Connection"] == "keep-alive"
@@ -245,9 +251,30 @@ def test_presend_retry_does_not_consume_the_unit_cap(tmp_path, monkeypatch):
     assert ScriptedHTTPS.made[-1].sock.timeouts[0] == 300
 
 
-def test_maybe_sent_timeout_stays_unknown_worst_case(tmp_path, monkeypatch):
+def test_header_wait_is_a_charged_deadline_not_an_unknown(tmp_path, monkeypatch):
     services, _seen, ledger = build(tmp_path, monkeypatch, [])
-    _install(services, ["response_timeout"], monkeypatch)
+    _install(services, ["header_wait", "header_wait"], monkeypatch)
+    services.read_timeouts = {model: 0.05 for model in R2_READ_TIMEOUT_S}
+    services.limits["requests"] = 4
+    services.continue_after_timeout = True
+    with pytest.raises(PilotStopped, match="provider_timeout_exhausted"):
+        services.complete_for_model("deepseek-flash", messages(), max_tokens=128)
+    rows = ledger.request_rows()
+    assert [row["status"] for row in rows] == ["settled", "settled"]
+    assert all(row["held_microcny"] == 1000 for row in rows)
+    assert not (tmp_path / "unknown_outcomes.jsonl").exists()
+    for row in rows:
+        record = json.loads((tmp_path / "diagnostics" / f"{row['id']}.json").read_text(encoding="utf-8"))
+        assert record["cause"] == "deadline_timeout"
+        assert record["charged_timeout"] is True
+    outcomes = (tmp_path / "progress" / "provider_outcomes.jsonl").read_text(encoding="utf-8")
+    assert outcomes.count('"outcome": "deadline_timeout"') == 2
+    assert '"outcome": "unknown"' not in outcomes
+
+
+def test_fast_reset_after_send_stays_unknown(tmp_path, monkeypatch):
+    services, _seen, ledger = build(tmp_path, monkeypatch, [])
+    _install(services, ["reset"], monkeypatch)
     with pytest.raises(PilotStopped, match="provider_outcome_charged"):
         services.complete_for_model("mimo-v2.6-pro", messages(), max_tokens=128)
     assert len(ScriptedHTTPS.made) == 1
@@ -255,9 +282,9 @@ def test_maybe_sent_timeout_stays_unknown_worst_case(tmp_path, monkeypatch):
     assert row["status"] == "settled"
     assert row["held_microcny"] == 1000
     assert ledger.unit_usage("unit-a")["requests"] == 1
-    assert services.resources()["model_requests"] == 0
     record = json.loads((tmp_path / "diagnostics" / f"{row['id']}.json").read_text(encoding="utf-8"))
     assert record["cause"] == "provider_not_reached"
+    assert record["charged_timeout"] is False
     assert record["settled"] is True
 
 

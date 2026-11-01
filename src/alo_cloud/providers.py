@@ -658,8 +658,9 @@ def staged_https_post(url, body, headers, *, connect_timeout_s, read_timeout_s, 
     keep-alive`` and ``Accept: text/event-stream`` are set on this path.
     A failure before ``request`` is raised as ``ProviderNotReached(False)``.
     A failure after ``request`` and before any response bytes is
-    ``ProviderNotReached(True)``. Bytes already on the stream use the existing
-    read deadline.
+    ``ProviderNotReached(True)``, unless it is a read timeout: waiting for
+    headers until ``read_timeout_s`` is the same charged deadline as a stall
+    in the body. A fast reset after the send stays ``ProviderNotReached(True)``.
     """
     clock = clock or time.monotonic
     parts = urllib.parse.urlsplit(url)
@@ -698,11 +699,11 @@ def staged_https_post(url, body, headers, *, connect_timeout_s, read_timeout_s, 
         try:
             conn.request("POST", path, body=data, headers=outbound)
         except Exception as error:
-            raise ProviderNotReached(True) from error
+            _raise_sent_read_failure(error, read_started, clock, read_timeout_s)
         try:
             response = conn.getresponse()
         except Exception as error:
-            raise ProviderNotReached(True) from error
+            _raise_sent_read_failure(error, read_started, clock, read_timeout_s)
         status = getattr(response, "status", None)
         if status != 200:
             try:
@@ -727,6 +728,19 @@ def staged_https_post(url, body, headers, *, connect_timeout_s, read_timeout_s, 
             conn.close()
         except Exception:
             pass
+
+
+def _raise_sent_read_failure(error, read_started, clock, read_timeout_s):
+    """A header wait that uses the read budget is a charged deadline.
+
+    ``TimeoutError`` includes ``socket.timeout``. Any other failure after
+    ``request``, including a fast ``ConnectionResetError``, may have been sent
+    and is still ``ProviderNotReached(True)``.
+    """
+    if isinstance(error, (TimeoutError, socket.timeout)) or _past_deadline(
+            read_started, clock, read_timeout_s):
+        raise TimeoutError("provider_wall_clock") from error
+    raise ProviderNotReached(True) from error
 
 
 def _exception_cause(error):

@@ -491,15 +491,18 @@ class StudyServices:
                             "provider_not_reached": True}
                 # Monotonic time, same clock as the transport. A return at the deadline
                 # is a charged timeout even when the read looks like a reset, an empty
-                # body, or a partial completion. A failure before any response bytes
-                # stays not_reached: unsent is released above, and a request that may
-                # have been sent stays an unknown worst-case hold. Connect time is
-                # outside the read budget when the two timeouts are split.
+                # body, or a partial completion. Unsent calls were released above.
+                # A not_reached row whose request was sent and that used the read
+                # budget is the header-wait deadline, not an unknown. A fast failure
+                # after send stays unknown. Connect time is outside the read budget
+                # when the two timeouts are split.
                 read_limit = deadline_s
                 if self.connect_timeout_s is not None:
                     read_limit = deadline_s + self.connect_timeout_s
-                if (outcome.get("kind") != "not_reached"
-                        and elapsed_s >= read_limit - DEADLINE_EPSILON_S):
+                sent_without_bytes = (
+                    outcome.get("kind") == "not_reached" and outcome.get("request_sent") is True)
+                if elapsed_s >= read_limit - DEADLINE_EPSILON_S and (
+                        outcome.get("kind") != "not_reached" or sent_without_bytes):
                     progress = outcome.get("stream_progress")
                     outcome = {"kind": "unknown", "cause": "deadline_timeout", "http_status": None,
                                "vendor_code": None, "vendor_message": None, "finish_reason": None,
