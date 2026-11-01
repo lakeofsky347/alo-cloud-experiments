@@ -72,8 +72,9 @@ def _attempt_query(table, unit_id, protocol_epoch, restart_count, kind, infra_ge
     if type(track_generation) is not int or track_generation < 0:
         raise ValueError("invalid_track_generation")
     if table == "requests":
+        # A provably unsent call is released at zero and does not use the unit cap.
         select = """SELECT COUNT(*), COALESCE(SUM(held_tokens),0), COALESCE(SUM(held_seconds_ms),0)
-                    FROM requests WHERE unit_id=?"""
+                    FROM requests WHERE unit_id=? AND status!='not_sent'"""
     else:
         select = """SELECT COUNT(*), COALESCE(SUM(held_seconds_ms),0)
                     FROM tool_calls WHERE unit_id=?"""
@@ -268,13 +269,14 @@ class BudgetLedger:
         used_tokens = int(meta.get("prior_tokens", "0")) + sum(row[5] for row in rows)
         used_seconds_ms = (int(meta.get("prior_seconds_ms", "0")) + sum(row[6] for row in rows)
                            + sum(row[2] for row in tools))
+        open_request = lambda status: status not in {"settled", "not_sent"}
         state = {"limits_microcny": limits, "committed_or_reserved_microcny": used,
                  "remaining_microcny": {model: limits[model] - used[model] for model in limits},
-                 "unresolved_request_ids": [row[0] for row in rows if row[4] != "settled"],
+                 "unresolved_request_ids": [row[0] for row in rows if open_request(row[4])],
                  "unresolved_tool_ids": [row[0] for row in tools if row[1] != "settled"],
-                 "unresolved_request_shards": [(row[0], row[8] or "") for row in rows if row[4] != "settled"],
+                 "unresolved_request_shards": [(row[0], row[8] or "") for row in rows if open_request(row[4])],
                  "unresolved_tool_shards": [(row[0], row[4] or "") for row in tools if row[1] != "settled"],
-                 "requests": int(meta["prior_requests"]) + len(rows),
+                 "requests": int(meta["prior_requests"]) + sum(1 for row in rows if row[4] != "not_sent"),
                  "max_requests": int(meta["max_requests"]),
                  "used_tokens": used_tokens,
                  "used_seconds_ms": used_seconds_ms,
@@ -510,6 +512,25 @@ class BudgetLedger:
             raise BudgetStopped("observed_charge_exceeded_frozen_bound")
         return {"status": "settled", "charge_microcny": charge_microcny,
                 "unit_resource_exhausted": unit_over}
+
+    def release_not_sent(self, request_id):
+        """Drop a reservation that never left this process. The row stays for audit.
+
+        Only a still-reserved row can be released. A request that may have been
+        written to the socket is not eligible. Held CNY becomes 0, and the
+        unit request cap ignores ``not_sent``.
+        """
+        _id(request_id)
+        with self._transaction() as conn:
+            row = conn.execute("SELECT status FROM requests WHERE id=?", (request_id,)).fetchone()
+            if row is None or row[0] != "reserved":
+                raise BudgetStopped("only_pending_reservation_may_be_released")
+            conn.execute(
+                """UPDATE requests
+                   SET held=0, held_tokens=0, held_seconds_ms=0, status='not_sent'
+                   WHERE id=?""",
+                (request_id,))
+        return {"status": "not_sent", "charge_microcny": 0}
 
     def mark_unknown(self, request_id):
         """Keep the full hold across reopen/cancellation; there is no reset API."""

@@ -176,6 +176,9 @@ INFRA_STOP_REASONS = frozenset({
     "charged_unparseable_cny",
     "operator",
     "operator_halt",
+    "provider_outcome_charged",
+    "provider_outcome_unknown",
+    "second_unknown_interruption",
 })
 
 
@@ -263,8 +266,11 @@ def requeue_interrupted(run_dir, unit_ids=()):
 
     Automatic selection is a terminal ``stopped`` row whose reason is an infra
     halt (another shard's unknown threshold or valve, ``tool_outcome_unknown``,
-    or an operator stop). ``--unit`` adds a recorded unit even when its reason
-    is different. Requeueing a unit also requeues recorded dependents that used
+    a provider outcome that never returned a receipt, or an operator stop).
+    A ``blocked`` row left by ``second_unknown_interruption`` is the same class:
+    the one protocol restart was already spent on a provider unknown. ``--unit``
+    adds a recorded unit even when its reason is different. Requeueing a unit
+    also requeues recorded dependents that used
     it: the same task and arm's B1-self, and an M2 persist or learned-probe
     chain that hangs off it. ``unit_restarts.json`` is not modified. Request
     ids of the next attempt use ``-infraN-`` so they do not collide with the
@@ -280,7 +286,12 @@ def requeue_interrupted(run_dir, unit_ids=()):
         by_id[row["unit_id"]] = row
     selected = {}
     for unit_id, row in by_id.items():
-        if row.get("status") == "stopped" and row.get("reason") in INFRA_STOP_REASONS:
+        status = row.get("status")
+        reason = row.get("reason")
+        provider_unknown = (
+            row.get("termination_reason") == "provider_unknown" and status in {"stopped", "blocked"})
+        second_unknown = status == "blocked" and reason == "second_unknown_interruption"
+        if (status == "stopped" and reason in INFRA_STOP_REASONS) or provider_unknown or second_unknown:
             selected[unit_id] = "reason"
     for unit_id in explicit:
         if unit_id in by_id:

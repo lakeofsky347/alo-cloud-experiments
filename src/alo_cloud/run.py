@@ -570,8 +570,12 @@ def run_schedule(units, run_dir, *, live, data_dir=None, docker_image=None, send
             if model_soft_halts is None:
                 model_soft_halts = r2_model_soft_halts()
     prior_opening = None
+    read_timeouts = None
+    connect_timeout_s = None
     if batch == "r2":
-        from .r2 import resolve_prior_spend
+        from .r2 import R2_CONNECT_TIMEOUT_S, R2_READ_TIMEOUT_S, resolve_prior_spend
+        read_timeouts = dict(R2_READ_TIMEOUT_S)
+        connect_timeout_s = R2_CONNECT_TIMEOUT_S
         try:
             prior_opening = resolve_prior_spend()["applied_microcny"]
         except ValueError as error:
@@ -632,7 +636,8 @@ def run_schedule(units, run_dir, *, live, data_dir=None, docker_image=None, send
                     sandbox_memory=sandbox_memory, sandbox_pids=sandbox_pids,
                     image_seeder=image_seeder, unknown_so_far=_unknown_count(run_dir),
                     shard_id=shard_label, limit_overrides=limit_overrides,
-                    reasoning_budget=reasoning_budget, user_preference=preference)
+                    reasoning_budget=reasoning_budget, user_preference=preference,
+                    read_timeouts=read_timeouts, connect_timeout_s=connect_timeout_s)
                 if record.get("charged_timeout"):
                     verdict = publish_timeout_counts(
                         run_dir, ledger, protocol_epoch=current_epoch(run_dir))
@@ -847,7 +852,8 @@ def _public_field(payload, key):
 def _execute_unit(unit, run_dir, ledger, *, live, data_dir, docker_image, sender,
                   git_runner=None, sandbox_memory=None, sandbox_pids=None, image_seeder=None,
                   unknown_so_far=0, shard_id="", limit_overrides=None, reasoning_budget=None,
-                  pro_call_cap=None, user_preference=None):
+                  pro_call_cap=None, user_preference=None, read_timeouts=None,
+                  connect_timeout_s=None):
     record = {
         "schema": "alo-paid-unit-v1",
         "unit_id": unit.unit_id,
@@ -892,6 +898,8 @@ def _execute_unit(unit, run_dir, ledger, *, live, data_dir, docker_image, sender
         infra_generation=infra_generation,
         track_generation=track_generation,
         budget_notice=PROGRAMBENCH_BUDGET_NOTICE if unit.track == "ProgramBench" else None,
+        read_timeouts=read_timeouts,
+        connect_timeout_s=connect_timeout_s,
     )
     if type(pro_call_cap) is int:
         services.pro_call_cap = pro_call_cap

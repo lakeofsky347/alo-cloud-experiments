@@ -228,6 +228,9 @@ def test_smoke_plan_stays_under_half_a_cny_and_does_not_send(capsys):
     assert smoke.main([]) == 0
     captured = capsys.readouterr().out
     assert "not_sent" in captured
+    source = Path(smoke.__file__).read_text(encoding="utf-8")
+    assert "smoke-budget.sqlite3" in source
+    assert 'open_run_ledger(run_dir / "budget.sqlite3"' not in source
     assert "DEEPSEEK_API_KEY" not in captured
     assert "Authorization" not in captured
 

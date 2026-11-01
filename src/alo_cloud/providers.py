@@ -14,12 +14,14 @@ recorded in ``docs/models_and_benchmarks.md``. MiMo sends
 """
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import socket
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from .contracts import MODEL_POOL
@@ -529,6 +531,122 @@ def urllib_send(url, body, headers, *, timeout_s, model, started=None, clock=Non
     return captured["result"]
 
 
+class ProviderNotReached(Exception):
+    """The provider produced no response bytes.
+
+    ``request_sent`` is false only when this process never called ``request``.
+    A failure after that call may have left the process, so the hold stays unknown.
+    """
+
+    def __init__(self, request_sent):
+        super().__init__("provider_not_reached")
+        self.request_sent = bool(request_sent)
+
+
+class _ClientResponse:
+    """Adapt ``http.client.HTTPResponse`` to the SSE reader."""
+
+    def __init__(self, response, sock):
+        self._sock = sock
+        self._response = response
+
+    def readline(self):
+        return self._response.readline()
+
+    def close(self):
+        try:
+            self._response.close()
+        except Exception:
+            return
+
+
+def _not_reached(request_sent):
+    return {"kind": "not_reached", "cause": "provider_not_reached",
+            "request_sent": bool(request_sent), "http_status": None,
+            "vendor_code": None, "vendor_message": None, "finish_reason": None,
+            "response": None, "parsed": None}
+
+
+def staged_https_post(url, body, headers, *, connect_timeout_s, read_timeout_s, model,
+                       started=None, clock=None, connector=None):
+    """POST one streaming completion with separate connect and read timeouts.
+
+    Connect uses ``connect_timeout_s``. After the socket exists, the read
+    budget is ``read_timeout_s`` measured from connect success, so a reasoning
+    model can keep the stream open for the full read window. ``Connection:
+    keep-alive`` and ``Accept: text/event-stream`` are set on this path.
+    A failure before ``request`` is raised as ``ProviderNotReached(False)``.
+    A failure after ``request`` and before any response bytes is
+    ``ProviderNotReached(True)``. Bytes already on the stream use the existing
+    read deadline.
+    """
+    clock = clock or time.monotonic
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme != "https" or not parts.hostname:
+        raise PilotStopped("provider_url_not_https")
+    port = parts.port or 443
+    path = parts.path or "/"
+    if parts.query:
+        path = path + "?" + parts.query
+    data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+    factory = connector or http.client.HTTPSConnection
+    conn = factory(parts.hostname, port, timeout=connect_timeout_s)
+    response = None
+    try:
+        try:
+            conn.connect()
+        except ProviderNotReached:
+            raise
+        except Exception as error:
+            raise ProviderNotReached(False) from error
+        sock = getattr(conn, "sock", None)
+        if sock is not None and hasattr(sock, "settimeout"):
+            try:
+                sock.settimeout(float(read_timeout_s))
+            except OSError:
+                pass
+        outbound = {
+            "Content-Type": headers.get("Content-Type", "application/json"),
+            "Accept": "text/event-stream",
+            "Connection": "keep-alive",
+        }
+        for name, value in headers.items():
+            if name.lower() in {"authorization", "api-key"}:
+                outbound[name] = value
+        read_started = clock()
+        try:
+            conn.request("POST", path, body=data, headers=outbound)
+        except Exception as error:
+            raise ProviderNotReached(True) from error
+        try:
+            response = conn.getresponse()
+        except Exception as error:
+            raise ProviderNotReached(True) from error
+        status = getattr(response, "status", None)
+        if status != 200:
+            try:
+                raw = response.read()
+            except Exception as error:
+                if _past_deadline(read_started, clock, read_timeout_s):
+                    raise TimeoutError("provider_wall_clock") from error
+                raise
+            return _read_json_body(raw), status
+        adapter = _ClientResponse(response, sock)
+        parsed = _read_sse(
+            adapter, model, deadline_s=read_timeout_s, started=read_started, clock=clock)
+        return parsed, status
+    finally:
+        if response is not None:
+            try:
+                response.close()
+            except Exception:
+                pass
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 def _exception_cause(error):
     reason = getattr(error, "reason", error) if isinstance(error, urllib.error.URLError) else error
     # Every timeout this transport raises is the deadline we armed: the wall-clock
@@ -577,17 +695,24 @@ def _unknown_transport(error):
 class OpenAICompatibleTransport:
     """One injected sender, or an explicit network permit. Never both, never neither at call time."""
 
-    def __init__(self, *, sender=None, permit_network=False, timeout_s=60, require_credentials=True):
+    def __init__(self, *, sender=None, permit_network=False, timeout_s=60, require_credentials=True,
+                 connect_timeout_s=None, connector=None):
         if permit_network and sender is not None:
             raise PilotStopped("one_transport_sender")
         if permit_network and not require_credentials:
             raise PilotStopped("live_transport_requires_credentials")
         if type(timeout_s) not in (int, float) or isinstance(timeout_s, bool) or not 0 < timeout_s <= 600:
             raise PilotStopped("invalid_provider_timeout")
+        if connect_timeout_s is not None and (
+                type(connect_timeout_s) not in (int, float) or isinstance(connect_timeout_s, bool)
+                or not 0 < connect_timeout_s <= 60):
+            raise PilotStopped("invalid_connect_timeout")
         self._sender = sender
         self._permit_network = bool(permit_network)
         self._require_credentials = bool(require_credentials)
         self._timeout_s = float(timeout_s)
+        self._connect_timeout_s = None if connect_timeout_s is None else float(connect_timeout_s)
+        self._connector = connector
         self.last_http_status = None
 
     def complete_for_model(self, model, messages, *, max_tokens=4096, timeout_s=None,
@@ -622,6 +747,18 @@ class OpenAICompatibleTransport:
                     if (started is not None and clock is not None
                             and _past_deadline(started, clock, limit)):
                         raise TimeoutError("provider_wall_clock")
+                elif self._permit_network and self._connect_timeout_s is not None:
+                    try:
+                        payload, status = staged_https_post(
+                            url, body, headers, connect_timeout_s=self._connect_timeout_s,
+                            read_timeout_s=limit, model=model, started=started, clock=clock,
+                            connector=self._connector)
+                    except ProviderNotReached as error:
+                        self.last_http_status = None
+                        return _not_reached(error.request_sent)
+                    except Exception as error:
+                        self.last_http_status = None
+                        return _unknown_transport(error)
                 elif self._permit_network:
                     try:
                         payload, status = urllib_send(
@@ -632,6 +769,9 @@ class OpenAICompatibleTransport:
                         return _unknown_transport(error)
                 else:
                     raise PilotStopped("provider_network_not_permitted")
+            except ProviderNotReached as error:
+                self.last_http_status = None
+                return _not_reached(error.request_sent)
             except PilotStopped:
                 raise
             except Exception as error:

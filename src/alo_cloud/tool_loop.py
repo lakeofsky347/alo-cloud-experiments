@@ -173,9 +173,12 @@ def _finish(status, summary, termination, services):
 def persistent_tool_loop(services, prompt, messages, *, system="", max_turns=10):
     """Use at most max_turns model calls. A format error is feedback, not a tool call.
 
-    An empty ``finish_reason=length`` turn does not end the loop: the model is
-    told to answer with one short action, and that next call counts as a request.
-    Provider ``tool_calls`` fields are ignored. Only ``dispatch_action`` runs tools.
+    An empty ``finish_reason=length`` turn, and an empty ``finish_reason=stop``
+    turn with no tool call, do not end the loop. The model is told to answer
+    with one short action, and that next call counts as a request. A provider
+    that was not reached before the request was sent gets the same continuation
+    and does not end the unit. Provider ``tool_calls`` fields are ignored.
+    Only ``dispatch_action`` runs tools.
     """
     if type(max_turns) is not int or max_turns < 1 or not isinstance(messages, list):
         raise ProtocolError("positive turn limit and checkpoint-owned transcript list required")
@@ -190,15 +193,22 @@ def persistent_tool_loop(services, prompt, messages, *, system="", max_turns=10)
         messages.append({"role": "assistant", "content": text if isinstance(text, str) else ""})
         if isinstance(reply, dict) and reply.get("pro_share_cap"):
             return _finish("failed", "pro_share_cap", "budget", services)
-        if isinstance(reply, dict) and reply.get("length_stop") and not (isinstance(text, str) and text.strip()):
-            _bump_length_stop(services)
-            _append(messages, LENGTH_STOP_NUDGE, services)
+        if isinstance(reply, dict) and reply.get("provider_not_reached"):
+            _append(messages, "The provider was not reached before the request was sent. "
+                    "Reply with ONE short action.", services)
             continue
         if isinstance(reply, dict) and reply.get("vendor_error"):
             _note_transport(services, "rejected")
             _append(messages, {"provider_error": "vendor_error",
                 "detail": "The provider rejected this request. It was not billed.",
                 "automatic_retry": False, "protocol_version": TOOL_LOOP_VERSION}, services)
+            continue
+        empty_visible = not (isinstance(text, str) and text.strip())
+        finish = reply.get("finish_reason") if isinstance(reply, dict) else None
+        if isinstance(reply, dict) and empty_visible and (reply.get("length_stop") or finish == "stop"):
+            if reply.get("length_stop"):
+                _bump_length_stop(services)
+            _append(messages, LENGTH_STOP_NUDGE, services)
             continue
         if text == "":
             _note_transport(services, "rejected")
