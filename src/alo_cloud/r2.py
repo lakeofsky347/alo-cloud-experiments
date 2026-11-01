@@ -37,6 +37,10 @@ R2_PRO_SOFT_HALT_CNY = 48
 PRIOR_SPEND_CNY = {model: "0.000" for model in MODEL_POOL}
 PRIOR_SPEND_TOTAL_CNY = "0.000"
 USER_PREFERENCE = {"first_try": "deepseek-flash", "strong": "mimo-v2.6-pro"}
+# Not a freeze field. These images are checked out at a commit that is not the
+# task base and not a mode-only child of it, so the runner skips them.
+# sphinx-doc__sphinx-7686: /testbed HEAD 2dee191, task base 752d328.
+R2_IMAGE_BASE_UNAVAILABLE = ("sphinx-doc__sphinx-7686",)
 # Infra only. Not part of the freeze payload. The read budget equals frozen
 # provider_timeout_s, measured from connect success. Connect fails fast when
 # no socket is established. A gap with no bytes is an idle timeout and does

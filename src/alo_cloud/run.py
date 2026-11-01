@@ -779,9 +779,18 @@ def _rows_for_outcome_epoch(records, epoch):
     return [row for row in records if _line_in_outcome_epoch(row, epoch)]
 
 
+# A skipped image is not a blocked unit and is not part of the blocked-fraction sample.
+_NOT_IN_BLOCKED_GATE = frozenset({"skipped", "unavailable"})
+
+
+def _countable_records(records):
+    return [row for row in records if isinstance(row, dict) and row.get("status") not in _NOT_IN_BLOCKED_GATE]
+
+
 def blocked_fraction_exceeded(records, *, maximum=None, benchmarks=None, outcome_epoch=None):
     """True when blocked units are more than the allowed share of a large enough sample."""
-    records = _rows_for_outcome_epoch(_rows_for_benchmarks(records, benchmarks), outcome_epoch)
+    records = _countable_records(
+        _rows_for_outcome_epoch(_rows_for_benchmarks(records, benchmarks), outcome_epoch))
     finished = [row for row in records if isinstance(row, dict) and row.get("status")]
     if len(finished) < BLOCKED_FRACTION_MIN_UNITS:
         return False
@@ -791,7 +800,7 @@ def blocked_fraction_exceeded(records, *, maximum=None, benchmarks=None, outcome
 
 def format_blocked_report(records, *, maximum=None, benchmarks=None):
     """One histogram line per blocked reason, then whether the schedule must stop."""
-    records = _rows_for_benchmarks(records, benchmarks)
+    records = _countable_records(_rows_for_benchmarks(records, benchmarks))
     counts = {}
     finished = 0
     blocked = 0
@@ -850,8 +859,10 @@ def _prepare_workspace(unit, services, *, live, repo, base_commit, git_runner, i
                 return "swe_checkout_metadata_missing"
             seed_image_tree(image, "/testbed", root, docker=image_seeder)
             image_head = resolve_image_head(root, base_commit, git=git_runner)
+            # HEAD is not base and the extra commit is not mode-only. The task
+            # cannot be scored from this image. Skip it; do not call it blocked.
             if not image_head:
-                return "swe_image_base_commit_mismatch"
+                return "swe_image_base_unavailable"
             services.image_head = image_head
             # Same-task B1 is the only restore that reapplies a parent patch.
             # M2 carries whitelisted statistics and must not copy model.patch.
@@ -988,7 +999,14 @@ def _execute_unit(unit, run_dir, ledger, *, live, data_dir, docker_image, sender
         unit, services, live=live, repo=repo, base_commit=base_commit, git_runner=git_runner,
         image=image, image_seeder=image_seeder, run_dir=run_dir)
     if prepare_note:
-        record.update(status="blocked", reason=prepare_note, charged_microcny={}, sealed_files=0)
+        skipped = prepare_note == "swe_image_base_unavailable"
+        record.update(
+            status="skipped" if skipped else "blocked",
+            reason=prepare_note,
+            charged_microcny={},
+            sealed_files=0,
+            termination_reason="skipped" if skipped else "blocked",
+        )
         _delete_live_unit(run_dir, unit.unit_id)
         return record
     image_head = getattr(services, "image_head", None)
