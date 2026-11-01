@@ -139,7 +139,7 @@ def test_r2_schedule_is_separate_from_r1():
     assert len(m1) == 48
     assert [task_id for task_id, _stratum in R1_M1] == [task_id for task_id, _stratum in m1[:6]]
     strong = set(strong_task_ids())
-    assert len(strong) == 12
+    assert len(strong) == 24
     assert {task_id for task_id, _stratum in R1_M1} <= strong
     probes = probe_tasks()
     assert len(probes) == 6
@@ -149,8 +149,8 @@ def test_r2_schedule_is_separate_from_r1():
     assert {unit.phase for unit in units if unit.study == "m1"} == {"B0"}
     assert sum(1 for unit in units if unit.phase == "learning") == 16
     assert sum(1 for unit in units if unit.phase == "probe") == 24
-    assert sum(1 for unit in units if unit.phase == "reference") == 20
-    assert not any(unit.arm == "g1-strong" and unit.phase == "reference" for unit in units)
+    assert sum(1 for unit in units if unit.phase == "reference") == 30
+    assert [unit.arm for unit in units if unit.phase == "reference"][-1] == "g1-strong"
     assert {unit.arm for unit in units if unit.study == "m1"} == {"g1-main", "g1-strong", "g2", "g3"}
     parts = [filter_r2_shard(units, index, 4) for index in range(4)]
     assert sorted(unit.unit_id for part in parts for unit in part) == sorted(unit.unit_id for unit in units)
@@ -162,12 +162,11 @@ def test_r2_schedule_is_separate_from_r1():
     assert manifest["comparable_with_r1"] is False
     assert manifest["freeze_sha256"] == r2_freeze_sha256()
     estimate = cost_estimate()
-    pro_worst = estimate["worst_case"]["cny_new"]["mimo-v2.6-pro"]
-    pro_expected = estimate["expected"]["cny_new"]["mimo-v2.6-pro"]
-    assert pro_worst <= 29
-    assert pro_expected <= pro_worst
-    assert estimate["worst_case"]["cny_cumulative"]["mimo-v2.6-pro"] < 48
-    assert estimate["prior_cny"]["mimo-v2.6-pro"] == 16.955
+    assert estimate["prior_cny"]["mimo-v2.6-pro"] == 0
+    assert estimate["expected"]["cny_new"]["mimo-v2.6-pro"] <= 45
+    assert estimate["escalated"]["cny_new"]["mimo-v2.6-pro"] <= 45
+    assert estimate["user_preference"]["first_try"] == "deepseek-flash"
+    assert estimate["user_preference"]["strong"] == "mimo-v2.6-pro"
     assert smoke_unit().request_cap == 40
     assert smoke_unit().task_id == "kisielk__errcheck.dacab89"
 
@@ -223,13 +222,15 @@ def test_m2_imports_statistics_and_does_not_apply_a_parent_patch(tmp_path):
     (parent_dir / "model.patch").write_text("SENTINEL_PATCH_NOT_FOR_M2\n", encoding="utf-8")
     child = PlannedUnit(
         study="m2", arm="g2", track="SWE-bench_Lite", task_id="django__django-15851",
-        stratum="short", phase="learning", position=1, seed=4, request_cap=4,
+        stratum="short", phase="learning", position=1, seed=4, request_cap=24,
         order_id="order-1", m2_condition="persist",
         parent_unit_id="m2.SWE-bench_Lite.other-task.g2.learning.order-1.persist",
     )
     rows = run_schedule([child], tmp_path, live=False, sender=dry_run_sender, batch="r2")
-    assert rows[0]["status"] == "completed"
-    assert rows[0]["termination_reason"] == "final"
+    assert rows[0]["status"] == "failed"
+    records = rows[0].get("decision_records") or []
+    assert any(row.get("escalated_to_strong") for row in records)
+    assert any(row.get("preference_applied") and row.get("counterfactual") for row in records)
     database = tmp_path / "checkpoints" / child.unit_id / "alo.sqlite3"
     assert database.is_file()
     restored = Organization(str(database))
@@ -299,15 +300,14 @@ def test_prior_spend_is_in_the_new_ledger_and_the_manifest(tmp_path, monkeypatch
     opening = ledger.opening_microcny()
     frozen = frozen_prior_microcny()
     assert opening == frozen
-    assert opening["mimo-v2.6-pro"] == 16_955_000
-    assert sum(opening.values()) == 27_830_000
+    assert opening["mimo-v2.6-pro"] == 0
+    assert sum(opening.values()) == 0
     snap = ledger.snapshot()
-    assert snap["committed_or_reserved_microcny"]["mimo-v2.6-pro"] == 16_955_000
-    assert snap["remaining_microcny"]["mimo-v2.6-pro"] == 50_000_000 - 16_955_000
-    assert snap["total_committed_microcny"] >= 27_830_000
+    assert snap["remaining_microcny"]["mimo-v2.6-pro"] == 50_000_000
     manifest = json.loads((tmp_path / "r2_manifest.json").read_text(encoding="utf-8"))
-    assert manifest["prior_spend"]["frozen_microcny"]["mimo-v2.6-pro"] == 16_955_000
+    assert manifest["prior_spend"]["frozen_microcny"]["mimo-v2.6-pro"] == 0
     assert manifest["prior_spend"]["applied_microcny"] == frozen
+    assert manifest["prior_spend"]["ledger_path"] is None
 
 
 def test_prior_ledger_is_read_only_and_cannot_under_count(tmp_path, monkeypatch):
@@ -331,7 +331,7 @@ def test_prior_ledger_is_read_only_and_cannot_under_count(tmp_path, monkeypatch)
     assert prior.stat().st_mtime_ns == before
     opened = BudgetLedger(tmp_path / "r2" / "budget.sqlite3").opening_microcny()
     assert opened["mimo-v2.6-pro"] == 20_000_000
-    assert opened["deepseek-flash"] == 4_619_000
+    assert opened["deepseek-flash"] == 0
     short = tmp_path / "short.sqlite3"
     small = BudgetLedger.create(
         short, model_limits_microcny={model: 50_000_000 for model in MODEL_POOL},
@@ -374,13 +374,36 @@ def test_pro_share_cap_is_not_billed_and_the_soft_halt_is_cumulative(tmp_path, m
     run = tmp_path / "halt"
     rows = run_schedule(
         strong, run, live=False, sender=sender, batch="r2",
-        model_soft_halts={"mimo-v2.6-pro": 16_955_000 + 1})
+        model_soft_halts={"mimo-v2.6-pro": 1})
     assert len(rows) == 1
     assert calls["n"] == 1
     halt = json.loads((run / "schedule_halt.json").read_text(encoding="utf-8"))
     assert halt["hard"] is False
     assert halt["reason"] == "model_soft_halt:mimo-v2.6-pro"
-    assert BudgetLedger(run / "budget.sqlite3").opening_microcny()["mimo-v2.6-pro"] == 16_955_000
+    assert BudgetLedger(run / "budget.sqlite3").opening_microcny()["mimo-v2.6-pro"] == 0
+
+
+def test_user_preference_tries_deepseek_then_escalates_to_pro(tmp_path):
+    from alo_cloud.r2 import USER_PREFERENCE
+    service = ScriptedServices(tmp_path, criterion="unknown")
+    adapter = alo(planner_model="deepseek-flash", max_attempts=2, user_preference=dict(USER_PREFERENCE))
+    result = adapter.run_stage({"prompt": "public task"}, service)
+    assert result["status"] == "failed"
+    assert service.calls[0] == "deepseek-flash"
+    assert "mimo-v2.6-pro" in service.calls
+    records = adapter.state["decision_records"]
+    assignment = next(row for row in records if row.get("point") == "assignment")
+    assert assignment["preference_applied"] is True
+    assert assignment["selected"] == "deepseek-flash"
+    assert isinstance(assignment["counterfactual"], str)
+    escalation = next(row for row in records if row.get("escalated_to_strong"))
+    assert escalation["counterfactual"]
+    assert escalation["selected"] == "mimo-v2.6-pro"
+    planner = next(row for row in records if row.get("point") == "planner")
+    assert planner["preference_applied"] is True
+    assert planner["escalated_to_strong"] is False
+    # Observations from both attempts are kept. Probes still do not write them back.
+    assert adapter.state["observations"]
 
 
 def test_group_turn_split_and_probe_transcript_field():

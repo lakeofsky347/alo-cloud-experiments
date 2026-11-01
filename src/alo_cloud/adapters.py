@@ -264,10 +264,16 @@ class _TMSGate:
 class HeterogeneousALO:
     def __init__(self, *, planner_model=None, max_turns=10, max_attempts=2, seed=20261027,
                  policy_priors=None, safety_multiplier=1.25, organization_updates=_UNSET,
-                 probe=False, cold_prior=False):
+                 probe=False, cold_prior=False, user_preference=None):
         if (type(max_turns) is not int or max_turns < 1
                 or type(max_attempts) is not int or max_attempts < 1):
             raise PilotStopped("invalid_alo_attempt_or_turn_limit")
+        if user_preference is not None:
+            if (not isinstance(user_preference, dict) or set(user_preference) != {"first_try", "strong"}
+                    or any(not isinstance(user_preference[key], str) or not user_preference[key]
+                           for key in ("first_try", "strong"))
+                    or user_preference["first_try"] == user_preference["strong"]):
+                raise PilotStopped("invalid_user_preference")
         if cold_prior and not probe:
             raise PilotStopped("cold_prior_requires_probe")
         if organization_updates is _UNSET:
@@ -282,6 +288,7 @@ class HeterogeneousALO:
                        "safety_multiplier": safety_multiplier,
                        "organization_updates": bool(organization_updates),
                        "probe": bool(probe), "cold_prior": bool(cold_prior),
+                       "user_preference": copy.deepcopy(user_preference),
                        "policy_version": POLICY_VERSION,
                        "tool_loop_version": TOOL_LOOP_VERSION}
         self.state = {"observations": {}, "worker_transcripts": {}, "planner_messages": []}
@@ -358,6 +365,28 @@ class HeterogeneousALO:
         policy = ConstrainedThompsonPolicy(self.state.setdefault("observations", {}),
             services.budget_remaining, priors=self.config["policy_priors"],
             safety_multiplier=self.config["safety_multiplier"])
+        pref = self.config.get("user_preference")
+
+        class PreferencePolicy:
+            """First feasible assignment is the preferred model. Thompson remains the counterfactual."""
+
+            def select(self, org, pool, worker_ids, cell, topics, user_id, rng=None):
+                chosen, trace = policy.select(org, pool, worker_ids, cell, topics, user_id, rng)
+                if not isinstance(pref, dict):
+                    return chosen, trace
+                first = pref["first_try"]
+                score = trace.get("scores", {}).get(first, {})
+                applied = bool(isinstance(score, dict) and score.get("feasible") and first in worker_ids)
+                actual = first if applied else chosen
+                record = {"point": "assignment", "preference_applied": applied,
+                          "escalated_to_strong": False, "counterfactual": chosen, "selected": actual}
+                adapter.state.setdefault("decision_records", []).append(record)
+                traced = dict(trace)
+                traced.update(record)
+                traced["selected"] = actual
+                return actual, traced
+
+        assignment = PreferencePolicy() if isinstance(pref, dict) else policy
 
         class Bridge:
             def __init__(self, model, *, planner=False):
@@ -368,6 +397,16 @@ class HeterogeneousALO:
 
             def complete(self, prompt, *, system="", max_tokens=4096):
                 if self.planner:
+                    pref = adapter.config.get("user_preference")
+                    if isinstance(pref, dict) and not adapter.state.get("planner_preference_logged"):
+                        adapter.state["planner_preference_logged"] = True
+                        adapter.state.setdefault("decision_records", []).append({
+                            "point": "planner",
+                            "preference_applied": self.model == pref["first_try"],
+                            "escalated_to_strong": False,
+                            "counterfactual": None,
+                            "selected": self.model,
+                        })
                     messages = adapter.state.setdefault("planner_messages", [])
                     if not messages:
                         messages.append({"role": "system", "content": system})
@@ -460,6 +499,12 @@ class HeterogeneousALO:
             node_id = str(last.get("node_id") or "")
             role_id = str(role.role_id or "")
             verifier = node_id in {"s2", "verify", "verifier"} or "verif" in role_id.lower()
+            last["diff_nonempty"] = bool(diff_nonempty)
+            # A non-empty implementation diff still lets s2 run. An empty diff
+            # fails the node only when a user preference asks for escalation.
+            pref = adapter.config.get("user_preference")
+            if isinstance(pref, dict) and not diff_nonempty:
+                return False
             if signal == "fail" and verifier:
                 return False
             if diff_nonempty and not verifier:
@@ -499,14 +544,25 @@ class HeterogeneousALO:
                 budget_left = (isinstance(remaining, dict)
                                and all(isinstance(remaining.get(key), (int, float)) and remaining.get(key) > 0
                                        for key in ("requests", "cny")))
+                pref = adapter.config.get("user_preference")
+                quality_fail = last.get("public_signal") == "fail"
+                empty_diff = not last.get("diff_nonempty")
+                needs = (quality_fail or empty_diff) if isinstance(pref, dict) else quality_fail
                 record = {"node_id": last.get("node_id"), "attempt": ctx.attempt,
                           "public_signal": last.get("public_signal"), "budget_left": budget_left,
                           "local_contract_status": last.get("local_contract_status"),
-                          "tried_models": list(ctx.tried_models)}
-                if last.get("public_signal") != "fail" or not budget_left:
-                    reason = "public_check_not_failed" if last.get("public_signal") != "fail" else "budget_exhausted"
-                    record["action"] = "stop"
-                    record["reason"] = reason
+                          "tried_models": list(ctx.tried_models), "empty_diff": empty_diff,
+                          "preference_applied": False, "escalated_to_strong": False,
+                          "counterfactual": None}
+                if not needs or not budget_left:
+                    reason = "budget_exhausted" if needs and not budget_left else "public_check_not_failed"
+                    if isinstance(pref, dict) and empty_diff and not quality_fail and budget_left:
+                        reason = "empty_diff"
+                    if not needs:
+                        reason = "public_check_not_failed" if not empty_diff or not isinstance(pref, dict) else "empty_diff"
+                    if needs and not budget_left:
+                        reason = "budget_exhausted"
+                    record.update(action="stop", reason=reason)
                     services.event("alo_decision", record)
                     adapter.state.setdefault("decision_records", []).append(record)
                     return Decision("stop", reason=reason)
@@ -516,13 +572,21 @@ class HeterogeneousALO:
                     services.event("alo_decision", record)
                     adapter.state.setdefault("decision_records", []).append(record)
                     return Decision("stop", reason="all_eligible_models_tried")
-                target, trace = policy.select(org, pool, untried, "remediation", (), "default-user", rng)
-                record.update(action="reassign", reason="constrained_ts_reassignment",
-                              target_model=target, trace=trace)
+                counterfactual, trace = policy.select(org, pool, untried, "remediation", (), "default-user", rng)
+                target = counterfactual
+                escalated = False
+                strong = pref["strong"] if isinstance(pref, dict) else None
+                strong_score = trace.get("scores", {}).get(strong) if strong else None
+                if isinstance(strong_score, dict) and strong_score.get("feasible"):
+                    target = strong
+                    escalated = True
+                record.update(action="reassign", reason="escalate_to_strong" if escalated else "constrained_ts_reassignment",
+                              target_model=target, counterfactual=counterfactual,
+                              escalated_to_strong=escalated, selected=target, trace=trace)
                 services.event("alo_decision", record)
                 services.event("alo_remediation_selection", trace)
                 adapter.state.setdefault("decision_records", []).append(record)
-                return Decision("reassign", target_model=target, reason="constrained_ts_reassignment")
+                return Decision("reassign", target_model=target, reason=record["reason"])
 
         pool = {model: Bridge(model) for model in models}
         planner = Bridge(planner_model, planner=True)
@@ -536,7 +600,7 @@ class HeterogeneousALO:
                 "goal and persistent_workspace scopes, and choose topics from coding, implementation, "
                 "testing, validation. All roles share public tools; do not request credentials.")
             result = run_task(org, pool, task, planner_id=planner.info.id, rng=rng,
-                max_attempts=self.config["max_attempts"], criteria_fn=criterion, assignment_policy=policy,
+                max_attempts=self.config["max_attempts"], criteria_fn=criterion, assignment_policy=assignment,
                 remediation=BudgetedRemediation(), execution_scope=scope,
                 extra_state={"task_description": task, "persistent_workspace": "Inspect your own files using public tools."},
                 event_fn=lambda event, data: services.event("alo_" + event, data),
