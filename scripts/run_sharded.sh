@@ -66,7 +66,9 @@ elif [ ! -d "$DATA_DIR/SWE-bench_Lite" ] || [ ! -d "$DATA_DIR/ProgramBench" ]; t
 fi
 
 # Each shard runs its own M1 units, then its own M2 units.
-# SWE M2 orders stay one group. ProgramBench M2 orders are separate shards
+# SWE M2 persist chains and their learned probes stay on one shard, in order.
+# Reset, cold, and reference units are spread across shards.
+# ProgramBench M2 orders are separate shards
 # because they do not share a checkpoint. M1 ProgramBench still uses every shard.
 # With ALO_BENCHMARKS set, M2 waits only for included M1 units on this shard.
 # M2 SWE chains depend on M1 SWE prerequisites, not on queued ProgramBench.

@@ -506,6 +506,44 @@ def test_mode_only_parent_is_the_patch_base(tmp_path):
     assert resolve_image_head(repo, base) is None
 
 
+def test_mode_only_binary_child_is_the_patch_base(tmp_path):
+    from alo_cloud.workspace_prep import resolve_image_head
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.check_call(["git", "init", "-q", str(repo)])
+    subprocess.check_call(["git", "-C", str(repo), "config", "user.email", "t@example.com"])
+    subprocess.check_call(["git", "-C", str(repo), "config", "user.name", "t"])
+    (repo / "blob.bin").write_bytes(b"\x00\x01\xff")
+    subprocess.check_call(["git", "-C", str(repo), "add", "blob.bin"])
+    subprocess.check_call(["git", "-C", str(repo), "commit", "-q", "-m", "base"])
+    base = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+    subprocess.check_call(["git", "-C", str(repo), "update-index", "--chmod=+x", "blob.bin"])
+    subprocess.check_call(["git", "-C", str(repo), "commit", "-q", "-m", "SWE-bench"])
+    head = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+    assert head != base
+    assert resolve_image_head(repo, base) == head
+
+
+def test_git_failure_is_not_reported_as_a_base_mismatch(tmp_path):
+    from alo_cloud.errors import PilotStopped
+    from alo_cloud.ledger import requeue_interrupted
+    from alo_cloud.workspace_prep import resolve_image_head
+    def boom(argv):
+        raise PilotStopped("workspace_prepare_failed")
+    with pytest.raises(PilotStopped, match="swe_image_git_failed"):
+        resolve_image_head(tmp_path, "a" * 40, git=boom)
+    run = tmp_path / "run"
+    run.mkdir()
+    rows = [
+        {"unit_id": "m1.sphinx.g1-main", "status": "blocked", "reason": "swe_image_base_commit_mismatch"},
+        {"unit_id": "m1.kept", "status": "completed", "reason": ""},
+    ]
+    (run / "records.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    result = requeue_interrupted(run)
+    assert result["requeued"] == ["m1.sphinx.g1-main"]
+    assert "m1.sphinx.g1-main" not in (run / "records.jsonl").read_text(encoding="utf-8")
+
+
 def test_content_commit_on_base_is_rejected(tmp_path):
     from alo_cloud.workspace_prep import resolve_image_head
     repo = tmp_path / "repo"

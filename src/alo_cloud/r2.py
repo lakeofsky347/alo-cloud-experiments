@@ -313,36 +313,70 @@ def smoke_unit():
     )
 
 
-def r2_task_groups():
-    """One M1 task per group. All M2 SWE tasks share a group so a chain is not split."""
-    groups = []
-    seen = set()
-    for unit in tuple(iter_r2_m1_units()) + tuple(iter_r2_m2_units()):
-        key = (unit.track, unit.task_id)
-        if key in seen:
+def _m2_chain_key(unit):
+    """Persist state and the learned probes that read it share one chain id.
+
+    Reset learning units, cold probes, and reference units have no parent.
+    Each of those is its own chain so the four shards can run them together.
+    """
+    if unit.m2_condition in {"persist", "learned"}:
+        return ("chain", unit.order_id or "")
+    return ("free", unit.unit_id)
+
+
+_SHARD_ASSIGNMENT = {}
+
+
+def _r2_assignment(num_shards):
+    """Deterministic shard. M1 stays one task per group, in catalog order.
+
+    M2 used to be a single group after those tasks, so with 48 M1 tasks and
+    4 shards every M2 unit landed on shard 0. Chain groups and free units
+    continue that same round-robin. This map is not part of the freeze payload.
+    """
+    cached = _SHARD_ASSIGNMENT.get(num_shards)
+    if cached is not None:
+        return cached
+    assignment = {}
+    group_index = 0
+    seen_tasks = set()
+    for item in iter_r2_m1_units():
+        key = (item.track, item.task_id)
+        if key in seen_tasks:
             continue
-        seen.add(key)
-        if unit.study == "m1":
-            groups.append((key,))
-    m2_keys = []
-    for unit in iter_r2_m2_units():
-        key = (unit.track, unit.task_id)
-        if key not in m2_keys:
-            m2_keys.append(key)
-    if m2_keys:
-        groups.append(tuple(m2_keys))
-    return tuple(groups)
+        seen_tasks.add(key)
+        assignment[("task",) + key] = group_index % num_shards
+        group_index += 1
+    seen_chains = set()
+    for item in iter_r2_m2_units():
+        chain = _m2_chain_key(item)
+        if chain[0] == "chain":
+            if chain not in seen_chains:
+                seen_chains.add(chain)
+                assignment[chain] = group_index % num_shards
+                group_index += 1
+            assignment[("unit", item.unit_id)] = assignment[chain]
+        else:
+            assignment[("unit", item.unit_id)] = group_index % num_shards
+            group_index += 1
+    _SHARD_ASSIGNMENT[num_shards] = assignment
+    return assignment
+
+
+def r2_shard_of(unit, num_shards):
+    if type(num_shards) is not int or num_shards < 1:
+        raise ValueError("invalid_shard")
+    assignment = _r2_assignment(num_shards)
+    if unit.study == "m1":
+        return assignment[("task", unit.track, unit.task_id)]
+    return assignment[("unit", unit.unit_id)]
 
 
 def filter_r2_shard(units, index, num_shards):
+    """Shard slice in the original schedule order, so a parent still runs first."""
     if type(index) is not int or type(num_shards) is not int or num_shards < 1 or not 0 <= index < num_shards:
         raise ValueError("invalid_shard")
-    groups = r2_task_groups()
-    shard_of = {}
-    for group_index, group in enumerate(groups):
-        for key in group:
-            shard_of[key] = group_index % num_shards
-    return tuple(unit for unit in units if shard_of.get((unit.track, unit.task_id), 0) == index)
+    return tuple(unit for unit in units if r2_shard_of(unit, num_shards) == index)
 
 
 def cny_text_to_micro(text):
