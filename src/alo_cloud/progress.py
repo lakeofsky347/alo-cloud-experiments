@@ -18,7 +18,7 @@ from .prices import MICROCNY_PER_CNY
 from .shardlock import exclusive_lock
 
 
-CHARGED_TIMEOUT_CAUSES = frozenset({"deadline_timeout", "timeout"})
+CHARGED_TIMEOUT_CAUSES = frozenset({"deadline_timeout", "timeout", "provider_stream_idle"})
 SNAPSHOT_SCHEMA = "alo-charged-timeout-counts-v1"
 
 

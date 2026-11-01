@@ -39,9 +39,11 @@ PRIOR_SPEND_TOTAL_CNY = "0.000"
 USER_PREFERENCE = {"first_try": "deepseek-flash", "strong": "mimo-v2.6-pro"}
 # Infra only. Not part of the freeze payload. The read budget equals frozen
 # provider_timeout_s, measured from connect success. Connect fails fast when
-# no socket is established.
+# no socket is established. A gap with no bytes is an idle timeout and does
+# not extend or replace that total deadline.
 R2_READ_TIMEOUT_S = dict(PROVIDER_TIMEOUT_S)
 R2_CONNECT_TIMEOUT_S = 15
+R2_STREAM_IDLE_TIMEOUT_S = {model: 120 for model in MODEL_POOL}
 # Round-1 settled means, used only to print a cost estimate. Not a draw input.
 R1_CNY_PER_REQUEST = {
     "deepseek-flash": 0.009,

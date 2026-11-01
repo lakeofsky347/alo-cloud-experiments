@@ -29,7 +29,10 @@ from .freeze import (
     requested_benchmarks, select_units,
 )
 from .diagnostics import write_diagnostic
-from .ledger import current_epoch, infra_generations, restart_counts, restart_unit, track_generations
+from .ledger import (
+    current_epoch, current_outcome_epoch, infra_generations, restart_counts, restart_unit,
+    track_generations,
+)
 from .programbench_prompt import PROGRAMBENCH_BUDGET_NOTICE, PROGRAMBENCH_SUBMISSION_CONTRACT
 from .progress import publish_timeout_counts
 from .images import resolve_task_image
@@ -277,6 +280,8 @@ def _termination_reason(status, reason, outcome):
         return "final"
     if reason == "length_stop":
         return "length_stop"
+    if reason == "provider_timeout_exhausted":
+        return "provider_timeout_exhausted"
     return "turn_cap"
 
 
@@ -346,11 +351,32 @@ def _unknown_log(run_dir):
     return Path(run_dir) / "unknown_outcomes.jsonl"
 
 
+def _line_in_outcome_epoch(row, epoch):
+    """Untagged historical lines count only in epoch 0. Later epochs use the tag."""
+    if not isinstance(row, dict):
+        return False
+    tag = row.get("outcome_epoch")
+    if epoch == 0:
+        return tag in (None, 0)
+    return tag == epoch
+
+
 def _unknown_count(run_dir):
     path = _unknown_log(run_dir)
     if not path.is_file():
         return 0
-    return sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
+    epoch = current_outcome_epoch(run_dir)
+    count = 0
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if _line_in_outcome_epoch(row, epoch):
+            count += 1
+    return count
 
 
 def _note_unknown(run_dir, record):
@@ -359,6 +385,7 @@ def _note_unknown(run_dir, record):
         "unit_id": record.get("unit_id"),
         "reason": record.get("reason"),
         "request_id": record.get("unknown_request_id"),
+        "outcome_epoch": current_outcome_epoch(run_dir),
     }, ensure_ascii=False) + "\n"
     with exclusive_lock(run_dir, "unknown"):
         with path.open("a", encoding="utf-8") as handle:
@@ -572,10 +599,16 @@ def run_schedule(units, run_dir, *, live, data_dir=None, docker_image=None, send
     prior_opening = None
     read_timeouts = None
     connect_timeout_s = None
+    stream_idle_timeouts = None
+    continue_after_timeout = False
     if batch == "r2":
-        from .r2 import R2_CONNECT_TIMEOUT_S, R2_READ_TIMEOUT_S, resolve_prior_spend
+        from .r2 import (
+            R2_CONNECT_TIMEOUT_S, R2_READ_TIMEOUT_S, R2_STREAM_IDLE_TIMEOUT_S, resolve_prior_spend,
+        )
         read_timeouts = dict(R2_READ_TIMEOUT_S)
         connect_timeout_s = R2_CONNECT_TIMEOUT_S
+        stream_idle_timeouts = dict(R2_STREAM_IDLE_TIMEOUT_S)
+        continue_after_timeout = True
         try:
             prior_opening = resolve_prior_spend()["applied_microcny"]
         except ValueError as error:
@@ -637,7 +670,9 @@ def run_schedule(units, run_dir, *, live, data_dir=None, docker_image=None, send
                     image_seeder=image_seeder, unknown_so_far=_unknown_count(run_dir),
                     shard_id=shard_label, limit_overrides=limit_overrides,
                     reasoning_budget=reasoning_budget, user_preference=preference,
-                    read_timeouts=read_timeouts, connect_timeout_s=connect_timeout_s)
+                    read_timeouts=read_timeouts, connect_timeout_s=connect_timeout_s,
+                    stream_idle_timeouts=stream_idle_timeouts,
+                    continue_after_timeout=continue_after_timeout)
                 if record.get("charged_timeout"):
                     verdict = publish_timeout_counts(
                         run_dir, ledger, protocol_epoch=current_epoch(run_dir))
@@ -660,8 +695,10 @@ def run_schedule(units, run_dir, *, live, data_dir=None, docker_image=None, send
                         record["reason"] = "unknown_outcome_threshold"
                 _append_record(records_path, record)
                 known_ids = ledger.request_ids()
-                if ((record.get("charged_unknown") or record.get("charged_timeout")
-                        or record.get("charged_unparseable") or record.get("tool_sandbox_unknown"))
+                if (record.get("status") == "stopped"
+                        and record.get("reason") != "provider_timeout_exhausted"
+                        and (record.get("charged_unknown") or record.get("charged_timeout")
+                             or record.get("charged_unparseable") or record.get("tool_sandbox_unknown"))
                         and not retried and record.get("restart_count", 0) == 0
                         and not record.get("halt_schedule")):
                     if record.get("charged_timeout"):
@@ -722,9 +759,16 @@ def _rows_for_benchmarks(records, benchmarks):
     return [row for row in records if isinstance(row, dict) and row.get("track") in allowed]
 
 
-def blocked_fraction_exceeded(records, *, maximum=None, benchmarks=None):
+def _rows_for_outcome_epoch(records, epoch):
+    """Gate sample for one outcome epoch. Epoch 0 still sees untagged history."""
+    if epoch is None:
+        return records
+    return [row for row in records if _line_in_outcome_epoch(row, epoch)]
+
+
+def blocked_fraction_exceeded(records, *, maximum=None, benchmarks=None, outcome_epoch=None):
     """True when blocked units are more than the allowed share of a large enough sample."""
-    records = _rows_for_benchmarks(records, benchmarks)
+    records = _rows_for_outcome_epoch(_rows_for_benchmarks(records, benchmarks), outcome_epoch)
     finished = [row for row in records if isinstance(row, dict) and row.get("status")]
     if len(finished) < BLOCKED_FRACTION_MIN_UNITS:
         return False
@@ -760,7 +804,9 @@ def _stop_if_blocked(records, run_dir=None, shard="", benchmarks=None):
     if run_dir is not None:
         with exclusive_lock(run_dir, "records"):
             records = list(_done_ids(Path(run_dir) / "records.jsonl").values())
-    exceeded = blocked_fraction_exceeded(records, benchmarks=benchmarks)
+    epoch = current_outcome_epoch(run_dir) if run_dir is not None else 0
+    records = _rows_for_outcome_epoch(records, epoch)
+    exceeded = blocked_fraction_exceeded(records, benchmarks=benchmarks, outcome_epoch=epoch)
     if not exceeded:
         return
     text, _exceeded = format_blocked_report(records, benchmarks=benchmarks)
@@ -853,7 +899,8 @@ def _execute_unit(unit, run_dir, ledger, *, live, data_dir, docker_image, sender
                   git_runner=None, sandbox_memory=None, sandbox_pids=None, image_seeder=None,
                   unknown_so_far=0, shard_id="", limit_overrides=None, reasoning_budget=None,
                   pro_call_cap=None, user_preference=None, read_timeouts=None,
-                  connect_timeout_s=None):
+                  connect_timeout_s=None, stream_idle_timeouts=None,
+                  continue_after_timeout=False):
     record = {
         "schema": "alo-paid-unit-v1",
         "unit_id": unit.unit_id,
@@ -900,6 +947,8 @@ def _execute_unit(unit, run_dir, ledger, *, live, data_dir, docker_image, sender
         budget_notice=PROGRAMBENCH_BUDGET_NOTICE if unit.track == "ProgramBench" else None,
         read_timeouts=read_timeouts,
         connect_timeout_s=connect_timeout_s,
+        stream_idle_timeouts=stream_idle_timeouts,
+        continue_after_timeout=continue_after_timeout,
     )
     if type(pro_call_cap) is int:
         services.pro_call_cap = pro_call_cap
@@ -963,7 +1012,11 @@ def _execute_unit(unit, run_dir, ledger, *, live, data_dir, docker_image, sender
             "unit_seconds_exhausted", "provider_outcome_charged", "provider_deadline_charged",
             "provider_unparseable_charged", "pro_share_cap",
         }
-        if reason == "provider_deadline_charged":
+        if reason == "provider_timeout_exhausted":
+            # Same messages were retried once inside the unit. That is not a restart.
+            status = "stopped"
+            halt = False
+        elif reason == "provider_deadline_charged":
             record["charged_timeout"] = True
             if restart_count >= 1:
                 status = "blocked"
@@ -999,6 +1052,10 @@ def _execute_unit(unit, run_dir, ledger, *, live, data_dir, docker_image, sender
         reason = str(error)
         status, halt = "stopped", True
     sealed_files = _persist_compact(unit, services, adapter, run_dir, record)
+    if getattr(services, "charged_timeouts", 0):
+        record["charged_timeout"] = True
+        record["charged_timeout_events"] = services.charged_timeouts
+    record["outcome_epoch"] = current_outcome_epoch(run_dir)
     record["termination_reason"] = _termination_reason(status, reason, outcome)
     record["length_stops"] = getattr(services, "length_stops", 0)
     record["transport"] = transport_summary(getattr(services, "transport_counts", {}))
