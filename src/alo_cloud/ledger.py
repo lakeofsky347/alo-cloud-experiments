@@ -397,24 +397,46 @@ def begin_outcome_epoch(run_dir, *, reason):
 
     ``unknown_outcomes.jsonl`` keeps every line. New lines carry ``outcome_epoch``.
     Counts for the unknown threshold and the blocked-fraction gate use only the
-    current epoch. Untagged lines belong to epoch 0. An audit row is appended to
-    ``progress/outcome_epochs.jsonl``. This is not ``new-epoch``: that command
+    current epoch. Untagged lines belong to epoch 0. The charged-timeout and
+    unparseable CNY caps restart from the totals already in the ledger: those
+    totals are stored as baselines and are not deleted. An audit row is appended
+    to ``progress/outcome_epochs.jsonl``. This is not ``new-epoch``: that command
     archives the protocol generation and moves the unknown log aside.
     """
     if not isinstance(reason, str) or not reason.strip():
         raise ValueError("outcome_epoch_reason_required")
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
+    timeout_base, unparseable_base = _charged_cap_baselines(run_dir)
     with exclusive_lock(run_dir, "outcome_epoch"):
         epoch = _read_outcome_epoch(run_dir) + 1
         path = _outcome_epoch_path(run_dir)
         path.parent.mkdir(parents=True, exist_ok=True)
-        body = {"epoch": epoch, "reason": reason.strip()}
+        body = {
+            "epoch": epoch,
+            "reason": reason.strip(),
+            "charged_timeout_baseline_microcny": timeout_base,
+            "charged_unparseable_baseline_microcny": unparseable_base,
+        }
         path.write_text(json.dumps(body, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
-        audit = {"epoch": epoch, "reason": reason.strip()}
+        audit = dict(body)
         _append_text(run_dir / "progress" / "outcome_epochs.jsonl",
                      json.dumps(audit, ensure_ascii=False, sort_keys=True) + "\n")
         return body
+
+
+def _charged_cap_baselines(run_dir):
+    """Cumulative charged microcny for the current protocol epoch, or zeros."""
+    path = Path(run_dir) / "budget.sqlite3"
+    if not path.is_file():
+        return 0, 0
+    from .budget import BudgetLedger
+    from .progress import assess_charged_timeouts, assess_unparseable
+    ledger = BudgetLedger(path)
+    protocol = current_epoch(run_dir)
+    timeout = assess_charged_timeouts(ledger, protocol_epoch=protocol)["charged_timeout_microcny"]
+    unparseable = assess_unparseable(ledger, protocol_epoch=protocol)["charged_unparseable_microcny"]
+    return int(timeout), int(unparseable)
 
 
 def current_epoch(run_dir):

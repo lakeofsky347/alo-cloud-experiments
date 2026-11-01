@@ -55,8 +55,39 @@ def _charged_match(row, diagnostic, causes):
     return diagnostic.get("settled") is True
 
 
+def _baseline_microcny(value):
+    if type(value) is int and value >= 0:
+        return value
+    return 0
+
+
+def _outcome_epoch_record(run_dir):
+    """Outcome-epoch file. A missing baseline is zero, including old files."""
+    path = Path(run_dir) / "progress" / "outcome_epoch.json"
+    if not path.is_file():
+        return 0, 0, 0
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return 0, 0, 0
+    if not isinstance(value, dict):
+        return 0, 0, 0
+    epoch = value.get("epoch")
+    if type(epoch) is not int or epoch < 0:
+        epoch = 0
+    return (
+        epoch,
+        _baseline_microcny(value.get("charged_timeout_baseline_microcny")),
+        _baseline_microcny(value.get("charged_unparseable_baseline_microcny")),
+    )
+
+
 def _assess_charged(ledger, *, protocol_epoch, causes, rate_name, cny_name, count_key, micro_key, window_key):
-    """Per-model rate and epoch CNY for one settled diagnostic cause."""
+    """Per-model rate and epoch CNY for one settled diagnostic cause.
+
+    The CNY cap is applied to spend since the outcome-epoch baseline. The
+    cumulative total stays in ``micro_key``. The rate window is unchanged.
+    """
     directory = Path(ledger.path).parent / "diagnostics"
     from .ledger import track_generations
     generations = track_generations(ledger.path.parent)
@@ -92,17 +123,30 @@ def _assess_charged(ledger, *, protocol_epoch, causes, rate_name, cny_name, coun
         }
         if full and hits > len(window_rows) * CHARGED_TIMEOUT_RATE and rate_reason is None:
             rate_reason = rate_name
+    outcome_epoch, timeout_base, unparseable_base = _outcome_epoch_record(Path(ledger.path).parent)
+    if micro_key == "charged_timeout_microcny":
+        baseline = timeout_base
+        baseline_key = "charged_timeout_baseline_microcny"
+        since_key = "charged_timeout_since_baseline_microcny"
+    else:
+        baseline = unparseable_base
+        baseline_key = "charged_unparseable_baseline_microcny"
+        since_key = "charged_unparseable_since_baseline_microcny"
+    since_baseline = max(0, charged_microcny - baseline)
     cap_microcny = CHARGED_TIMEOUT_EPOCH_CNY * MICROCNY_PER_CNY
-    cny_reason = cny_name if charged_microcny > cap_microcny else None
+    cny_reason = cny_name if since_baseline > cap_microcny else None
     return {
         "schema": SNAPSHOT_SCHEMA,
         "epoch": protocol_epoch,
+        "outcome_epoch": outcome_epoch,
         "window": CHARGED_TIMEOUT_WINDOW,
         "rate_limit": CHARGED_TIMEOUT_RATE,
         "rate_applies_after_requests": CHARGED_TIMEOUT_WINDOW,
         "epoch_cny_cap": CHARGED_TIMEOUT_EPOCH_CNY,
         count_key: charged_count,
         micro_key: charged_microcny,
+        baseline_key: baseline,
+        since_key: since_baseline,
         "halt_reason": rate_reason or cny_reason,
         "by_model": models,
     }
