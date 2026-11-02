@@ -255,27 +255,102 @@ def _git(root, args, *, input_bytes=None):
     )
 
 
-def _restore_candidate(root, orig_head, patch, script_name, script_bytes):
+def _list_untracked(root):
+    """Repo-relative paths of untracked, non-ignored files. Empty if git cannot list."""
+    listed = _git(root, ["ls-files", "--others", "--exclude-standard", "-z"])
+    if listed.returncode != 0:
+        return []
+    found = []
+    for raw in listed.stdout.split(b"\0"):
+        if not raw:
+            continue
+        rel = raw.decode("utf-8", "surrogateescape")
+        if rel and ".." not in Path(rel).parts and not rel.startswith(("/", "\\")):
+            found.append(rel)
+    return found
+
+
+def _snapshot_untracked(root):
+    """Bytes and mode of files that were never staged. ``git diff HEAD`` omits them."""
+    saved = {}
+    for rel in _list_untracked(root):
+        path = root / rel
+        if path.is_file():
+            saved[rel] = (path.read_bytes(), path.stat().st_mode & 0o777)
+    return saved
+
+
+def _cached_added_paths(root, patch):
+    """Paths the patch adds, read from the index so names are not parsed out of the diff.
+
+    ``git apply --cached`` does not write the worktree, so an untracked copy of
+    a new file does not make this probe fail. The index is returned to HEAD.
+    """
+    if not patch.strip():
+        return []
+    staged = _git(root, ["apply", "--cached", "--binary", "--whitespace=nowarn"], input_bytes=patch)
+    if staged.returncode != 0:
+        return []
+    listed = _git(root, ["diff", "--cached", "--name-only", "--diff-filter=A", "-z"])
+    cleared = _git(root, ["reset", "-q", "--mixed", "HEAD"])
+    if cleared.returncode != 0:
+        _git(root, ["read-tree", "HEAD"])
+    if listed.returncode != 0:
+        return []
+    found = []
+    for raw in listed.stdout.split(b"\0"):
+        if not raw:
+            continue
+        rel = raw.decode("utf-8", "surrogateescape")
+        if rel and ".." not in Path(rel).parts and not rel.startswith(("/", "\\")):
+            found.append(rel)
+    return found
+
+
+def _restore_candidate(root, orig_head, patch, script_name, script_bytes, untracked=None):
     """Put back the candidate fix even if the measurement staged the unfixed tree.
 
     ``workspace_patch`` runs ``git add -A``. A reproduction command therefore
-    stages whatever the worktree is at that moment. Restoring with
-    ``git checkout -- .`` would then reload that index and drop the fix.
-    Reset to the saved HEAD and reapply the saved patch instead.
+    stages whatever the worktree is at that moment, including files that were
+    never part of the candidate. ``git reset --hard`` then deletes those
+    newly staged files, and it does not delete untracked files the command
+    recreated. Snapshot the untracked files first, clear only the paths the
+    saved patch adds, reapply, and write the snapshot back.
     """
+    saved = {} if untracked is None else untracked
     reset = _git(root, ["reset", "--hard", orig_head])
     if reset.returncode != 0:
         raise RuntimeError("repro_workspace_not_restored")
+    added_paths = _cached_added_paths(root, patch)
     if patch.strip():
-        # The measurement may have recreated alo_repro.py. A new-file hunk
-        # cannot apply onto that copy, and reset --hard already removed it
-        # when it was only in the patch. Apply before writing any fallback.
+        # reset --hard leaves untracked copies of files the patch adds.
+        # A new-file hunk cannot apply onto that copy.
+        for rel in added_paths:
+            residue = root / rel
+            if residue.is_file() or residue.is_symlink():
+                residue.unlink()
         applied = _git(root, ["apply", "--binary", "--whitespace=nowarn"], input_bytes=patch)
         if applied.returncode != 0:
             raise RuntimeError("repro_workspace_not_restored")
     script = root / script_name
     if script_bytes is not None and not script.is_file():
         script.write_bytes(script_bytes)
+    for rel, (data, mode) in saved.items():
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        path.chmod(mode)
+    # A file the measurement created and left untracked is not part of the
+    # candidate. Drop it before staging so it does not become part of the fix.
+    allowed = set(saved) | set(added_paths)
+    if script_bytes is not None:
+        allowed.add(script_name)
+    for rel in _list_untracked(root):
+        if rel in allowed:
+            continue
+        extra = root / rel
+        if extra.is_file() or extra.is_symlink():
+            extra.unlink()
     # Match the live invariant: the index agrees with the restored worktree,
     # so a later checkout cannot revive the unfixed measurement.
     added = _git(root, ["add", "-A"])
@@ -307,6 +382,9 @@ def reproduction_before(services, root, script_name, timeout_s):
     patch = diff.stdout
     if not patch.strip():
         return None
+    # Taken before the reverse. git diff HEAD does not contain these files,
+    # and a later git add -A plus reset --hard would delete them.
+    untracked = _snapshot_untracked(root)
     try:
         reversed_diff = _git(root, ["apply", "-R", "--binary", "--whitespace=nowarn"], input_bytes=patch)
         if reversed_diff.returncode != 0:
@@ -316,7 +394,7 @@ def reproduction_before(services, root, script_name, timeout_s):
         measured = _command_code(services, ["python3", script_name], timeout_s)
         return measured
     finally:
-        _restore_candidate(root, orig_head, patch, script_name, script_bytes)
+        _restore_candidate(root, orig_head, patch, script_name, script_bytes, untracked)
 
 
 def _prefer(measured, recorded):

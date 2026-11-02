@@ -270,3 +270,58 @@ def test_staged_repro_measurement_keeps_the_candidate_fix(tmp_path):
     assert staged.returncode == 0
     assert "FIXED" in staged.stdout
     assert "BUG" not in staged.stdout
+
+
+def test_untracked_files_survive_and_do_not_block_reapply(tmp_path):
+    """Files never staged are outside ``git diff HEAD``.
+
+    The measurement's ``git add -A`` makes ``reset --hard`` delete them, and
+    an untracked copy of a patch-added path makes the reapply fail. Both have
+    to come back as the candidate left them.
+    """
+    root = tmp_path / "ws"
+    workspace = Workspace(root)
+    subprocess.check_call(["git", "init", "-q"], cwd=root)
+    subprocess.check_call(["git", "config", "user.email", "t@example.com"], cwd=root)
+    subprocess.check_call(["git", "config", "user.name", "t"], cwd=root)
+    (root / "bug.py").write_text("BUG\n", encoding="utf-8")
+    subprocess.check_call(["git", "add", "bug.py"], cwd=root)
+    subprocess.check_call(["git", "commit", "-q", "-m", "base"], cwd=root)
+    (root / "bug.py").write_text("FIXED\n", encoding="utf-8")
+    (root / "alo_repro.py").write_text(SCRIPT, encoding="utf-8")
+    (root / "extra.py").write_text("NEW\n", encoding="utf-8")
+    subprocess.check_call(["git", "add", "bug.py", "alo_repro.py", "extra.py"], cwd=root)
+    (root / "helper.py").write_text("KEEP\n", encoding="utf-8")
+    helper_mode = (root / "helper.py").stat().st_mode & 0o777
+
+    calls = {"n": 0}
+
+    def command(argv, timeout_s=30):
+        del timeout_s
+        calls["n"] += 1
+        completed = subprocess.run(argv, cwd=root, capture_output=True, check=False)
+        subprocess.run(["git", "-C", str(root), "add", "-A"], check=False, capture_output=True)
+        # Only the before-run plants residue. The after-run must observe the restore.
+        # reset --hard does not remove files created after git add -A.
+        if calls["n"] == 1:
+            (root / "extra.py").write_text("RESIDUE\n", encoding="utf-8")
+            (root / "noise.py").write_text("NOISE\n", encoding="utf-8")
+        return {"returncode": completed.returncode, "stdout": "", "stderr": ""}
+
+    services = type("S", (), {})()
+    services.workspace = workspace
+    services.command = command
+    evidence = collect_repro_v1(services)
+    assert evidence["signal"] == "pass"
+    assert evidence["repro_before_returncode"] != 0
+    assert evidence["repro_after_returncode"] == 0
+    assert (root / "bug.py").read_text(encoding="utf-8") == "FIXED\n"
+    assert (root / "alo_repro.py").is_file()
+    assert (root / "extra.py").read_text(encoding="utf-8") == "NEW\n"
+    assert (root / "helper.py").read_text(encoding="utf-8") == "KEEP\n"
+    assert (root / "helper.py").stat().st_mode & 0o777 == helper_mode
+    assert not (root / "noise.py").exists()
+    staged = subprocess.run(
+        ["git", "-C", str(root), "show", ":extra.py"], capture_output=True, text=True, check=False)
+    assert staged.returncode == 0
+    assert staged.stdout == "NEW\n"

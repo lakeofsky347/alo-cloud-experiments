@@ -214,6 +214,124 @@ def test_patch_script_is_measured_on_the_clean_tree_and_the_patched_tree(tmp_pat
     assert (root / "alo_repro.py").is_file()
 
 
+def _run_execute_driver(root, patch_path, *tests):
+    import os
+    import subprocess
+    from alo_cloud.signal_replay import _EXECUTE_DRIVER
+
+    env = os.environ.copy()
+    env["ALO_REPRO_ROOT"] = str(root)
+    return subprocess.run(
+        [os.environ.get("PYTHON", "python3"), "-c", _EXECUTE_DRIVER, "alo_repro.py", str(patch_path), *tests],
+        capture_output=True, env=env, check=False)
+
+
+def _init_repo(root):
+    import subprocess
+    subprocess.check_call(["git", "init", "-q"], cwd=root)
+    subprocess.check_call(["git", "config", "user.email", "t@example.com"], cwd=root)
+    subprocess.check_call(["git", "config", "user.name", "t"], cwd=root)
+
+
+def test_patch_that_adds_another_new_file_applies_and_measures(tmp_path):
+    """A second new file must not survive the extract step and block git apply."""
+    import subprocess
+    from alo_cloud.signal_replay import _parse_execute_result
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    _init_repo(root)
+    (root / "bug.py").write_text("BUG\n", encoding="utf-8")
+    subprocess.check_call(["git", "add", "bug.py"], cwd=root)
+    subprocess.check_call(["git", "commit", "-q", "-m", "base"], cwd=root)
+    script = "import sys\nfrom pathlib import Path\nsys.exit(0 if 'FIXED' in Path('bug.py').read_text() else 1)\n"
+    (root / "bug.py").write_text("FIXED\n", encoding="utf-8")
+    (root / "alo_repro.py").write_text(script, encoding="utf-8")
+    extra = root / "sub"
+    extra.mkdir()
+    (extra / "extra.py").write_text("NEW\n", encoding="utf-8")
+    subprocess.check_call(["git", "add", "-A"], cwd=root)
+    patch = subprocess.check_output(["git", "-C", str(root), "diff", "--cached", "--binary", "HEAD"])
+    subprocess.check_call(["git", "-C", str(root), "reset", "--hard", "HEAD"], cwd=root)
+    assert not (root / "alo_repro.py").exists()
+    assert not (extra / "extra.py").exists()
+    patch_path = tmp_path / "model.patch"
+    patch_path.write_bytes(patch)
+    completed = _run_execute_driver(root, patch_path)
+    assert completed.returncode == 0, completed.stderr.decode()
+    evidence = _parse_execute_result({
+        "returncode": completed.returncode,
+        "stdout": completed.stdout.decode(),
+        "stderr": completed.stderr.decode(),
+    })
+    assert evidence["signal"] == "pass"
+    assert evidence["patch_applied"] is True
+    assert evidence["repro_before_returncode"] != 0
+    assert evidence["repro_after_returncode"] == 0
+    assert (root / "bug.py").read_text(encoding="utf-8") == "FIXED\n"
+    assert (root / "alo_repro.py").is_file()
+    assert (extra / "extra.py").read_text(encoding="utf-8") == "NEW\n"
+
+
+def test_non_applying_patch_is_unknown_even_when_clean_tests_pass():
+    from alo_cloud.signal_replay import _parse_execute_result
+
+    # The clean tree's tests exited 0 and the script looks like a pass.
+    # pytest-8906 was scored pass in that shape after apply failed.
+    evidence = _parse_execute_result({"returncode": 0, "stdout": json.dumps({
+        "before": 1, "after": 0, "tests": 0, "tests_base": 0,
+        "applied": False, "runner": "pytest", "reason": None,
+    }) + "\n", "stderr": ""})
+    assert evidence["signal"] == "unknown"
+    assert evidence["reason"] == "patch_not_applied"
+    assert evidence["execute_reason"] == "patch_not_applied"
+    assert evidence["patch_applied"] is False
+    assert evidence["tests_returncode"] is None
+    assert evidence["repro_before_returncode"] is None
+    assert evidence["repro_after_returncode"] is None
+
+
+def test_driver_reports_unknown_when_the_patch_does_not_apply(tmp_path):
+    import subprocess
+    from alo_cloud.signal_replay import _parse_execute_result
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    _init_repo(root)
+    (root / "bug.py").write_text("BUG\n", encoding="utf-8")
+    (root / "test_bug.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+    subprocess.check_call(["git", "add", "bug.py", "test_bug.py"], cwd=root)
+    subprocess.check_call(["git", "commit", "-q", "-m", "base"], cwd=root)
+    patch = (
+        "diff --git a/bug.py b/bug.py\n"
+        "--- a/bug.py\n"
+        "+++ b/bug.py\n"
+        "@@ -1 +1 @@\n"
+        "-NOT_THE_BASE\n"
+        "+FIXED\n"
+        "diff --git a/alo_repro.py b/alo_repro.py\n"
+        "new file mode 100644\n"
+        "--- /dev/null\n"
+        "+++ b/alo_repro.py\n"
+        "@@ -0,0 +1 @@\n"
+        "+import sys\n"
+    ).encode()
+    patch_path = tmp_path / "model.patch"
+    patch_path.write_bytes(patch)
+    completed = _run_execute_driver(root, patch_path, "test_bug.py")
+    assert completed.returncode == 0, completed.stderr.decode()
+    evidence = _parse_execute_result({
+        "returncode": completed.returncode,
+        "stdout": completed.stdout.decode(),
+        "stderr": completed.stderr.decode(),
+    })
+    assert evidence["signal"] == "unknown"
+    assert evidence["reason"] == "patch_not_applied"
+    assert evidence["patch_applied"] is False
+    assert (root / "bug.py").read_text(encoding="utf-8") == "BUG\n"
+    assert not (root / "alo_repro.py").exists()
+
+
 def test_execute_names_the_container_and_removes_it_on_timeout():
     import subprocess
     from alo_cloud.signal_replay import REPLAY_CONTAINER_LABEL, execute_public_checks

@@ -361,23 +361,29 @@ def run(argv):
     return completed.returncode
 
 before = after = None
-# The candidate script often exists only inside model.patch. Apply once, keep
-# those bytes, return to the clean tree, and run that same script on both.
+# The candidate script often exists only inside model.patch. Stage the patch
+# in the index, read the blob, and unstage with a mixed reset. That never
+# writes the patch's new files into the worktree, so the real apply below is
+# not blocked by untracked residue. reset --hard would leave those files.
 extracted = None
 existed = script.is_file()
 original = script.read_bytes() if existed else None
 patch_bytes = pathlib.Path(patch_path).read_bytes()
 if patch_bytes.strip():
     probed = subprocess.run(
-        ["git", "-C", str(root), "apply", "--whitespace=nowarn", patch_path],
+        ["git", "-C", str(root), "apply", "--cached", "--whitespace=nowarn", patch_path],
         capture_output=True).returncode == 0
-    if probed and script.is_file():
-        extracted = script.read_bytes()
-    subprocess.run(["git", "-C", str(root), "reset", "--hard", "HEAD"], capture_output=True)
-    if existed and original is not None and not script.is_file():
-        script.write_bytes(original)
-    elif not existed and script.is_file():
-        script.unlink()
+    if probed:
+        shown = subprocess.run(
+            ["git", "-C", str(root), "show", f":{script_name}"],
+            capture_output=True)
+        if shown.returncode == 0:
+            extracted = shown.stdout
+        cleared = subprocess.run(
+            ["git", "-C", str(root), "reset", "-q", "--mixed", "HEAD"],
+            capture_output=True)
+        if cleared.returncode != 0:
+            subprocess.run(["git", "-C", str(root), "read-tree", "HEAD"], capture_output=True)
 if extracted is not None:
     script.write_bytes(extracted)
 elif script.is_file():
@@ -416,14 +422,19 @@ if patch.strip():
     applied = subprocess.run(
         ["git", "-C", str(root), "apply", "--whitespace=nowarn", patch_path],
         capture_output=True).returncode == 0
-if script.is_file():
-    after = run([python_bin, script_name])
-patched_paths = [path for path in tests if (root / path).is_file()]
-test_code, patched_runner, patched_reason = run_suite(patched_paths)
-if patched_runner:
-    runner = patched_runner
-if reason is None:
-    reason = patched_reason
+test_code = patched_runner = patched_reason = None
+if not applied:
+    # A failed apply must not score the clean tree. Tests there can exit 0.
+    reason = "patch_not_applied"
+else:
+    if script.is_file():
+        after = run([python_bin, script_name])
+    patched_paths = [path for path in tests if (root / path).is_file()]
+    test_code, patched_runner, patched_reason = run_suite(patched_paths)
+    if patched_runner:
+        runner = patched_runner
+    if reason is None:
+        reason = patched_reason
 payload = {
     "before": before, "after": after, "tests": test_code, "tests_base": tests_base,
     "applied": applied, "runner": runner, "reason": reason,
@@ -469,11 +480,23 @@ def _parse_execute_result(result):
             return int(value)
         return None
 
-    before, after, tests = code(payload.get("before")), code(payload.get("after")), code(payload.get("tests"))
     applied = payload.get("applied") is True
+    if not applied:
+        # An unapplied patch is unknown even when the clean-tree tests exited 0.
+        # That gap predates the extractor: pytest-8906 scored pass on unpatched code.
+        evidence = repro_v1_evidence(before=None, after=None, tests=None)
+        evidence.update(source="execute", proxy=False, controlled_before_after=False,
+                        patch_applied=False, execute_runner=payload.get("runner"),
+                        execute_reason="patch_not_applied",
+                        tests_base_returncode=None,
+                        tests_note=payload.get("note"))
+        evidence["reason"] = "patch_not_applied"
+        return evidence
+
+    before, after, tests = code(payload.get("before")), code(payload.get("after")), code(payload.get("tests"))
     evidence = repro_v1_evidence(before=before, after=after, tests=tests)
-    evidence.update(source="execute", proxy=False, controlled_before_after=applied and before is not None,
-                    patch_applied=applied, execute_runner=payload.get("runner"),
+    evidence.update(source="execute", proxy=False, controlled_before_after=before is not None,
+                    patch_applied=True, execute_runner=payload.get("runner"),
                     execute_reason=payload.get("reason"),
                     tests_base_returncode=code(payload.get("tests_base")),
                     tests_note=payload.get("note"))
