@@ -21,13 +21,47 @@ import tempfile
 import time
 
 from .native_bridge import BoundModel, native_client
+from .contracts import G1_DEEPSEEK_FLASH_MODEL
 from .errors import PilotStopped
 from .public_tools import ACTION_INSTRUCTIONS, PublicToolCodeExecutor
 from .native_bridge import ROLE_INSTRUCTIONS, SHARED_INSTRUCTIONS, _terminated
 from .policy import ConstrainedThompsonPolicy, POLICY_VERSION
 from .public_check import public_quality_signal, quality_from_signal
 from .public_tools import WORK_ORDER, coerce_actions, dispatch_action
+from .repro import REPRO_CRITERION_ID, REPRO_INSTRUCTION, cached_repro_v1
+from .sandbox import CRITERION_ID
 from .tool_loop import TOOL_LOOP_VERSION, persistent_tool_loop
+
+ROUTING_MODES = ("thompson", "fixed", "random")
+FIXED_ROUTE_MODEL = G1_DEEPSEEK_FLASH_MODEL
+FIXED_S1_S2_DAG = """subtasks:
+  - id: s1
+    goal: Write alo_repro.py and run python3 alo_repro.py before any fix so it exits non-zero. Then edit the source. Run python3 alo_repro.py again so it exits 0. Do not weaken the script.
+    deps: []
+    topics: [coding, implementation]
+    role:
+      capability_reqs: [coding]
+      epistemic_scope:
+        include: [task_description, goal, persistent_workspace]
+        exclude: [billing, credentials]
+      authority: [inspect]
+      tools: [list_files, read_file, write_file, edit_file, search, command]
+      output_schema: source
+      success_criteria: non_empty_output
+  - id: s2
+    goal: Run alo_repro.py and the touched public tests. Do not reimplement the fix.
+    deps: [s1]
+    topics: [testing, validation]
+    role:
+      capability_reqs: [testing]
+      epistemic_scope:
+        include: [task_description, goal, persistent_workspace]
+        exclude: [billing, credentials]
+      authority: [inspect]
+      tools: [command]
+      output_schema: verification
+      success_criteria: non_empty_output
+"""
 
 ROLE_ORDER = ("Planner", "Engineer", "Critic", "Verifier")
 _UNSET = object()
@@ -77,6 +111,31 @@ def _delta(after, before, key):
 def _quality(services):
     value = services.public_quality()
     return float(value) if _known_number(value) and value <= 1 else None
+
+
+def _is_verifier(node_id, role_id):
+    node_id = str(node_id or "")
+    role_id = str(role_id or "")
+    return node_id in {"s2", "verify", "verifier"} or "verif" in role_id.lower()
+
+
+def _changed_paths(services):
+    changed = []
+    log = getattr(services, "edit_log", None)
+    if isinstance(log, list):
+        for row in log:
+            if isinstance(row, dict):
+                changed.extend(path for path in row.get("paths") or [] if isinstance(path, str))
+    return changed
+
+
+def _node_turn_cap(adapter, node_id, role_id):
+    caps = adapter.config.get("node_request_caps") or {}
+    if node_id in caps:
+        return caps[node_id]
+    if role_id in caps:
+        return caps[role_id]
+    return adapter.config["max_turns"]
 
 
 class FixedSingleAgent:
@@ -264,10 +323,23 @@ class _TMSGate:
 class HeterogeneousALO:
     def __init__(self, *, planner_model=None, max_turns=10, max_attempts=2, seed=20261027,
                  policy_priors=None, safety_multiplier=1.25, organization_updates=_UNSET,
-                 probe=False, cold_prior=False, user_preference=None):
+                 probe=False, cold_prior=False, user_preference=None, routing_mode="thompson",
+                 criterion_id=None, fixed_topology=False, lightweight_verifier=False,
+                 node_request_caps=None):
         if (type(max_turns) is not int or max_turns < 1
                 or type(max_attempts) is not int or max_attempts < 1):
             raise PilotStopped("invalid_alo_attempt_or_turn_limit")
+        if routing_mode not in ROUTING_MODES:
+            raise PilotStopped("invalid_routing_mode")
+        if criterion_id is None:
+            criterion_id = CRITERION_ID
+        elif criterion_id not in {CRITERION_ID, REPRO_CRITERION_ID}:
+            raise PilotStopped("invalid_criterion_id")
+        if node_request_caps is not None:
+            if (not isinstance(node_request_caps, dict) or not node_request_caps
+                    or any(not isinstance(key, str) or not key or type(value) is not int or value < 0
+                           for key, value in node_request_caps.items())):
+                raise PilotStopped("invalid_node_request_caps")
         if user_preference is not None:
             if (not isinstance(user_preference, dict) or set(user_preference) != {"first_try", "strong"}
                     or any(not isinstance(user_preference[key], str) or not user_preference[key]
@@ -289,6 +361,11 @@ class HeterogeneousALO:
                        "organization_updates": bool(organization_updates),
                        "probe": bool(probe), "cold_prior": bool(cold_prior),
                        "user_preference": copy.deepcopy(user_preference),
+                       "routing_mode": routing_mode,
+                       "criterion_id": criterion_id,
+                       "fixed_topology": bool(fixed_topology),
+                       "lightweight_verifier": bool(lightweight_verifier),
+                       "node_request_caps": copy.deepcopy(node_request_caps),
                        "policy_version": POLICY_VERSION,
                        "tool_loop_version": TOOL_LOOP_VERSION}
         self.state = {"observations": {}, "worker_transcripts": {}, "planner_messages": []}
@@ -362,10 +439,15 @@ class HeterogeneousALO:
         org.belief, org.tms = _BeliefGate(org.belief, learn), _TMSGate(org.tms, learn)
         for role, assignment in self.state.get("assignments", {}).items():
             org._assignments[role] = Assignment(**assignment)
+        try:
+            services.active_criterion_id = self.config["criterion_id"]
+        except Exception:
+            pass
         policy = ConstrainedThompsonPolicy(self.state.setdefault("observations", {}),
             services.budget_remaining, priors=self.config["policy_priors"],
             safety_multiplier=self.config["safety_multiplier"])
         pref = self.config.get("user_preference")
+        routing_mode = self.config["routing_mode"]
 
         class PreferencePolicy:
             """First feasible assignment is the preferred model. Thompson remains the counterfactual."""
@@ -386,7 +468,36 @@ class HeterogeneousALO:
                 traced["selected"] = actual
                 return actual, traced
 
-        assignment = PreferencePolicy() if isinstance(pref, dict) else policy
+        class RoutedPolicy:
+            """fixed keeps deepseek-flash. random draws uniformly from the feasible set."""
+
+            def select(self, org, pool, worker_ids, cell, topics, user_id, rng=None):
+                chosen, trace = policy.select(org, pool, worker_ids, cell, topics, user_id, rng)
+                if routing_mode == "fixed":
+                    score = trace.get("scores", {}).get(FIXED_ROUTE_MODEL, {})
+                    if not (isinstance(score, dict) and score.get("feasible")
+                            and FIXED_ROUTE_MODEL in worker_ids):
+                        raise PilotStopped("fixed_model_infeasible")
+                    actual = FIXED_ROUTE_MODEL
+                else:
+                    feasible = [model for model in worker_ids
+                                if trace["scores"][model]["feasible"]]
+                    actual = (rng or random.Random(0)).choice(feasible)
+                record = {"point": "assignment", "routing_mode": routing_mode,
+                          "preference_applied": False, "escalated_to_strong": False,
+                          "counterfactual": chosen, "selected": actual}
+                adapter.state.setdefault("decision_records", []).append(record)
+                traced = dict(trace)
+                traced.update(record)
+                traced["selected"] = actual
+                return actual, traced
+
+        if routing_mode == "thompson" and isinstance(pref, dict):
+            assignment = PreferencePolicy()
+        elif routing_mode == "thompson":
+            assignment = policy
+        else:
+            assignment = RoutedPolicy()
 
         class Bridge:
             def __init__(self, model, *, planner=False):
@@ -417,8 +528,22 @@ class HeterogeneousALO:
                 messages = adapter.state.setdefault("worker_transcripts", {}).setdefault(active["role_id"], [])
                 services.current_role = active.get("role_id")
                 services.current_node = last.get("node_id")
+                node_id = str(last.get("node_id") or "")
+                role_id = str(active.get("role_id") or "")
+                if adapter.config.get("lightweight_verifier") and _is_verifier(node_id, role_id):
+                    last["termination"] = "lightweight_verifier"
+                    last.update(model=self.model, submission_status="completed",
+                                tool_index_after=getattr(services, "tools", None))
+                    return Completion(
+                        "lightweight verifier runs the reproduction script and public tests", 0, 0, 0)
+                turn_cap = _node_turn_cap(adapter, node_id, role_id)
+                if type(turn_cap) is not int or turn_cap < 1:
+                    raise PilotStopped("node_request_cap_invalid")
+                worker_system = system + "\n" + WORK_ORDER
+                if adapter.config.get("criterion_id") == REPRO_CRITERION_ID:
+                    worker_system += "\n" + REPRO_INSTRUCTION
                 result = persistent_tool_loop(BoundModel(services, self.model), prompt, messages,
-                    system=system + "\n" + WORK_ORDER, max_turns=adapter.config["max_turns"])
+                    system=worker_system, max_turns=turn_cap)
                 last["termination"] = result.get("termination")
                 last.update(model=self.model, submission_status=result["status"],
                             tool_index_after=getattr(services, "tools", None))
@@ -430,22 +555,38 @@ class HeterogeneousALO:
             context = {key: last.get(key) for key in ("node_id", "role_id", "role_goal", "attempt",
                 "tool_index_before", "tool_index_after", "submission_status")}
             signal = "unknown"
-            signal_fn = getattr(services, "public_signal", None)
-            if callable(signal_fn):
-                try:
-                    signal = signal_fn()
-                except Exception:
-                    signal = "unknown"
+            changed = _changed_paths(services)
+            if adapter.config.get("criterion_id") == REPRO_CRITERION_ID:
+                role_messages = (adapter.state.get("worker_transcripts") or {}).get(role.role_id)
+                bundle = cached_repro_v1(
+                    services, changed_paths=changed,
+                    messages=role_messages if isinstance(role_messages, list) else None)
+                adapter.state.setdefault("repro_v1_measurements", []).append({
+                    "node_id": last.get("node_id"),
+                    "role_id": role.role_id,
+                    "model_id": last.get("model"),
+                    "repro_before_returncode": bundle.get("repro_before_returncode"),
+                    "repro_after_returncode": bundle.get("repro_after_returncode"),
+                    "recorded_before_returncode": bundle.get("recorded_before_returncode"),
+                    "recorded_after_returncode": bundle.get("recorded_after_returncode"),
+                    "tests_returncode": bundle.get("tests_returncode"),
+                    "signal": bundle.get("signal"),
+                    "reason": bundle.get("reason"),
+                })
+                # public_quality_signal sees the return codes inside the bundle.
+                # A syntax-only pass is not reused as the repro-v1 signal.
+                signal = bundle.get("signal") or "unknown"
             else:
-                changed = []
-                log = getattr(services, "edit_log", None)
-                if isinstance(log, list):
-                    for row in log:
-                        if isinstance(row, dict):
-                            changed.extend(path for path in row.get("paths") or [] if isinstance(path, str))
-                root = getattr(getattr(services, "workspace", None), "root", None)
-                if root is not None:
-                    signal = public_quality_signal(root, changed_paths=changed)
+                signal_fn = getattr(services, "public_signal", None)
+                if callable(signal_fn):
+                    try:
+                        signal = signal_fn()
+                    except Exception:
+                        signal = "unknown"
+                else:
+                    root = getattr(getattr(services, "workspace", None), "root", None)
+                    if root is not None:
+                        signal = public_quality_signal(root, changed_paths=changed)
             if signal not in {"pass", "fail", "unknown"}:
                 signal = "unknown"
             last["public_signal"] = signal
@@ -503,6 +644,13 @@ class HeterogeneousALO:
             # A non-empty implementation diff still lets s2 run. An empty diff
             # fails the node only when a user preference asks for escalation.
             pref = adapter.config.get("user_preference")
+            if adapter.config.get("criterion_id") == REPRO_CRITERION_ID:
+                # Definite repro-v1 outcomes are the node result. Unknown still
+                # lets a non-empty edit reach the verifier and does not teach B/TMS.
+                if signal == "fail":
+                    return False
+                if signal == "pass":
+                    return True
             if isinstance(pref, dict) and not diff_nonempty:
                 return False
             if signal == "fail" and verifier:
@@ -521,6 +669,10 @@ class HeterogeneousALO:
                 pre_verifier_seconds = time.monotonic() - verify_start
                 active.clear()
                 active.update(role_id=subtask.role.role_id)
+                try:
+                    services._repro_v1_cache = None
+                except Exception:
+                    pass
                 last.clear()
                 last.update(started=started, resources_before=before, quality_before=quality_before,
                     pre_verifier_seconds=pre_verifier_seconds, node_id=subtask.id,
@@ -554,6 +706,11 @@ class HeterogeneousALO:
                           "tried_models": list(ctx.tried_models), "empty_diff": empty_diff,
                           "preference_applied": False, "escalated_to_strong": False,
                           "counterfactual": None}
+                if adapter.config.get("routing_mode") == "fixed":
+                    record.update(action="stop", reason="fixed_routing_no_reassign")
+                    services.event("alo_decision", record)
+                    adapter.state.setdefault("decision_records", []).append(record)
+                    return Decision("stop", reason="fixed_routing_no_reassign")
                 if not needs or not budget_left:
                     reason = "budget_exhausted" if needs and not budget_left else "public_check_not_failed"
                     if isinstance(pref, dict) and empty_diff and not quality_fail and budget_left:
@@ -599,12 +756,15 @@ class HeterogeneousALO:
                 "Every node must attempt concrete workspace work. Use task_description, "
                 "goal and persistent_workspace scopes, and choose topics from coding, implementation, "
                 "testing, validation. All roles share public tools; do not request credentials.")
+            if self.config.get("criterion_id") == REPRO_CRITERION_ID:
+                task += REPRO_INSTRUCTION
+            fixed_dag = FIXED_S1_S2_DAG if self.config.get("fixed_topology") else None
             result = run_task(org, pool, task, planner_id=planner.info.id, rng=rng,
                 max_attempts=self.config["max_attempts"], criteria_fn=criterion, assignment_policy=assignment,
                 remediation=BudgetedRemediation(), execution_scope=scope,
                 extra_state={"task_description": task, "persistent_workspace": "Inspect your own files using public tools."},
                 event_fn=lambda event, data: services.event("alo_" + event, data),
-                include_synthetic_context=False)
+                include_synthetic_context=False, fixed_dag=fixed_dag)
             self.state["last_native_run"] = asdict(result)
             self.state["last_native_run"]["boolean_success_semantics"] = "protocol_flow_or_reliable_local_contract_only"
             self.state["last_native_run"]["native_cost_counter_authoritative"] = False

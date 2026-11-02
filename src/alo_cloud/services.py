@@ -636,6 +636,9 @@ class StudyServices:
         return value
 
     def local_criterion(self, *, role_id, model_id, output, context):
+        if getattr(self, "active_criterion_id", None) == "repro-v1":
+            from .repro import evidence_for_service
+            return evidence_for_service(self, context=context)
         del role_id, model_id, output, context
         return python_syntax_evidence(self.workspace, self.workspace.take_attributed())
 

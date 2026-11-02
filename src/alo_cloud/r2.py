@@ -5,6 +5,7 @@ It does not use round-1 scores. ProgramBench is not in the scored schedule.
 """
 from __future__ import annotations
 
+from dataclasses import replace
 import hashlib
 import json
 import math
@@ -15,7 +16,8 @@ from pathlib import Path
 import sys
 
 from .budget import MICROCNY_PER_CNY
-from .contracts import G1_MAIN_MODEL, G1_STRONG_MODEL, MODEL_POOL
+from .contracts import G1_DEEPSEEK_FLASH_MODEL, G1_MAIN_MODEL, G1_STRONG_MODEL, MODEL_POOL
+from .repro import REPRO_CRITERION_ID
 from .freeze import G2_BASE_SEED, PROVIDER_TIMEOUT_S, PlannedUnit, FREEZE_PATH
 from .images import swebench_instance_image
 from .prices import PRICE_TABLE
@@ -37,6 +39,13 @@ R2_PRO_SOFT_HALT_CNY = 48
 PRIOR_SPEND_CNY = {model: "0.000" for model in MODEL_POOL}
 PRIOR_SPEND_TOTAL_CNY = "0.000"
 USER_PREFERENCE = {"first_try": "deepseek-flash", "strong": "mimo-v2.6-pro"}
+# Follow-up arms. They are not part of the frozen r2 schedule or its hash.
+CONTROL_ARMS = ("g1-deepseek-flash", "g2-fixed", "g2-random")
+G1_ARM_MODELS = {
+    "g1-main": G1_MAIN_MODEL,
+    "g1-strong": G1_STRONG_MODEL,
+    "g1-deepseek-flash": G1_DEEPSEEK_FLASH_MODEL,
+}
 # Not a freeze field. These images are checked out at a commit that is not the
 # task base and not a mode-only child of it, so the runner skips them.
 # sphinx-doc__sphinx-7686: /testbed HEAD 2dee191, task base 752d328.
@@ -308,6 +317,92 @@ def select_r2_units(study, *, arms=(), tasks=()):
     return tuple(chosen)
 
 
+def g1_model(arm):
+    """Map a G1 arm onto its request model. Pool order is not a model identity."""
+    if arm not in G1_ARM_MODELS:
+        raise ValueError("unknown_g1_arm")
+    model = G1_ARM_MODELS[arm]
+    if arm == "g1-deepseek-flash" and model != "deepseek-flash":
+        raise ValueError("deepseek_flash_name")
+    return model
+
+
+def followup_g2_config(unit):
+    """Opt-in G2 controls. The frozen ``g2`` arm does not use this config.
+
+    Fixed routing pins both nodes to deepseek-flash and does not reassign.
+    Random routing draws uniformly from the feasible set. Both use the
+    reproduction criterion, a fixed s1/s2 DAG, and a verifier that spends
+    no model requests.
+    """
+    if unit.arm not in {"g2-fixed", "g2-random"}:
+        raise ValueError("unknown_followup_arm")
+    mode = "fixed" if unit.arm == "g2-fixed" else "random"
+    return {
+        "planner_model": G1_DEEPSEEK_FLASH_MODEL,
+        "max_turns": unit.request_cap,
+        "max_attempts": 1 if mode == "fixed" else 2,
+        "seed": unit.seed,
+        "probe": unit.phase == "probe",
+        "cold_prior": unit.m2_condition == "cold",
+        "routing_mode": mode,
+        "criterion_id": REPRO_CRITERION_ID,
+        "fixed_topology": True,
+        "lightweight_verifier": True,
+        "node_request_caps": {"s1": unit.request_cap, "s2": 0},
+    }
+
+
+LEARNING_EXPORT_ARMS = ("g2", "g2-fixed", "g2-random")
+
+
+def control_parent(parent_unit_id, arm):
+    """Point a control unit at the same chain in its own arm.
+
+    Frozen parents use ``.g2.`` as the arm segment. Leaving that id in place
+    makes a control block on a missing parent, or import frozen-g2 statistics.
+    """
+    if not isinstance(parent_unit_id, str) or not parent_unit_id:
+        return parent_unit_id or ""
+    if arm not in {"g2-fixed", "g2-random"}:
+        return parent_unit_id
+    needle = ".g2."
+    if needle not in parent_unit_id:
+        return parent_unit_id
+    return parent_unit_id.replace(needle, f".{arm}.", 1)
+
+
+def iter_control_units(study=None):
+    """Same tasks and caps as r2, plus the three follow-up arms.
+
+    Not selected by ``iter_r2_units`` and not part of the freeze payload.
+    M2 parents are remapped onto the control arm. They do not point at frozen g2.
+    """
+    source = []
+    if study in (None, "m1"):
+        source.extend(iter_r2_m1_units())
+    if study in (None, "m2"):
+        source.extend(iter_r2_m2_units())
+    for unit in source:
+        if unit.arm == "g1-main":
+            yield replace(unit, arm="g1-deepseek-flash")
+        elif unit.arm == "g2":
+            for arm in ("g2-fixed", "g2-random"):
+                yield replace(unit, arm=arm, parent_unit_id=control_parent(unit.parent_unit_id, arm))
+
+
+def select_control_units(study, *, arms=(), tasks=()):
+    arms, tasks = set(arms), set(tasks)
+    chosen = []
+    for unit in iter_control_units(study):
+        if arms and unit.arm not in arms:
+            continue
+        if tasks and unit.task_id not in tasks:
+            continue
+        chosen.append(unit)
+    return tuple(chosen)
+
+
 def smoke_unit():
     """Optional ProgramBench smoke. Not part of the scored r2 schedule."""
     return PlannedUnit(
@@ -371,6 +466,9 @@ def r2_shard_of(unit, num_shards):
     if type(num_shards) is not int or num_shards < 1:
         raise ValueError("invalid_shard")
     assignment = _r2_assignment(num_shards)
+    if unit.arm in CONTROL_ARMS:
+        twin = "g1-main" if unit.arm == "g1-deepseek-flash" else "g2"
+        unit = replace(unit, arm=twin)
     if unit.study == "m1":
         return assignment[("task", unit.track, unit.task_id)]
     return assignment[("unit", unit.unit_id)]
