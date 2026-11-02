@@ -325,23 +325,43 @@ def _actions_from_dsml(text):
     return actions
 
 
-def leading_json_object(text):
-    """First JSON object in ``text``. Trailing prose does not reject it.
+def _tool_call_shape(value):
+    """A public tool call or the tool result the loop stored after it."""
+    if not isinstance(value, dict):
+        return False
+    if "tool" in value and ("arguments" in value or "result" in value):
+        return True
+    return "final" in value and set(value) <= {"final"}
 
-    Model replies often emit one tool object and then stray ``<system>`` text.
-    ``json.loads`` of the whole message misses those calls. ``raw_decode``
-    stops at the end of the object.
+
+def _decode_object_at(text, start):
+    try:
+        value, end = json.JSONDecoder(object_pairs_hook=_unique_object).raw_decode(text, start)
+    except (json.JSONDecodeError, ProtocolError, ValueError):
+        return None, None
+    if not isinstance(value, dict):
+        return None, None
+    return value, end
+
+
+def leading_json_object(text):
+    """Tool JSON at the start of ``text``, or a later object only if it is a tool call.
+
+    A reply that is one JSON object plus stray ``<system>`` text still parses.
+    A ``{`` buried in prose is used only when that object has ``tool`` and
+    ``arguments`` or ``result``, or a lone ``final``. Other JSON in prose is ignored.
     """
     if not isinstance(text, str):
         return None
-    start = text.find("{")
-    if start < 0:
-        return None
-    try:
-        value, _end = json.JSONDecoder(object_pairs_hook=_unique_object).raw_decode(text, start)
-    except (json.JSONDecodeError, ProtocolError, ValueError):
-        return None
-    return value if isinstance(value, dict) else None
+    stripped = text.lstrip()
+    if stripped.startswith("{"):
+        value, end = _decode_object_at(stripped, 0)
+        if value is not None and (_tool_call_shape(value) or stripped[end:].strip() == ""):
+            return value
+    for value in _json_objects(text):
+        if _tool_call_shape(value):
+            return value
+    return None
 
 
 def _json_objects(text):

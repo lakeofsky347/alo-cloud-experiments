@@ -42,6 +42,29 @@ def _runner(root):
     return command
 
 
+def test_only_commands_that_execute_tests_count():
+    from alo_cloud.repro import _is_test_argv, repro_codes_from_messages
+
+    assert _is_test_argv(["pytest", "tests/test_bug.py"])
+    assert _is_test_argv(["python3", "-m", "pytest", "tests/test_bug.py"])
+    assert _is_test_argv(["python3", "tests/test_bug.py"])
+    assert _is_test_argv(["python3", "tests/runtests.py", "known_related_objects"])
+    assert _is_test_argv(["python3", "bin/test", "sympy/core"])
+    assert _is_test_argv(["tox", "-e", "py"])
+    assert not _is_test_argv(["find", ".", "-name", "test_management_utility.py"])
+    assert not _is_test_argv(["sed", "-n", "1,20p", "sympy/core/tests/test_basic.py"])
+    assert not _is_test_argv(["cat", "tests/test_bug.py"])
+    assert not _is_test_argv(["grep", "-n", "test_", "tests/test_bug.py"])
+    assert not _is_test_argv(["ls", "tests"])
+    messages = [
+        {"role": "assistant", "content": json.dumps(
+            {"tool": "command", "arguments": {"argv": ["sed", "-n", "1p", "tests/test_basic.py"]}})},
+        {"role": "user", "content": json.dumps({"tool": "command", "result": {"returncode": 0}})},
+    ]
+    before, after, tests = repro_codes_from_messages(messages)
+    assert (before, after, tests) == (None, None, None)
+
+
 def test_status_table_does_not_treat_syntax_as_a_pass(tmp_path):
     (tmp_path / "pkg.py").write_text("value = 1\n", encoding="utf-8")
     assert public_quality_signal(tmp_path, changed_paths=["pkg.py"], patch_text="diff --git a/pkg.py") == "pass"

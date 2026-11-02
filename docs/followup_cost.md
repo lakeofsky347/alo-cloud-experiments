@@ -18,7 +18,7 @@ Per-unit `charged_microcny` in `records.jsonl` sums to **33.01 CNY**. That field
 
 G2-context deepseek-flash is **0.01309 CNY per request**, higher than the overall 0.01039. G1-main accounts for **1525** ledger requests. G2 accounts for **1932**. The s1 share of G2 model calls, from 62 adapters (planner 62, s1 989, s2 264), is **0.752**. The new G2 arms already set `fixed_topology` and `lightweight_verifier`, so the light rows are what that code would spend. "Default" keeps planner and s2 requests.
 
-`ledger_full_scenarios` and `ledger_scope_options` in `alo_cloud.followup_cost` recompute these tables.
+`ledger_full_scenarios` and `ledger_scope_options` recompute these tables from the hard-coded `R2_SETTLED_LEDGER` constants in `alo_cloud.followup_cost`. They do not open a database unless you pass a ledger dict. `summarize_settled_ledger(path)` reads `budget.sqlite3` read-only (`mode=ro`, `PRAGMA query_only`) and returns settled CNY and request counts. The s1 share, 0.752, is not in the ledger, so that constant stays even when the money is read from sqlite.
 
 ## Full repeat plus all three new arms
 
@@ -77,15 +77,14 @@ Drop both G2 control arms. deepseek-flash **42.98**.
 
 ### 4. Full r2 repeat, g1-deepseek-flash, and a smaller g2-fixed
 
-No `g2-random`. Light g2-fixed on **46.5%** of the G2 units (about 41 of 88) puts deepseek-flash **on the 50 CNY cap** (7.02 CNY of g2-fixed on top of 42.98). A 40% slice leaves about 2 CNY of headroom. mimo-v2.6-pro stays at the repeat's 25.87 because this option does not route random traffic onto it.
+No `g2-random`. Light g2-fixed on **46.47%** of the G2 units (about 41 of 88) puts deepseek-flash **on the 50 CNY cap** at the overall deepseek rate (7.02 CNY of g2-fixed on top of 42.98). That schedule sits exactly on the cap. Priced at the deepseek rate observed inside G2 (0.01309 CNY per request) the same slice is **51.83 CNY**, over the cap. A **40%** slice at the overall rate is **49.02 CNY**, so the headroom is **0.98 CNY**, not about 2. mimo-v2.6-pro stays at the repeat's 25.87 because this option does not route random traffic onto it.
 
-| Model | CNY at the 46.5% slice |
-|---|---:|
-| deepseek-flash | 50.00 |
-| mimo-v2.6-flash | 15.83 |
-| glm-5.3-flash | 2.81 |
-| mimo-v2.6-pro | 25.87 |
-| **Total** | **94.51** |
+| Model | CNY at the 46.47% slice (overall rate) | CNY at 40% |
+|---|---:|---:|
+| deepseek-flash | 50.00 | 49.02 |
+| mimo-v2.6-flash | 15.83 | 15.83 |
+| glm-5.3-flash | 2.81 | 2.81 |
+| mimo-v2.6-pro | 25.87 | 25.87 |
 
 The other three models stay under 50 CNY in every option above. mimo-v2.6-pro is the next closest, and only in the full-repeat scenarios that were already over on deepseek (about 36–40).
 

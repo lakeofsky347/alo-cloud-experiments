@@ -14,19 +14,29 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from alo_cloud.signal_replay import replay_markdown, replay_run  # noqa: E402
+from alo_cloud.signal_replay import replay_markdown, replay_run, resolve_output_dir  # noqa: E402
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Replay the repro-v1 signal over an existing run.")
     parser.add_argument("--run-dir", required=True, help="Directory containing records.jsonl and optional checkpoints/")
     parser.add_argument("--eval-dir", required=True, help="Directory with m1_units.csv and m2_units.csv")
-    parser.add_argument("--output-dir", default=None, help="Where to write the JSON and markdown. Defaults to --run-dir.")
+    parser.add_argument("--output-dir", default=None,
+                        help="Where to write the JSON and markdown. Defaults to the current directory. "
+                             "Refuses a path inside --run-dir.")
     parser.add_argument("--execute", action="store_true",
-                        help="Rerun alo_repro.py and touched public tests in each unit's SWE image. Requires docker.")
+                        help="Rerun alo_repro.py and the agent's touched public tests in each SWE image. "
+                             "Requires docker. Also runs those test paths at the base commit.")
+    parser.add_argument("--jobs", type=int, default=1,
+                        help="How many execute containers to run at once. Default 1.")
     args = parser.parse_args(argv)
-    report = replay_run(args.run_dir, args.eval_dir, execute=args.execute)
-    destination = Path(args.output_dir) if args.output_dir else Path(args.run_dir)
+    if args.jobs < 1:
+        parser.error("--jobs must be a positive integer")
+    try:
+        destination = resolve_output_dir(args.output_dir, args.run_dir)
+    except ValueError:
+        parser.error("--output-dir must not be inside --run-dir")
+    report = replay_run(args.run_dir, args.eval_dir, execute=args.execute, jobs=args.jobs)
     destination.mkdir(parents=True, exist_ok=True)
     json_path = destination / "repro_v1_replay.json"
     markdown_path = destination / "repro_v1_replay.md"

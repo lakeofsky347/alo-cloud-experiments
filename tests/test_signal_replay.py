@@ -2,6 +2,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from alo_cloud.followup_cost import load_records, project_followup
 from alo_cloud.signal_replay import execute_public_checks, replay_markdown, replay_run
 
@@ -163,6 +165,65 @@ def test_execute_mode_is_injected_and_labels_its_source(tmp_path):
     assert "json.dumps" in _EXECUTE_DRIVER
 
 
+def test_execute_names_the_container_and_removes_it_on_timeout():
+    import subprocess
+    from alo_cloud.signal_replay import REPLAY_CONTAINER_LABEL, execute_public_checks
+
+    seen = {}
+    removed = []
+
+    def runner(argv, timeout_s):
+        seen["argv"] = argv
+        seen["timeout"] = timeout_s
+        raise subprocess.TimeoutExpired(argv, timeout_s)
+
+    evidence = execute_public_checks(
+        image="example.invalid/alo:test", patch_text="", runner=runner, cleanup=removed.append,
+        timeout_s=5)
+    assert evidence["signal"] == "unknown"
+    assert seen["argv"][seen["argv"].index("--name") + 1] == removed[0]
+    assert REPLAY_CONTAINER_LABEL in seen["argv"]
+    assert "--rm" not in seen["argv"]
+    assert removed[0].startswith("alo-repro-")
+
+
+def test_output_dir_defaults_outside_the_run_and_refuses_the_run(tmp_path, monkeypatch):
+    import importlib.util
+    from alo_cloud.signal_replay import resolve_output_dir
+
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "records.jsonl").write_text("{}\n", encoding="utf-8")
+    outside = tmp_path / "out"
+    outside.mkdir()
+    assert resolve_output_dir(outside, run) == outside.resolve()
+    try:
+        resolve_output_dir(run / "nested", run)
+    except ValueError as error:
+        assert "inside" in str(error)
+    else:
+        raise AssertionError("output inside the run dir was accepted")
+    monkeypatch.chdir(outside)
+    assert resolve_output_dir(None, run) == outside.resolve()
+    script = Path(__file__).resolve().parents[1] / "scripts" / "replay_signal.py"
+    spec = importlib.util.spec_from_file_location("replay_signal_cli", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    eval_dir = tmp_path / "eval"
+    eval_dir.mkdir()
+    (eval_dir / "m1_units.csv").write_text("unit_id,resolved\n", encoding="utf-8")
+    with pytest.raises(SystemExit) as refused:
+        module.main([
+            "--run-dir", str(run), "--eval-dir", str(eval_dir), "--output-dir", str(run / "inside"),
+        ])
+    assert refused.value.code == 2
+    assert module.main([
+        "--run-dir", str(run), "--eval-dir", str(eval_dir), "--output-dir", str(outside),
+    ]) == 0
+    assert (outside / "repro_v1_replay.json").is_file()
+    assert not (run / "repro_v1_replay.json").exists()
+
+
 def test_settled_ledger_keeps_deepseek_over_50_unless_the_schedule_shrinks():
     from alo_cloud.followup_cost import ledger_full_scenarios, ledger_scope_options
 
@@ -184,6 +245,42 @@ def test_settled_ledger_keeps_deepseek_over_50_unless_the_schedule_shrinks():
         assert not option["over_cap_cny"], name
     assert options["repeat_plus_g1_and_capped_g2_fixed"]["g2_fraction"] < 1
     assert options["new_arms_only_light"]["projected_cny"]["mimo-v2.6-pro"] < 50
+    from alo_cloud.followup_cost import ledger_arm_costs
+    forty = ledger_arm_costs(light=True, include_g2_random=False, g2_fraction=0.40)
+    assert abs(forty["projected_cny"]["deepseek-flash"] - 49.02) < 0.02
+    assert abs(50 - forty["projected_cny"]["deepseek-flash"] - 0.98) < 0.02
+    fraction = options["repeat_plus_g1_and_capped_g2_fixed"]["g2_fraction"]
+    at_g2_rate = ledger_arm_costs(
+        light=True, deepseek_rate="g2", include_g2_random=False, g2_fraction=fraction)
+    assert abs(at_g2_rate["projected_cny"]["deepseek-flash"] - 51.83) < 0.05
+
+
+def test_settled_ledger_reader_is_read_only(tmp_path):
+    from alo_cloud.budget import BudgetLedger
+    from alo_cloud.contracts import MODEL_POOL
+    from alo_cloud.followup_cost import summarize_settled_ledger
+
+    path = tmp_path / "budget.sqlite3"
+    ledger = BudgetLedger.create(
+        path, model_limits_microcny={model: 50_000_000 for model in MODEL_POOL},
+        opening_commitments_microcny={model: 0 for model in MODEL_POOL},
+        max_requests=10, prior_requests=0, total_limit_microcny=200_000_000, run_mode="dry-run")
+    digest = "ab" * 32
+    ledger.reserve("g1", "deepseek-flash", 1_000_000, payload_sha256=digest,
+                   unit_id="m1.SWE-bench_Lite.django__django-1.g1-main.B0", unit_request_cap=4)
+    ledger.settle_known("g1", 400_000)
+    ledger.reserve("g2", "deepseek-flash", 2_000_000, payload_sha256=digest,
+                   unit_id="m1.SWE-bench_Lite.django__django-1.g2.B0", unit_request_cap=4)
+    ledger.settle_known("g2", 800_000)
+    before = path.read_bytes()
+    summary = summarize_settled_ledger(path)
+    assert path.read_bytes() == before
+    assert summary["read_only"] is True
+    assert summary["g1_main_requests"] == 1
+    assert summary["g2_requests"] == 1
+    assert summary["ledger_cny"]["deepseek-flash"] == 1.2
+    assert summary["cny_per_request"]["deepseek-flash"] == 0.6
+    assert summary["g2_deepseek_cny_per_request"] == 0.8
 
 
 def test_followup_projection_uses_observed_rates_and_names_the_cap(tmp_path):

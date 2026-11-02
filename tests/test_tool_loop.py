@@ -56,6 +56,17 @@ def test_final_completes_and_malformed_text_stays_in_the_transcript():
     assert not any(call[0] == "command" for call in services.calls if isinstance(call, tuple))
 
 
+def test_prose_json_is_not_a_tool_call_unless_it_has_tool_shape():
+    from alo_cloud.public_tools import leading_json_object
+
+    trailed = '{"tool":"command","arguments":{"argv":["pytest"]}}\n<system>stray'
+    assert leading_json_object(trailed)["tool"] == "command"
+    assert leading_json_object('  {"final":"done"}')["final"] == "done"
+    assert leading_json_object('Look at {"a": 1} in the notes') is None
+    buried = 'Please run {"tool":"command","arguments":{"argv":["pytest","tests/test_bug.py"]}}'
+    assert leading_json_object(buried)["arguments"]["argv"][0] == "pytest"
+
+
 def test_leading_json_with_trailing_system_text_still_runs():
     services = LoopServices([
         '{"tool":"command","arguments":{"argv":["python3","alo_repro.py"]}}\n<system>stray',

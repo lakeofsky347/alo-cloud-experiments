@@ -9,7 +9,10 @@ SWE-bench tests are not the signal.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+import subprocess
+import uuid
 
 from alo.org.organization import Organization
 
@@ -32,10 +35,14 @@ SWE-bench instance images. This does not call a model API.
         --output-dir /tmp/alo-repro-replay
 
 --execute applies each G2 model.patch inside that unit's sandbox image and
-runs alo_repro.py before and after the patch, plus test modules the patch
-touches. A missing script is unknown, not a failure. The default, without
---execute, still reads adapter.json transcripts when they are in --run-dir
-and always writes the records-only proxy.
+runs alo_repro.py before and after the patch. It also runs public test files
+the agent changed. Those files may have been edited or weakened, so a pass is
+the agent's version of the test. The same paths are run again at the base
+commit, before the patch, and both return codes are reported. A missing script
+is unknown, not a failure. Each container is named and labeled and is removed
+with docker rm -f when the run ends or times out. --jobs N (default 1) runs
+that many containers at once. --output-dir defaults to the current directory
+and must not be inside --run-dir.
 """
 
 
@@ -271,35 +278,68 @@ def _patch_and_image(run_dir, unit_id):
     return patch.read_text(encoding="utf-8"), image
 
 
-def execute_public_checks(*, image, patch_text, test_paths=(), runner=None, script_name=REPRO_SCRIPT):
-    """Rerun the public script and touched tests. ``runner`` receives the docker argv.
+REPLAY_CONTAINER_LABEL = "alo.replay=repro-v1"
 
-    The default runner is the docker CLI. Tests inject ``runner`` and never
-    start a daemon. A missing script stays unknown. The driver reads a mounted
-    patch file and does not take hidden tests.
+
+def container_name():
+    """Docker name unique to this process and call. Safe for ``docker rm -f``."""
+    return f"alo-repro-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+
+
+def docker_rm(name):
+    """Remove one replay container. A missing name is not an error."""
+    subprocess.run(["docker", "rm", "-f", name], capture_output=True, check=False)
+
+
+def _default_docker_runner(argv, timeout_s):
+    """Run docker. On timeout the client is killed; the caller still ``docker rm -f``."""
+    proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.communicate()
+        raise
+    return {"returncode": proc.returncode,
+            "stdout": stdout.decode(errors="replace"),
+            "stderr": stderr.decode(errors="replace")}
+
+
+def execute_public_checks(*, image, patch_text, test_paths=(), runner=None, cleanup=None,
+                          timeout_s=600, script_name=REPRO_SCRIPT, container=None):
+    """Rerun the public script and the agent's touched tests.
+
+    ``tests`` in the result is the patched tree. ``tests_base`` is the same
+    paths at the base commit, before the patch. The agent may have edited
+    those tests, so the two codes are reported separately. Hidden tests are
+    not run. Tests inject ``runner`` and never start a daemon. The default
+    runner names the container, labels it, and ``cleanup`` removes it on
+    exit and on timeout.
     """
-    import subprocess
     import tempfile
 
+    name = container or container_name()
     if runner is None:
-        def runner(argv, timeout_s):
-            try:
-                completed = subprocess.run(argv, capture_output=True, timeout=timeout_s, check=False)
-            except (OSError, subprocess.TimeoutExpired) as error:
-                return {"returncode": None, "stdout": "", "stderr": type(error).__name__}
-            return {"returncode": completed.returncode,
-                    "stdout": completed.stdout.decode(errors="replace"),
-                    "stderr": completed.stderr.decode(errors="replace")}
+        runner = _default_docker_runner
+        if cleanup is None:
+            cleanup = docker_rm
     with tempfile.TemporaryDirectory(prefix="alo-repro-") as temporary:
         patch_path = Path(temporary) / "model.patch"
         patch_path.write_text(patch_text or "", encoding="utf-8")
         argv = [
-            "docker", "run", "--rm", "--network=none",
+            "docker", "run", "--name", name, "--label", REPLAY_CONTAINER_LABEL,
+            "--network=none",
             "-v", f"{patch_path}:/tmp/alo-model.patch:ro",
             "-w", "/testbed", image, "python3", "-c", _EXECUTE_DRIVER,
             script_name, "/tmp/alo-model.patch", *list(test_paths),
         ]
-        result = runner(argv, 600)
+        try:
+            result = runner(argv, timeout_s)
+        except subprocess.TimeoutExpired:
+            result = {"returncode": None, "stdout": "", "stderr": "timeout"}
+        finally:
+            if cleanup is not None:
+                cleanup(name)
     return _parse_execute_result(result)
 
 
@@ -323,6 +363,28 @@ def run(argv):
 before = after = None
 if script.is_file():
     before = run([python_bin, script_name])
+
+def run_suite(paths):
+    if not paths:
+        return None, None, None
+    pytest_bin = pathlib.Path(python_bin).parent / "pytest"
+    if pytest_bin.is_file() or run([python_bin, "-c", "import pytest"]) == 0:
+        command = [str(pytest_bin), *paths] if pytest_bin.is_file() else [python_bin, "-m", "pytest", *paths]
+        return run(command), "pytest", None
+    if (root / "tests" / "runtests.py").is_file():
+        labels = []
+        for path in paths:
+            label = path[6:] if path.startswith("tests/") else path
+            if label.endswith(".py"):
+                label = label[:-3]
+            labels.append(label.replace("/", "."))
+        return run([python_bin, "tests/runtests.py", "--verbosity=1", *labels]), "django_runtests", None
+    if (root / "bin" / "test").is_file():
+        return run([python_bin, "bin/test", *paths]), "sympy_bin_test", None
+    return None, None, "no_public_test_runner"
+
+base_paths = [path for path in tests if (root / path).is_file()]
+tests_base, runner, reason = run_suite(base_paths)
 patch = pathlib.Path(patch_path).read_bytes()
 applied = True
 if patch.strip():
@@ -331,32 +393,17 @@ if patch.strip():
         capture_output=True).returncode == 0
 if script.is_file():
     after = run([python_bin, script_name])
-existing = [path for path in tests if (root / path).is_file()]
-test_code = None
-runner = None
-reason = None
-if existing:
-    pytest_bin = pathlib.Path(python_bin).parent / "pytest"
-    if pytest_bin.is_file() or run([python_bin, "-c", "import pytest"]) == 0:
-        runner = "pytest"
-        command = [str(pytest_bin), *existing] if pytest_bin.is_file() else [python_bin, "-m", "pytest", *existing]
-        test_code = run(command)
-    elif (root / "tests" / "runtests.py").is_file():
-        runner = "django_runtests"
-        labels = []
-        for path in existing:
-            label = path[6:] if path.startswith("tests/") else path
-            if label.endswith(".py"):
-                label = label[:-3]
-            labels.append(label.replace("/", "."))
-        test_code = run([python_bin, "tests/runtests.py", "--verbosity=1", *labels])
-    elif (root / "bin" / "test").is_file():
-        runner = "sympy_bin_test"
-        test_code = run([python_bin, "bin/test", *existing])
-    else:
-        reason = "no_public_test_runner"
-payload = {"before": before, "after": after, "tests": test_code, "applied": applied,
-           "runner": runner, "reason": reason}
+patched_paths = [path for path in tests if (root / path).is_file()]
+test_code, patched_runner, patched_reason = run_suite(patched_paths)
+if patched_runner:
+    runner = patched_runner
+if reason is None:
+    reason = patched_reason
+payload = {
+    "before": before, "after": after, "tests": test_code, "tests_base": tests_base,
+    "applied": applied, "runner": runner, "reason": reason,
+    "note": "tests is the agent-changed files after the patch; tests_base is those paths at the base commit",
+}
 sys.stdout.write(json.dumps(payload) + "\n")
 """
 
@@ -402,12 +449,28 @@ def _parse_execute_result(result):
     evidence = repro_v1_evidence(before=before, after=after, tests=tests)
     evidence.update(source="execute", proxy=False, controlled_before_after=applied and before is not None,
                     patch_applied=applied, execute_runner=payload.get("runner"),
-                    execute_reason=payload.get("reason"))
+                    execute_reason=payload.get("reason"),
+                    tests_base_returncode=code(payload.get("tests_base")),
+                    tests_note=payload.get("note"))
     return evidence
 
 
-def replay_run(run_dir, eval_dir, *, execute=False, executor=None):
+def resolve_output_dir(output, run_dir):
+    """Directory for the replay report. It must not be inside ``run_dir``.
+
+    ``output`` None is the current working directory.
+    """
+    destination = (Path.cwd() if output is None else Path(output)).resolve()
+    run = Path(run_dir).resolve()
+    if destination == run or destination.is_relative_to(run):
+        raise ValueError("replay_output_inside_run_dir")
+    return destination
+
+
+def replay_run(run_dir, eval_dir, *, execute=False, executor=None, jobs=1):
     """Replay one run directory. ``executor`` replaces docker in tests."""
+    if type(jobs) is not int or jobs < 1:
+        raise ValueError("invalid_replay_jobs")
     records = load_records(Path(run_dir) / "records.jsonl")
     scored = load_eval_dir(eval_dir) if eval_dir else []
     index = _eval_index(scored)
@@ -439,19 +502,40 @@ def replay_run(run_dir, eval_dir, *, execute=False, executor=None):
             transcript_pairs.append((_combine(node_signals)["signal"] if node_signals else "unknown", resolved))
         for item in node_signals:
             transcript_updates.append((item.get("model_id"), item["signal"], _topics_for(item.get("role"))))
-        if execute:
+    execute_units = []
+    if execute:
+        def _one(record):
             patch, image = _patch_and_image(run_dir, record.get("unit_id"))
             test_paths = touched_tests_for_unit(record, patch or "")
+            payload = _load_adapter(run_dir, record.get("unit_id"))
             if patch is None:
                 evidence = repro_v1_evidence(before=None, after=None, tests=None)
                 evidence.update(source="execute", proxy=False, execute_error="patch_or_image_missing")
             else:
                 evidence = execute_public_checks(
                     image=image, patch_text=patch, runner=executor, test_paths=test_paths)
+            resolved = _bool_resolved((index.get(record.get("unit_id")) or {}).get("resolved"))
+            model = model_for_role(payload, "s1") if payload else None
+            return record, evidence, resolved, model
+
+        if jobs == 1:
+            executed = [_one(record) for record in g2]
+        else:
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=jobs) as pool:
+                executed = list(pool.map(_one, g2))
+        for record, evidence, resolved, model in executed:
             if isinstance(resolved, bool):
                 execute_pairs.append((evidence["signal"], resolved))
-            execute_model = model_for_role(payload, "s1") if payload else None
-            execute_updates.append((execute_model, evidence["signal"], S1_TOPICS))
+            execute_updates.append((model, evidence["signal"], S1_TOPICS))
+            execute_units.append({
+                "unit_id": record.get("unit_id"),
+                "signal": evidence.get("signal"),
+                "tests_returncode": evidence.get("tests_returncode"),
+                "tests_base_returncode": evidence.get("tests_base_returncode"),
+                "execute_reason": evidence.get("execute_reason") or evidence.get("execute_error"),
+                "execute_runner": evidence.get("execute_runner"),
+            })
     transcript_posterior = _posterior(transcript_updates)
     execute_posterior = _posterior(execute_updates) if execute else None
     definitive = [row for row in transcript_updates if row[1] in {"pass", "fail"}]
@@ -489,10 +573,17 @@ def replay_run(run_dir, eval_dir, *, execute=False, executor=None):
         "execute_replay": None if not execute else {
             "source": "execute",
             "proxy": False,
-            "note": "Docker replay of alo_repro.py and touched public tests. Hidden tests are not run.",
+            "jobs": jobs,
+            "note": (
+                "Docker replay of alo_repro.py and public test files the agent changed. "
+                "tests_returncode is those files after the patch. tests_base_returncode is "
+                "the same paths at the base commit. A patched pass can be a weakened test. "
+                "Hidden tests are not run."
+            ),
             "precision_recall": precision_recall(execute_pairs),
             "posterior": execute_posterior,
             "beta_gt_1": _beta_gt_1(execute_posterior),
+            "units": execute_units,
         },
         "comparison": comparison,
         "instructions": EXECUTE_INSTRUCTIONS,

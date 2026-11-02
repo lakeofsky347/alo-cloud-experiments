@@ -265,17 +265,78 @@ def _blank_models():
     return {model: 0.0 for model in MODEL_POOL}
 
 
+def summarize_settled_ledger(path):
+    """Settled CNY and request counts from a budget sqlite file. Read-only.
+
+    The file is opened with ``mode=ro`` and ``query_only``. ``g2_s1_share`` is
+    not in the ledger; callers keep the hard-coded share. Unsettled rows are
+    omitted from the totals.
+    """
+    import sqlite3
+    path = Path(path)
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("ledger_unreadable")
+    uri = path.resolve().as_uri() + "?mode=ro"
+    conn = sqlite3.connect(uri, uri=True)
+    try:
+        conn.execute("PRAGMA query_only=ON")
+        rows = list(conn.execute("SELECT model, held, status, unit_id FROM requests"))
+    finally:
+        conn.close()
+    charged = {model: 0 for model in MODEL_POOL}
+    counts = {model: 0 for model in MODEL_POOL}
+    g2_deepseek_held = 0
+    g2_deepseek_n = 0
+    g1_main = 0
+    g2 = 0
+    for model, held, status, unit_id in rows:
+        if status != "settled":
+            continue
+        parts = unit_id.split(".") if isinstance(unit_id, str) else []
+        arm = parts[3] if len(parts) >= 4 else ""
+        if arm == "g1-main":
+            g1_main += 1
+        elif arm == "g2":
+            g2 += 1
+        if model not in charged:
+            continue
+        charged[model] += int(held)
+        counts[model] += 1
+        if arm == "g2" and model == "deepseek-flash":
+            g2_deepseek_held += int(held)
+            g2_deepseek_n += 1
+    rates = {model: (charged[model] / 1_000_000 / counts[model]) if counts[model] else None
+             for model in MODEL_POOL}
+    return {
+        "ledger_cny": {model: charged[model] / 1_000_000 for model in MODEL_POOL},
+        "settled_requests": counts,
+        "cny_per_request": rates,
+        "g1_main_requests": g1_main,
+        "g2_requests": g2,
+        "g2_deepseek_cny_per_request": (
+            g2_deepseek_held / 1_000_000 / g2_deepseek_n if g2_deepseek_n else None),
+        "source": "budget.sqlite3",
+        "read_only": True,
+    }
+
+
 def ledger_arm_costs(ledger=None, *, light=False, deepseek_rate="overall",
                      include_repeat=True, include_g1_deepseek=True,
                      include_g2_fixed=True, include_g2_random=True, g2_fraction=1.0):
     """Price a follow-up from settled per-request rates, including timeouts.
+
+    With ``ledger`` omitted, every rate and request count is the hard-coded
+    ``R2_SETTLED_LEDGER`` constant. Pass ``summarize_settled_ledger(path)``
+    merged with ``g2_s1_share`` to recompute from a read-only ``budget.sqlite3``.
+    The s1 share is not stored in the ledger.
 
     ``light`` keeps the s1 share of G2 requests (fixed topology, no s2 model
     calls). ``deepseek_rate`` ``g2`` uses the G2-context deepseek rate for G2
     arms. g1-deepseek-flash always uses the overall deepseek rate, because
     those requests repeat G1-main. ``g2_fraction`` scales both G2 control arms.
     """
-    source = R2_SETTLED_LEDGER if ledger is None else ledger
+    source = dict(R2_SETTLED_LEDGER if ledger is None else ledger)
+    source.setdefault("g2_s1_share", R2_SETTLED_LEDGER["g2_s1_share"])
     rates = source["cny_per_request"]
     deepseek_price = (source["g2_deepseek_cny_per_request"] if deepseek_rate == "g2"
                       else rates["deepseek-flash"])

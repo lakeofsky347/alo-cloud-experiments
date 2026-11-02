@@ -145,12 +145,67 @@ def _is_repro_argv(argv):
                for item in argv)
 
 
-def _is_test_argv(argv):
-    if any(item in {"pytest", "py.test", "unittest"} or item.endswith("/pytest") for item in argv):
+# Inspection commands can name a test file without executing it.
+_NOT_TEST_RUNNERS = frozenset({
+    "find", "sed", "cat", "grep", "egrep", "fgrep", "ls", "head", "tail", "wc",
+    "less", "more", "rg", "awk", "cut", "sort", "diff", "echo", "printf", "cp",
+    "mv", "rm", "mkdir", "touch", "chmod", "ln", "xargs", "basename",
+})
+_PYTEST_MODULES = frozenset({"pytest", "unittest", "nose", "nose2", "tox", "django"})
+_DIRECT_TEST_RUNNERS = frozenset({
+    "pytest", "py.test", "tox", "nox", "nose", "nose2", "trial",
+})
+
+
+def _argv_name(item):
+    return Path(item).name
+
+
+def _is_python_argv(item):
+    name = _argv_name(item)
+    return name in {"python", "python2", "python3"} or name.startswith(("python2.", "python3."))
+
+
+def _is_executed_test_file(target):
+    name = _argv_name(target)
+    if name in {"runtests.py", "tests.py"}:
         return True
-    return any(item.endswith(".py") and ("test_" in Path(item).name or item.endswith("_test.py")
-                                         or "/tests/" in item or item.startswith("tests/"))
-               for item in argv)
+    return name.startswith("test_") or name.endswith("_test.py")
+
+
+def _is_test_argv(argv):
+    """True only when the command itself executes tests.
+
+    ``find``, ``sed``, ``cat``, ``grep`` and ``ls`` can name a test file
+    without running it. Those stay false.
+    """
+    if not argv or any(not isinstance(item, str) or not item for item in argv):
+        return False
+    head = _argv_name(argv[0])
+    if head in _NOT_TEST_RUNNERS:
+        return False
+    if head in _DIRECT_TEST_RUNNERS:
+        return True
+    if _is_python_argv(argv[0]):
+        args = argv[1:]
+        if len(args) >= 2 and args[0] == "-m" and _argv_name(args[1]) in _PYTEST_MODULES:
+            return True
+        positional = [item for item in args if not item.startswith("-")]
+        if not positional:
+            return False
+        target = positional[0]
+        if _argv_name(target) == "runtests.py":
+            return True
+        if target == "bin/test" or target.endswith("/bin/test"):
+            return True
+        if _argv_name(target) == "manage.py" and "test" in argv:
+            return True
+        if target.endswith(".py") and _is_executed_test_file(target):
+            return True
+        return False
+    if head == "manage.py" and "test" in argv:
+        return True
+    return False
 
 
 def repro_codes_from_messages(messages):
