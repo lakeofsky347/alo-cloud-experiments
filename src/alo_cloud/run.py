@@ -250,7 +250,8 @@ def _apply_parent(unit, adapter, services, run_dir):
             return "b0_checkpoint_missing"
         _restore_transcript(adapter, json.loads(state_path.read_text(encoding="utf-8")))
         database = parent / "alo.sqlite3"
-        if database.is_file() and unit.arm == "g2":
+        from .r2 import LEARNING_EXPORT_ARMS
+        if database.is_file() and unit.arm in LEARNING_EXPORT_ARMS:
             shutil.copy2(database, services.state_dir / "alo.sqlite3")
         return None
     if unit.study == "m2" and unit.m2_condition in {"persist", "learned"}:
@@ -1145,7 +1146,8 @@ def _persist_compact(unit, services, adapter, run_dir, record):
     database = services.state_dir / "alo.sqlite3"
     if database.is_file():
         shutil.copy2(database, checkpoint / "alo.sqlite3")
-        if unit.arm == "g2" and unit.phase == "learning" and unit.m2_condition == "persist":
+        from .r2 import LEARNING_EXPORT_ARMS
+        if unit.arm in LEARNING_EXPORT_ARMS and unit.phase == "learning" and unit.m2_condition == "persist":
             try:
                 exported = export_learning_state(
                     database, adapter.dump_state(), allowed_models=MODEL_POOL, evidence_id=unit.unit_id)

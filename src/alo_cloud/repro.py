@@ -255,24 +255,40 @@ def _git(root, args, *, input_bytes=None):
     )
 
 
-def _restore_patch(root, patch, script_name, script_bytes):
+def _restore_candidate(root, orig_head, patch, script_name, script_bytes):
+    """Put back the candidate fix even if the measurement staged the unfixed tree.
+
+    ``workspace_patch`` runs ``git add -A``. A reproduction command therefore
+    stages whatever the worktree is at that moment. Restoring with
+    ``git checkout -- .`` would then reload that index and drop the fix.
+    Reset to the saved HEAD and reapply the saved patch instead.
+    """
+    reset = _git(root, ["reset", "--hard", orig_head])
+    if reset.returncode != 0:
+        raise RuntimeError("repro_workspace_not_restored")
     if patch.strip():
-        restored = _git(root, ["apply", "--whitespace=nowarn"], input_bytes=patch)
-        if restored.returncode != 0:
-            _git(root, ["checkout", "--", "."])
-            if script_bytes is not None and not (root / script_name).is_file():
-                (root / script_name).write_bytes(script_bytes)
+        # The measurement may have recreated alo_repro.py. A new-file hunk
+        # cannot apply onto that copy, and reset --hard already removed it
+        # when it was only in the patch. Apply before writing any fallback.
+        applied = _git(root, ["apply", "--binary", "--whitespace=nowarn"], input_bytes=patch)
+        if applied.returncode != 0:
             raise RuntimeError("repro_workspace_not_restored")
-    if script_bytes is not None and not (root / script_name).is_file():
-        (root / script_name).write_bytes(script_bytes)
+    script = root / script_name
+    if script_bytes is not None and not script.is_file():
+        script.write_bytes(script_bytes)
+    # Match the live invariant: the index agrees with the restored worktree,
+    # so a later checkout cannot revive the unfixed measurement.
+    added = _git(root, ["add", "-A"])
+    if added.returncode != 0:
+        raise RuntimeError("repro_workspace_not_restored")
 
 
 def reproduction_before(services, root, script_name, timeout_s):
-    """Run the script with tracked edits reversed, then put those edits back.
+    """Run the script on the unfixed tree, then restore the candidate fix.
 
     No git repository, an empty diff, or a reverse that does not apply stays
-    unknown. The script file is kept across the reverse so an untracked
-    reproduction can still import the unfixed sources.
+    unknown. The saved patch is taken against HEAD and includes staged files,
+    because a live workspace stages every edit.
     """
     root = Path(root)
     if not (root / ".git").is_dir():
@@ -281,21 +297,26 @@ def reproduction_before(services, root, script_name, timeout_s):
     if not script.is_file():
         return None
     script_bytes = script.read_bytes()
-    diff = _git(root, ["diff", "HEAD"])
+    head = _git(root, ["rev-parse", "HEAD"])
+    if head.returncode != 0:
+        return None
+    orig_head = head.stdout.decode().strip()
+    diff = _git(root, ["diff", "--binary", "HEAD"])
     if diff.returncode != 0:
         return None
     patch = diff.stdout
     if not patch.strip():
         return None
-    reversed_diff = _git(root, ["apply", "-R", "--whitespace=nowarn"], input_bytes=patch)
-    if reversed_diff.returncode != 0:
-        return None
-    if not script.is_file():
-        script.write_bytes(script_bytes)
     try:
-        return _command_code(services, ["python3", script_name], timeout_s)
+        reversed_diff = _git(root, ["apply", "-R", "--binary", "--whitespace=nowarn"], input_bytes=patch)
+        if reversed_diff.returncode != 0:
+            return None
+        if not script.is_file():
+            script.write_bytes(script_bytes)
+        measured = _command_code(services, ["python3", script_name], timeout_s)
+        return measured
     finally:
-        _restore_patch(root, patch, script_name, script_bytes)
+        _restore_candidate(root, orig_head, patch, script_name, script_bytes)
 
 
 def _prefer(measured, recorded):

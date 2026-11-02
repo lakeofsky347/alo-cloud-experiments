@@ -353,10 +353,30 @@ def followup_g2_config(unit):
     }
 
 
+LEARNING_EXPORT_ARMS = ("g2", "g2-fixed", "g2-random")
+
+
+def control_parent(parent_unit_id, arm):
+    """Point a control unit at the same chain in its own arm.
+
+    Frozen parents use ``.g2.`` as the arm segment. Leaving that id in place
+    makes a control block on a missing parent, or import frozen-g2 statistics.
+    """
+    if not isinstance(parent_unit_id, str) or not parent_unit_id:
+        return parent_unit_id or ""
+    if arm not in {"g2-fixed", "g2-random"}:
+        return parent_unit_id
+    needle = ".g2."
+    if needle not in parent_unit_id:
+        return parent_unit_id
+    return parent_unit_id.replace(needle, f".{arm}.", 1)
+
+
 def iter_control_units(study=None):
     """Same tasks and caps as r2, plus the three follow-up arms.
 
     Not selected by ``iter_r2_units`` and not part of the freeze payload.
+    M2 parents are remapped onto the control arm. They do not point at frozen g2.
     """
     source = []
     if study in (None, "m1"):
@@ -367,8 +387,8 @@ def iter_control_units(study=None):
         if unit.arm == "g1-main":
             yield replace(unit, arm="g1-deepseek-flash")
         elif unit.arm == "g2":
-            yield replace(unit, arm="g2-fixed")
-            yield replace(unit, arm="g2-random")
+            for arm in ("g2-fixed", "g2-random"):
+                yield replace(unit, arm=arm, parent_unit_id=control_parent(unit.parent_unit_id, arm))
 
 
 def select_control_units(study, *, arms=(), tasks=()):

@@ -230,3 +230,43 @@ def test_s1_fail_then_pass_is_a_criterion_pass_and_pass_then_pass_is_a_fail(tmp_
     org = Organization(str(service.state_dir / "alo.sqlite3"))
     assert any(row["beta"] > 1 for row in org.belief.dump())
     org.conn.close()
+
+
+def test_staged_repro_measurement_keeps_the_candidate_fix(tmp_path):
+    """Live workspaces stage every edit, including alo_repro.py.
+
+    The before-run reverses that patch and the command stages the unfixed
+    tree. The fix must still be in the worktree and the index afterwards.
+    """
+    root = tmp_path / "ws"
+    workspace = Workspace(root)
+    subprocess.check_call(["git", "init", "-q"], cwd=root)
+    subprocess.check_call(["git", "config", "user.email", "t@example.com"], cwd=root)
+    subprocess.check_call(["git", "config", "user.name", "t"], cwd=root)
+    (root / "bug.py").write_text("BUG\n", encoding="utf-8")
+    subprocess.check_call(["git", "add", "bug.py"], cwd=root)
+    subprocess.check_call(["git", "commit", "-q", "-m", "base"], cwd=root)
+    (root / "bug.py").write_text("FIXED\n", encoding="utf-8")
+    (root / "alo_repro.py").write_text(SCRIPT, encoding="utf-8")
+    subprocess.check_call(["git", "add", "-A"], cwd=root)
+
+    def command(argv, timeout_s=30):
+        del timeout_s
+        completed = subprocess.run(argv, cwd=root, capture_output=True, check=False)
+        subprocess.run(["git", "-C", str(root), "add", "-A"], check=False, capture_output=True)
+        return {"returncode": completed.returncode, "stdout": "", "stderr": ""}
+
+    services = type("S", (), {})()
+    services.workspace = workspace
+    services.command = command
+    evidence = collect_repro_v1(services)
+    assert evidence["signal"] == "pass"
+    assert evidence["repro_before_returncode"] != 0
+    assert evidence["repro_after_returncode"] == 0
+    assert (root / "bug.py").read_text(encoding="utf-8") == "FIXED\n"
+    assert (root / "alo_repro.py").is_file()
+    staged = subprocess.run(
+        ["git", "-C", str(root), "show", ":bug.py"], capture_output=True, text=True, check=False)
+    assert staged.returncode == 0
+    assert "FIXED" in staged.stdout
+    assert "BUG" not in staged.stdout

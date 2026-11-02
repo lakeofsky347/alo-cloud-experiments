@@ -77,7 +77,7 @@ Drop both G2 control arms. deepseek-flash **42.98**.
 
 ### 4. Full r2 repeat, g1-deepseek-flash, and a smaller g2-fixed
 
-No `g2-random`. Light g2-fixed on **46.47%** of the G2 units (about 41 of 88) puts deepseek-flash **on the 50 CNY cap** at the overall deepseek rate (7.02 CNY of g2-fixed on top of 42.98). That schedule sits exactly on the cap. Priced at the deepseek rate observed inside G2 (0.01309 CNY per request) the same slice is **51.83 CNY**, over the cap. A **40%** slice at the overall rate is **49.02 CNY**, so the headroom is **0.98 CNY**, not about 2. mimo-v2.6-pro stays at the repeat's 25.87 because this option does not route random traffic onto it.
+No `g2-random`. Light g2-fixed on **46.47%** of the G2 units (about 41 of 88) puts deepseek-flash **on the 50 CNY cap** at the overall deepseek rate (7.02 CNY of g2-fixed on top of 42.98). That schedule sits exactly on the cap. Priced at the deepseek rate observed inside G2 (0.01309 CNY per request) the same slice is **51.83 CNY**, over the cap. A **40%** slice at the overall rate is **49.02 CNY**, so the headroom is **0.98 CNY**. At that same G2 rate the 40% slice is **50.59 CNY**, which is over the cap. The largest slice that stays at 50 CNY at the G2 rate is about **36.8%**. mimo-v2.6-pro stays at the repeat's 25.87 because this option does not route random traffic onto it.
 
 | Model | CNY at the 46.47% slice (overall rate) | CNY at 40% |
 |---|---:|---:|

@@ -345,7 +345,7 @@ def execute_public_checks(*, image, patch_text, test_paths=(), runner=None, clea
 
 _EXECUTE_DRIVER = r"""
 import json, os, pathlib, subprocess, sys
-root = pathlib.Path("/testbed")
+root = pathlib.Path(os.environ.get("ALO_REPRO_ROOT", "/testbed"))
 script_name, patch_path = sys.argv[1], sys.argv[2]
 tests = sys.argv[3:]
 script = root / script_name
@@ -361,8 +361,33 @@ def run(argv):
     return completed.returncode
 
 before = after = None
+# The candidate script often exists only inside model.patch. Apply once, keep
+# those bytes, return to the clean tree, and run that same script on both.
+extracted = None
+existed = script.is_file()
+original = script.read_bytes() if existed else None
+patch_bytes = pathlib.Path(patch_path).read_bytes()
+if patch_bytes.strip():
+    probed = subprocess.run(
+        ["git", "-C", str(root), "apply", "--whitespace=nowarn", patch_path],
+        capture_output=True).returncode == 0
+    if probed and script.is_file():
+        extracted = script.read_bytes()
+    subprocess.run(["git", "-C", str(root), "reset", "--hard", "HEAD"], capture_output=True)
+    if existed and original is not None and not script.is_file():
+        script.write_bytes(original)
+    elif not existed and script.is_file():
+        script.unlink()
+if extracted is not None:
+    script.write_bytes(extracted)
+elif script.is_file():
+    extracted = script.read_bytes()
 if script.is_file():
     before = run([python_bin, script_name])
+if extracted is not None and not existed:
+    script.unlink()
+elif existed and original is not None:
+    script.write_bytes(original)
 
 def run_suite(paths):
     if not paths:

@@ -3,6 +3,8 @@ import json
 import subprocess
 
 from alo.org.organization import Organization
+from pathlib import Path
+
 from alo.runtime.decomposer import parse_dag
 from alo_cloud.adapters import FIXED_ROUTE_MODEL, FIXED_S1_S2_DAG, HeterogeneousALO
 from alo_cloud.contracts import G1_DEEPSEEK_FLASH_MODEL, G1_MAIN_MODEL, G1_STRONG_MODEL, MODEL_POOL
@@ -101,6 +103,18 @@ def test_g1_model_name_and_control_schedule_are_outside_the_freeze():
     assert _build_adapter(deepseek).fixed_model == "deepseek-flash"
     homes = {r2_shard_of(unit, 4) for unit in controls if unit.task_id == sample.task_id and unit.study == "m1"}
     assert len(homes) == 1
+    from alo_cloud.r2 import LEARNING_EXPORT_ARMS
+    m2 = list(iter_control_units("m2"))
+    by_id = {unit.unit_id: unit for unit in m2}
+    frozen_ids = {unit.unit_id for unit in iter_r2_m2_units()}
+    parents = [unit for unit in m2 if unit.parent_unit_id]
+    assert parents
+    for unit in parents:
+        assert unit.parent_unit_id not in frozen_ids
+        assert ".g2." not in unit.parent_unit_id
+        assert by_id[unit.parent_unit_id].arm == unit.arm
+    assert set(LEARNING_EXPORT_ARMS) >= {"g2", "g2-fixed", "g2-random"}
+    assert "LEARNING_EXPORT_ARMS" in Path("src/alo_cloud/run.py").read_text(encoding="utf-8")
 
 
 def test_fixed_dag_parses_and_skips_the_planner(tmp_path):

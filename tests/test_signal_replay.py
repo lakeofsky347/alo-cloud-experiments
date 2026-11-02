@@ -165,6 +165,55 @@ def test_execute_mode_is_injected_and_labels_its_source(tmp_path):
     assert "json.dumps" in _EXECUTE_DRIVER
 
 
+def test_missing_execute_fields_stay_null_and_can_still_pass():
+    from alo_cloud.signal_replay import _parse_execute_result
+
+    evidence = _parse_execute_result({"returncode": 0, "stdout": json.dumps({
+        "before": 1, "after": 0, "tests": None, "tests_base": None,
+        "applied": True, "runner": None, "reason": None,
+    }) + "\n", "stderr": ""})
+    assert evidence["signal"] == "pass"
+    assert evidence["tests_returncode"] is None
+    assert evidence["tests_base_returncode"] is None
+    assert evidence["repro_before_returncode"] == 1
+    assert evidence["repro_after_returncode"] == 0
+
+
+def test_patch_script_is_measured_on_the_clean_tree_and_the_patched_tree(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    subprocess_git = __import__("subprocess")
+    subprocess_git.check_call(["git", "init", "-q"], cwd=root)
+    subprocess_git.check_call(["git", "config", "user.email", "t@example.com"], cwd=root)
+    subprocess_git.check_call(["git", "config", "user.name", "t"], cwd=root)
+    (root / "bug.py").write_text("BUG\n", encoding="utf-8")
+    subprocess_git.check_call(["git", "add", "bug.py"], cwd=root)
+    subprocess_git.check_call(["git", "commit", "-q", "-m", "base"], cwd=root)
+    script = "import sys\nfrom pathlib import Path\nsys.exit(0 if 'FIXED' in Path('bug.py').read_text() else 1)\n"
+    (root / "bug.py").write_text("FIXED\n", encoding="utf-8")
+    (root / "alo_repro.py").write_text(script, encoding="utf-8")
+    subprocess_git.check_call(["git", "add", "-A"], cwd=root)
+    patch = subprocess_git.check_output(["git", "-C", str(root), "diff", "--cached", "HEAD"])
+    subprocess_git.check_call(["git", "-C", str(root), "reset", "--hard", "HEAD"], cwd=root)
+    assert not (root / "alo_repro.py").exists()
+    patch_path = tmp_path / "model.patch"
+    patch_path.write_bytes(patch)
+    from alo_cloud.signal_replay import _EXECUTE_DRIVER
+    import os
+    env = os.environ.copy()
+    env["ALO_REPRO_ROOT"] = str(root)
+    completed = subprocess_git.run(
+        [os.environ.get("PYTHON", "python3"), "-c", _EXECUTE_DRIVER, "alo_repro.py", str(patch_path)],
+        capture_output=True, env=env, check=False)
+    assert completed.returncode == 0, completed.stderr.decode()
+    payload = json.loads(completed.stdout.decode().strip().splitlines()[-1])
+    assert payload["before"] != 0
+    assert payload["after"] == 0
+    assert payload["applied"] is True
+    assert (root / "bug.py").read_text(encoding="utf-8") == "FIXED\n"
+    assert (root / "alo_repro.py").is_file()
+
+
 def test_execute_names_the_container_and_removes_it_on_timeout():
     import subprocess
     from alo_cloud.signal_replay import REPLAY_CONTAINER_LABEL, execute_public_checks
@@ -253,6 +302,14 @@ def test_settled_ledger_keeps_deepseek_over_50_unless_the_schedule_shrinks():
     at_g2_rate = ledger_arm_costs(
         light=True, deepseek_rate="g2", include_g2_random=False, g2_fraction=fraction)
     assert abs(at_g2_rate["projected_cny"]["deepseek-flash"] - 51.83) < 0.05
+    forty_at_g2 = ledger_arm_costs(
+        light=True, deepseek_rate="g2", include_g2_random=False, g2_fraction=0.40)
+    assert abs(forty_at_g2["projected_cny"]["deepseek-flash"] - 50.59) < 0.02
+    assert forty_at_g2["projected_cny"]["deepseek-flash"] > 50
+    from alo_cloud.followup_cost import _g2_fraction_at_cap, R2_SETTLED_LEDGER
+    safe = _g2_fraction_at_cap(
+        R2_SETTLED_LEDGER, light=True, deepseek_rate="g2", include_random=False)
+    assert abs(safe - 0.368) < 0.005
 
 
 def test_settled_ledger_reader_is_read_only(tmp_path):
