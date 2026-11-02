@@ -19,9 +19,7 @@ import tarfile
 from .adapters import adapter_for
 from .budget import MICROCNY_PER_CNY, BudgetLedger, BudgetStopped
 from .collect import collect_sealed
-from .contracts import (
-    G1_MAIN_MODEL, G1_STRONG_MODEL, MODEL_POOL, PER_MODEL_LIMIT_MICROCNY, STUDY_TOTAL_LIMIT_MICROCNY,
-)
+from .contracts import MODEL_POOL, PER_MODEL_LIMIT_MICROCNY, STUDY_TOTAL_LIMIT_MICROCNY
 from .errors import PilotStopped
 from .freeze import (
     BLOCKED_FRACTION_MIN_UNITS, G2_PLANNER_MODEL, G3_MANAGER_MODEL, G3_ROLES,
@@ -188,10 +186,12 @@ def dry_run_sender(url, body, headers):
 
 
 def _build_adapter(unit, user_preference=None):
-    if unit.arm == "g1-main":
-        return adapter_for("G1", {"fixed_model": G1_MAIN_MODEL, "max_turns": unit.request_cap})
-    if unit.arm == "g1-strong":
-        return adapter_for("G1", {"fixed_model": G1_STRONG_MODEL, "max_turns": unit.request_cap})
+    if unit.arm in {"g1-main", "g1-strong", "g1-deepseek-flash"}:
+        from .r2 import g1_model
+        return adapter_for("G1", {"fixed_model": g1_model(unit.arm), "max_turns": unit.request_cap})
+    if unit.arm in {"g2-fixed", "g2-random"}:
+        from .r2 import followup_g2_config
+        return adapter_for("G2", followup_g2_config(unit))
     if unit.arm == "g2":
         # Planner uses one request. The verifier keeps at least three. s1 gets the rest.
         worker_turns = max(1, unit.request_cap - 1 - 3)
@@ -1222,7 +1222,10 @@ def _parser():
     parser = argparse.ArgumentParser(description="Run the frozen M1 or M2 schedule.")
     parser.add_argument("--study", choices=("m1", "m2"))
     parser.add_argument("--arm", action="append", default=[],
-                        choices=("g1-main", "g1-strong", "g2", "g3"))
+                        choices=("g1-main", "g1-strong", "g1-deepseek-flash", "g2", "g2-fixed", "g2-random", "g3"))
+    parser.add_argument("--controls", action="store_true",
+                        help="Add the follow-up arms (g1-deepseek-flash, g2-fixed, g2-random). "
+                             "They are not part of the frozen r2 schedule.")
     parser.add_argument("--tasks", action="append", default=[])
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--live", action="store_true")
@@ -1287,6 +1290,9 @@ def main(argv=None):
     elif batch == "r2":
         from .r2 import R2_COMMAND_SECONDS, R2_REASONING_BUDGET, r2_model_soft_halts, select_r2_units
         units = select_r2_units(args.study, arms=args.arm, tasks=args.tasks)
+        if args.controls:
+            from .r2 import select_control_units
+            units = tuple(units) + select_control_units(args.study, arms=args.arm, tasks=args.tasks)
         limit_overrides = {"command_seconds": R2_COMMAND_SECONDS}
         reasoning_budget = R2_REASONING_BUDGET
         soft_halts = r2_model_soft_halts()

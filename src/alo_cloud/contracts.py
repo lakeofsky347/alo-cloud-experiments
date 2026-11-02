@@ -9,6 +9,8 @@ MODEL_POOL = ("deepseek-flash", "mimo-v2.6-flash", "glm-5.3-flash", "mimo-v2.6-p
 # G1 Strong is the owner decision recorded in docs/protocol.md. It is not Main.
 G1_MAIN_MODEL = "mimo-v2.6-flash"
 G1_STRONG_MODEL = "mimo-v2.6-pro"
+# Single-model control. The request name is exactly this string, with no version suffix.
+G1_DEEPSEEK_FLASH_MODEL = "deepseek-flash"
 PER_MODEL_LIMIT_MICROCNY = 50_000_000
 STUDY_TOTAL_LIMIT_MICROCNY = 200_000_000
 

@@ -14,6 +14,8 @@ Linux执行需明确选择受支持的本地Docker后端，核对原生amd64、�
 
 当前能力信号的已知边界是可归因 Python 源码语法：B／TMS 的 pass／fail 不代表功能正确性。全局公开质量与资源观测独立建模。M2实验的结论必须与实际继承的信号一致。
 
+r2 冻结路径仍使用该语法判据，不因后续代码改变已经采集的 r2 结果含义。可选 `criterion_id="repro-v1"` 才把复现脚本的修改前／修改后返回码和已改动公开测试的返回码交给 `public_quality_signal`。语法单独通过在这条判据里保持 unknown。B／TMS 仍只在明确 pass 或 fail 时更新。`routing_mode` 的 `fixed` 与 `random`、`g1-deepseek-flash`，以及固定 DAG 和轻量 s2，都是冻结日程之外的对照配置。
+
 | 源码范围 | 本仓库包含什么 | 未接入的部分 |
 | --- | --- | --- |
 | `src/alo/` | 组织、权限、B／TMS、Thompson 指派、治理和状态存储的核心算法 | 实际模型传输、候选运行与基准任务 |
