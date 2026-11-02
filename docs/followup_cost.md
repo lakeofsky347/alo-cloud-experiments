@@ -1,43 +1,92 @@
 # Follow-up cost at r2 scale
 
-This is an estimate, not a permit to collect. Reproduce it with the r2 ledger:
+This is an estimate from the settled r2 ledger, not a permit to collect. The ledger has 6100 requests and 6022 settled ones. Settled spend is **71.64 CNY**.
 
-```sh
-python3 scripts/estimate_followup_cost.py \
-  --records /path/to/records.jsonl \
-  --output-dir /tmp/alo-followup-cost
-```
+Per-unit `charged_microcny` in `records.jsonl` sums to **33.01 CNY**. That field is the final attempt's observed charge. It leaves out:
 
-The frozen r2 schedule is 168 M1 units and 70 M2 units. The follow-up adds three arms on those same tasks: `g1-deepseek-flash`, `g2-fixed`, and `g2-random`. The cap used here is 50 CNY per model, on a fresh round. It is not added on top of the r2 ledger.
+- **24.93 CNY** charged at the full reservation for timeout or unknown outcomes (stream idle, deadline, and other)
+- **13.70 CNY** from attempts that are not the final record, almost all of it in restarted units
 
-## What the attached records contain
+33.01 + 24.93 + 13.70 = 71.64. Rates below divide the settled ledger total, including those two gaps, by settled requests.
 
-Sum of `charged_microcny` in the attached `records.jsonl` (242 rows, 168 unique M1 units and 70 unique M2 units):
+| Model | Records CNY | Timeouts CNY | Restarts and other CNY | Ledger CNY | CNY per request |
+|---|---:|---:|---:|---:|---:|
+| deepseek-flash | 16.99 | 4.74 | 5.40 | 27.13 | 0.01039 |
+| mimo-v2.6-flash | 5.72 | 6.47 | 3.64 | 15.83 | 0.00665 |
+| glm-5.3-flash | 1.37 | 1.12 | 0.33 | 2.81 | 0.02024 |
+| mimo-v2.6-pro | 8.93 | 12.61 | 4.32 | 25.87 | 0.02897 |
 
-| Model | CNY | CNY per request |
-|---|---:|---:|
-| deepseek-flash | 16.99 | 0.014058 |
-| mimo-v2.6-flash | 5.72 | 0.005017 |
-| glm-5.3-flash | 1.37 | 0.014175 |
-| mimo-v2.6-pro | 8.93 | 0.014292 |
-| **Total** | **33.01** | |
+G2-context deepseek-flash is **0.01309 CNY per request**, higher than the overall 0.01039. G1-main accounts for **1525** ledger requests. G2 accounts for **1932**. The s1 share of G2 model calls, from 62 adapters (planner 62, s1 989, s2 264), is **0.752**. The new G2 arms already set `fixed_topology` and `lightweight_verifier`, so the light rows are what that code would spend. "Default" keeps planner and s2 requests.
 
-The per-request rate divides that charge by the unit's `model_requests`, split across models in the proportion of the transport counts. Transport rows are fewer than `model_requests` on many units, so the mix is scaled up to the request counter before the division.
+`ledger_full_scenarios` and `ledger_scope_options` in `alo_cloud.followup_cost` recompute these tables.
 
-The round's ledger total supplied with the run is **71.64 CNY** (deepseek-flash 27.13, mimo-v2.6-pro 25.87, mimo-v2.6-flash 15.83, glm-5.3-flash 2.81). The per-unit field does not add up to that ledger. Timeout epoch counters in the same file are cumulative and do not identify the missing 38.63 CNY by unit, so the projection does not invent a split. A next round that also keeps worst-case timeout reservations would cost more than the table below, by roughly the same gap if the timeout mix repeats.
+## Full repeat plus all three new arms
 
-## Projection from per-unit charges
+deepseek-flash is over the 50 CNY cap in every one of these, from **61.86 to 74.61 CNY**.
 
-The repeat is the 33.01 CNY above. New arms use each unit's request count and the CNY-per-request rates above. `g2-fixed` prices every G2 request as `deepseek-flash`. `g2-random` splits those requests across the four models. Planner calls and s2 calls are still included. Blocked and skipped units add nothing.
+| Scenario | deepseek-flash | mimo-v2.6-flash | glm-5.3-flash | mimo-v2.6-pro | Total |
+|---|---:|---:|---:|---:|---:|
+| Default requests, overall deepseek rate | **68.08** | 19.04 | 12.59 | 39.86 | 139.57 |
+| Light G2 (s1 share), overall deepseek rate | **61.86** | 18.24 | 10.17 | 36.39 | 126.66 |
+| Default requests, G2 deepseek rate | **74.61** | 19.04 | 12.59 | 39.86 | 146.09 |
+| Light G2, G2 deepseek rate | **66.77** | 18.24 | 10.17 | 36.39 | 131.57 |
 
-| Component | deepseek-flash | mimo-v2.6-flash | glm-5.3-flash | mimo-v2.6-pro |
-|---|---:|---:|---:|---:|
-| r2 repeat | 16.99 | 5.72 | 1.37 | 8.93 |
-| g1-deepseek-flash | 14.03 | 0 | 0 | 0 |
-| g2-fixed | 22.44 | 0 | 0 | 0 |
-| g2-random | 5.61 | 2.00 | 5.66 | 5.70 |
-| **Total** | **59.07** | **7.72** | **7.02** | **14.64** |
+Dropping only `g2-random` from the light overall scenario still leaves deepseek-flash at about **58.08 CNY**. That arm is not the whole overage.
 
-Total projected spend is **88.45 CNY**. `deepseek-flash` is **9.07 CNY over** the 50 CNY cap. The other three models stay under 50. Under this mix the round cannot finish the deepseek arms without a smaller G2 request count or dropping an arm.
+The repeat is the ledger itself (deepseek-flash 27.13). g1-deepseek-flash is 1525 requests at the overall deepseek rate (**15.85**). g2-fixed and g2-random split the 1932 G2 requests. Light multiplies those G2 requests by 0.752 before pricing.
 
-The fixed topology removes one planner request per G2 unit, and the lightweight verifier removes s2 model requests. Those savings are not in the table: the ledger does not split requests by node. They are the practical way to bring deepseek back under 50, because the overage is the new deepseek arms, not mimo or glm.
+## Options that keep deepseek-flash at or under 50 CNY
+
+### 1. New arms only, no r2 repeat, light G2
+
+This is the code path (`fixed_topology`, `lightweight_verifier`) without rerunning r2. deepseek-flash **34.72**.
+
+| Model | CNY |
+|---|---:|
+| deepseek-flash | 34.72 |
+| mimo-v2.6-flash | 2.42 |
+| glm-5.3-flash | 7.35 |
+| mimo-v2.6-pro | 10.52 |
+| **Total** | **55.02** |
+
+Of the deepseek spend: g1-deepseek-flash 15.85, g2-fixed 15.10, g2-random 3.78.
+
+### 2. New arms only, no r2 repeat, full G2 request counts
+
+Same arms if s2 model calls are not removed. deepseek-flash **40.95**.
+
+| Model | CNY |
+|---|---:|
+| deepseek-flash | 40.95 |
+| mimo-v2.6-flash | 3.21 |
+| glm-5.3-flash | 9.78 |
+| mimo-v2.6-pro | 13.99 |
+| **Total** | **67.93** |
+
+### 3. Full r2 repeat plus g1-deepseek-flash only
+
+Drop both G2 control arms. deepseek-flash **42.98**.
+
+| Model | CNY |
+|---|---:|
+| deepseek-flash | 42.98 |
+| mimo-v2.6-flash | 15.83 |
+| glm-5.3-flash | 2.81 |
+| mimo-v2.6-pro | 25.87 |
+| **Total** | **87.49** |
+
+### 4. Full r2 repeat, g1-deepseek-flash, and a smaller g2-fixed
+
+No `g2-random`. Light g2-fixed on **46.5%** of the G2 units (about 41 of 88) puts deepseek-flash **on the 50 CNY cap** (7.02 CNY of g2-fixed on top of 42.98). A 40% slice leaves about 2 CNY of headroom. mimo-v2.6-pro stays at the repeat's 25.87 because this option does not route random traffic onto it.
+
+| Model | CNY at the 46.5% slice |
+|---|---:|
+| deepseek-flash | 50.00 |
+| mimo-v2.6-flash | 15.83 |
+| glm-5.3-flash | 2.81 |
+| mimo-v2.6-pro | 25.87 |
+| **Total** | **94.51** |
+
+The other three models stay under 50 CNY in every option above. mimo-v2.6-pro is the next closest, and only in the full-repeat scenarios that were already over on deepseek (about 36–40).
+
+These figures assume the r2 timeout rate repeats and that G1 requests priced as deepseek-flash cost the overall deepseek rate. They are not a token-level repricing.

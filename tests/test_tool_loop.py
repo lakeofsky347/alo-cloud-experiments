@@ -56,6 +56,16 @@ def test_final_completes_and_malformed_text_stays_in_the_transcript():
     assert not any(call[0] == "command" for call in services.calls if isinstance(call, tuple))
 
 
+def test_leading_json_with_trailing_system_text_still_runs():
+    services = LoopServices([
+        '{"tool":"command","arguments":{"argv":["python3","alo_repro.py"]}}\n<system>stray',
+        '{"final":"done"}',
+    ])
+    result = persistent_tool_loop(services, "public task", [], max_turns=2)
+    assert result["status"] == "completed"
+    assert ("command", ("python3", "alo_repro.py"), 30) in services.calls
+
+
 def test_provider_tool_calls_are_not_executed():
     services = LoopServices([{"text": '{"final":"submitted"}', "tool_calls": [{"name": "command", "arguments": {}}]}])
     result = persistent_tool_loop(services, "public task", [], max_turns=1)

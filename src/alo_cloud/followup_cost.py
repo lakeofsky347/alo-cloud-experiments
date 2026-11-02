@@ -229,7 +229,133 @@ def projection_markdown(report):
     lines.append("")
     lines.append(
         "This projection is not an authorization to start collection. "
-        "It does not include a separate saving for the fixed-topology planner skip "
-        "or the lightweight verifier, because r2 request counts are not split by node.")
+        "It prices the repeat from per-unit charged_microcny. That sum leaves out "
+        "timeout reservations and restarted attempts. Use ledger_scope_report for "
+        "the settled-ledger rates.")
     lines.append("")
     return "\n".join(lines)
+
+
+# Settled r2 ledger (6100 requests, 71.64 CNY). Per-unit charged_microcny in
+# records.jsonl is 33.01 CNY and omits timeout reservations and restarted attempts.
+R2_SETTLED_LEDGER = {
+    "ledger_cny": {
+        "deepseek-flash": 27.134737,
+        "mimo-v2.6-flash": 15.825140,
+        "glm-5.3-flash": 2.813787,
+        "mimo-v2.6-pro": 25.867684,
+    },
+    "cny_per_request": {
+        "deepseek-flash": 0.0103924691689008,
+        "mimo-v2.6-flash": 0.006652013451029845,
+        "glm-5.3-flash": 0.02024307194244604,
+        "mimo-v2.6-pro": 0.0289671713325868,
+    },
+    "g2_deepseek_cny_per_request": 0.013094141810918754,
+    "g1_main_requests": 1525,
+    "g2_requests": 1932,
+    "g2_s1_share": 0.7520912547528517,
+    "timeout_reservation_cny": 24.93,
+    "restart_attempt_cny": 13.70,
+    "records_charged_cny": 33.01,
+}
+
+
+def _blank_models():
+    return {model: 0.0 for model in MODEL_POOL}
+
+
+def ledger_arm_costs(ledger=None, *, light=False, deepseek_rate="overall",
+                     include_repeat=True, include_g1_deepseek=True,
+                     include_g2_fixed=True, include_g2_random=True, g2_fraction=1.0):
+    """Price a follow-up from settled per-request rates, including timeouts.
+
+    ``light`` keeps the s1 share of G2 requests (fixed topology, no s2 model
+    calls). ``deepseek_rate`` ``g2`` uses the G2-context deepseek rate for G2
+    arms. g1-deepseek-flash always uses the overall deepseek rate, because
+    those requests repeat G1-main. ``g2_fraction`` scales both G2 control arms.
+    """
+    source = R2_SETTLED_LEDGER if ledger is None else ledger
+    rates = source["cny_per_request"]
+    deepseek_price = (source["g2_deepseek_cny_per_request"] if deepseek_rate == "g2"
+                      else rates["deepseek-flash"])
+    share = source["g2_s1_share"] if light else 1.0
+    if not 0 <= g2_fraction <= 1:
+        raise ValueError("g2_fraction")
+    g2_calls = source["g2_requests"] * share * g2_fraction
+    parts = {
+        "r2_repeat": _blank_models(),
+        "g1-deepseek-flash": _blank_models(),
+        "g2-fixed": _blank_models(),
+        "g2-random": _blank_models(),
+    }
+    if include_repeat:
+        parts["r2_repeat"] = {model: float(source["ledger_cny"][model]) for model in MODEL_POOL}
+    if include_g1_deepseek:
+        parts["g1-deepseek-flash"]["deepseek-flash"] = source["g1_main_requests"] * rates["deepseek-flash"]
+    if include_g2_fixed:
+        parts["g2-fixed"]["deepseek-flash"] = g2_calls * deepseek_price
+    if include_g2_random:
+        each = g2_calls / len(MODEL_POOL)
+        for model in MODEL_POOL:
+            price = deepseek_price if model == "deepseek-flash" else rates[model]
+            parts["g2-random"][model] = each * price
+    totals = {model: sum(parts[name][model] for name in parts) for model in MODEL_POOL}
+    return {
+        "components_cny": parts,
+        "projected_cny": totals,
+        "projected_total_cny": sum(totals.values()),
+        "over_cap_cny": {model: totals[model] - PER_MODEL_CAP_CNY
+                         for model in MODEL_POOL if totals[model] > PER_MODEL_CAP_CNY},
+    }
+
+
+def ledger_full_scenarios(ledger=None):
+    """The four full-repeat projections. deepseek-flash exceeds 50 CNY in each."""
+    specs = (
+        ("default_overall_rates", False, "overall"),
+        ("light_overall_rates", True, "overall"),
+        ("default_g2ctx_ds_rate", False, "g2"),
+        ("light_g2ctx_ds_rate", True, "g2"),
+    )
+    return {
+        name: ledger_arm_costs(ledger, light=light, deepseek_rate=rate)
+        for name, light, rate in specs
+    }
+
+
+def _g2_fraction_at_cap(ledger, *, light, deepseek_rate, include_random):
+    """Largest G2 fraction whose deepseek spend, with the repeat and g1, stays at 50."""
+    base = ledger_arm_costs(
+        ledger, light=light, deepseek_rate=deepseek_rate,
+        include_g2_fixed=False, include_g2_random=False)
+    room = PER_MODEL_CAP_CNY - base["projected_cny"]["deepseek-flash"]
+    full = ledger_arm_costs(
+        ledger, light=light, deepseek_rate=deepseek_rate, include_repeat=False,
+        include_g1_deepseek=False, include_g2_fixed=True, include_g2_random=include_random)
+    increment = full["projected_cny"]["deepseek-flash"]
+    if increment <= 0:
+        return 0.0
+    return max(0.0, min(1.0, room / increment))
+
+
+def ledger_scope_options(ledger=None):
+    """Schedules that keep every model, and deepseek-flash in particular, at or under 50 CNY.
+
+    Dropping only g2-random from a full repeat still leaves deepseek-flash over
+    the cap. The options below are the ones that fit.
+    """
+    source = R2_SETTLED_LEDGER if ledger is None else ledger
+    fraction = _g2_fraction_at_cap(source, light=True, deepseek_rate="overall", include_random=False)
+    options = {
+        "new_arms_only_light": ledger_arm_costs(
+            source, light=True, include_repeat=False),
+        "new_arms_only_default_requests": ledger_arm_costs(
+            source, light=False, include_repeat=False),
+        "repeat_plus_g1_deepseek_only": ledger_arm_costs(
+            source, include_g2_fixed=False, include_g2_random=False),
+        "repeat_plus_g1_and_capped_g2_fixed": ledger_arm_costs(
+            source, light=True, include_g2_random=False, g2_fraction=fraction),
+    }
+    options["repeat_plus_g1_and_capped_g2_fixed"]["g2_fraction"] = fraction
+    return options

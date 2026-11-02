@@ -325,6 +325,25 @@ def _actions_from_dsml(text):
     return actions
 
 
+def leading_json_object(text):
+    """First JSON object in ``text``. Trailing prose does not reject it.
+
+    Model replies often emit one tool object and then stray ``<system>`` text.
+    ``json.loads`` of the whole message misses those calls. ``raw_decode``
+    stops at the end of the object.
+    """
+    if not isinstance(text, str):
+        return None
+    start = text.find("{")
+    if start < 0:
+        return None
+    try:
+        value, _end = json.JSONDecoder(object_pairs_hook=_unique_object).raw_decode(text, start)
+    except (json.JSONDecodeError, ProtocolError, ValueError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
 def _json_objects(text):
     decoder = json.JSONDecoder(object_pairs_hook=_unique_object)
     index = 0

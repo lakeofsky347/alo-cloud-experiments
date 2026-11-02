@@ -198,6 +198,41 @@ def test_repro_failure_updates_beta_and_a_pass_does_not(tmp_path):
     assert 1.0 in qualities
 
 
+def test_live_belief_credits_each_node_to_the_model_that_ran_it(tmp_path):
+    from alo.models.base import Completion, ModelInfo
+    from alo.runtime.orchestrator import run_task
+    from alo_cloud.adapters import FIXED_S1_S2_DAG
+
+    class Worker:
+        def __init__(self, name):
+            self.info = ModelInfo(name, "official", name)
+
+        def complete(self, prompt, **kwargs):
+            del prompt, kwargs
+            return Completion("submitted", 1, 1, 0)
+
+    class Policy:
+        def __init__(self):
+            self.calls = []
+
+        def select(self, org, pool, worker_ids, cell, topics, user_id, rng=None):
+            del org, pool, cell, topics, user_id, rng
+            chosen = "deepseek-flash" if not self.calls else "mimo-v2.6-flash"
+            self.calls.append(chosen)
+            return chosen, {"selected": chosen}
+
+    org = Organization(str(tmp_path / "alo.sqlite3"))
+    pool = {name: Worker(name) for name in ("deepseek-flash", "mimo-v2.6-flash", "planner::deepseek-flash")}
+    run_task(
+        org, pool, "fix the bug", planner_id="planner::deepseek-flash", fixed_dag=FIXED_S1_S2_DAG,
+        max_attempts=1, criteria_fn=lambda role, output: True, assignment_policy=Policy(),
+    )
+    rows = {row["model"]: row for row in org.belief.dump()}
+    org.conn.close()
+    assert rows["deepseek-flash"]["alpha"] > 1 and rows["deepseek-flash"]["beta"] == 1
+    assert rows["mimo-v2.6-flash"]["alpha"] > 1 and rows["mimo-v2.6-flash"]["beta"] == 1
+
+
 def test_comparison_report_always_has_the_required_sections():
     from alo_cloud.comparison import comparison_markdown, comparison_report
 

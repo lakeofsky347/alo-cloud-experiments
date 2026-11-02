@@ -16,7 +16,8 @@ from alo.org.organization import Organization
 from .comparison import comparison_markdown, comparison_report
 from .followup_cost import load_eval_dir, load_records
 from .repro import (
-    CELL, REPRO_SCRIPT, S1_TOPICS, S2_TOPICS, apply_definite_outcome, repro_v1_evidence,
+    CELL, REPRO_SCRIPT, S1_TOPICS, S2_TOPICS, _is_repro_argv, _is_test_argv, apply_definite_outcome,
+    command_results_from_messages, repro_codes_from_messages, repro_v1_evidence, touched_test_paths,
 )
 
 
@@ -38,68 +39,23 @@ and always writes the records-only proxy.
 """
 
 
-def _loads(text):
-    if not isinstance(text, str) or not text.strip():
-        return None
-    try:
-        return json.loads(text)
-    except (ValueError, TypeError):
-        return None
-
-
-def _argv_from_assistant(text):
-    value = _loads(text)
-    if not isinstance(value, dict):
-        return None
-    arguments = value.get("arguments") if isinstance(value.get("arguments"), dict) else {}
-    argv = arguments.get("argv")
-    if value.get("tool") == "command" and isinstance(argv, list) and all(isinstance(item, str) for item in argv):
-        return argv
-    if value.get("tool") == "execute_code" and isinstance(arguments.get("code"), str):
-        return ["python3", "-c", arguments["code"]]
-    return None
-
-
-def _returncode_from_user(text):
-    value = _loads(text)
-    if not isinstance(value, dict) or value.get("tool") not in {"command", "execute_code"}:
-        return None
-    result = value.get("result")
-    if isinstance(result, dict) and type(result.get("returncode")) is int:
-        return result["returncode"]
-    return None
-
-
-def _is_repro(argv):
-    return any(item.endswith(REPRO_SCRIPT) or item.endswith("/" + REPRO_SCRIPT) for item in argv)
-
-
-def _is_test(argv):
-    if any(item in {"pytest", "py.test", "unittest"} or item.endswith("/pytest") for item in argv):
-        return True
-    return any(item.endswith(".py") and ("test_" in Path(item).name or item.endswith("_test.py")
-                                         or "/tests/" in item or item.startswith("tests/"))
-               for item in argv)
-
-
 def commands_from_messages(messages):
-    """Pair each command action with the return code the tool loop stored."""
-    found = []
-    pending = None
-    for message in messages or []:
-        if not isinstance(message, dict):
-            continue
-        role = message.get("role")
-        content = message.get("content")
-        if role == "assistant":
-            argv = _argv_from_assistant(content)
-            pending = argv
-        elif role == "user" and pending is not None:
-            code = _returncode_from_user(content)
-            if code is not None:
-                found.append({"argv": pending, "returncode": code})
-            pending = None
-    return found
+    """Pair each command action with the return code the tool loop stored.
+
+    A JSON object followed by stray text still counts. The live tool loop
+    reads the same leading object.
+    """
+    return command_results_from_messages(messages)
+
+
+def _messages_for_commands(commands):
+    messages = []
+    for item in commands:
+        messages.append({"role": "assistant", "content": json.dumps(
+            {"tool": "command", "arguments": {"argv": item["argv"]}})})
+        messages.append({"role": "user", "content": json.dumps(
+            {"tool": "command", "result": {"returncode": item["returncode"]}})})
+    return messages
 
 
 def signal_from_commands(commands):
@@ -109,22 +65,15 @@ def signal_from_commands(commands):
     code. One run is the after code only. The last test-like command supplies
     the test return code. This is not a fresh before/after harness.
     """
-    repro = [item for item in commands if _is_repro(item["argv"])]
-    tests = [item for item in commands if _is_test(item["argv"]) and not _is_repro(item["argv"])]
-    before = after = test_code = None
-    if len(repro) >= 2:
-        before = repro[0]["returncode"]
-        after = repro[-1]["returncode"]
-    elif len(repro) == 1:
-        after = repro[0]["returncode"]
-    if tests:
-        test_code = tests[-1]["returncode"]
+    before, after, test_code = repro_codes_from_messages(_messages_for_commands(commands))
+    repro_n = sum(1 for item in commands if _is_repro_argv(item["argv"]))
+    test_n = sum(1 for item in commands if _is_test_argv(item["argv"]) and not _is_repro_argv(item["argv"]))
     evidence = repro_v1_evidence(before=before, after=after, tests=test_code)
     evidence["source"] = "agent_transcript_returncodes"
     evidence["proxy"] = False
-    evidence["controlled_before_after"] = len(repro) >= 2
-    evidence["repro_commands"] = len(repro)
-    evidence["test_commands"] = len(tests)
+    evidence["controlled_before_after"] = repro_n >= 2
+    evidence["repro_commands"] = repro_n
+    evidence["test_commands"] = test_n
     return evidence
 
 
@@ -134,13 +83,33 @@ def signals_from_adapter(payload):
         return []
     rows = []
     for role, messages in transcripts.items():
-        commands = commands_from_messages(messages)
+        commands = commands_from_messages(messages if isinstance(messages, list) else [])
         if not commands:
             continue
         evidence = signal_from_commands(commands)
         evidence["role"] = role
+        evidence["model_id"] = model_for_role(payload, role)
         rows.append(evidence)
     return rows
+
+
+def model_for_role(payload, role):
+    """Model that ran ``role``, from the checkpoint assignments.
+
+    The unit's last assignment is not a substitute. A missing role stays
+    uncredited rather than being given another node's model.
+    """
+    assignments = payload.get("assignments") if isinstance(payload, dict) else None
+    if not isinstance(assignments, dict):
+        return None
+    assignment = assignments.get(role)
+    if not isinstance(assignment, dict):
+        return None
+    model = assignment.get("model_id")
+    if isinstance(model, str) and model:
+        return model
+    model = assignment.get("model")
+    return model if isinstance(model, str) and model else None
 
 
 def records_proxy(record):
@@ -168,15 +137,36 @@ def records_proxy(record):
         "command_calls": sum(by_node.values()),
         "s2_command_calls": by_node.get("s2", 0),
         "recorded_public_signals": signals,
+        "touched_tests": touched_test_paths(_edit_paths(edits)),
     }
 
 
-def _assigned_models(record):
+def _edit_paths(edits):
+    paths = []
+    for row in edits if isinstance(edits, list) else []:
+        if isinstance(row, dict):
+            paths.extend(path for path in row.get("paths") or [] if isinstance(path, str))
+    return paths
+
+
+def paths_from_patch(patch_text):
+    """Paths named by ``diff --git a/... b/...`` headers."""
     found = []
-    for row in record.get("decision_records") or []:
-        if isinstance(row, dict) and row.get("point") == "assignment" and isinstance(row.get("selected"), str):
-            found.append(row["selected"])
+    if not isinstance(patch_text, str):
+        return found
+    for line in patch_text.splitlines():
+        if not line.startswith("diff --git "):
+            continue
+        parts = line.split()
+        if len(parts) >= 4 and parts[2].startswith("a/") and parts[3].startswith("b/"):
+            found.append(parts[3][2:])
     return found
+
+
+def touched_tests_for_unit(record, patch_text=""):
+    paths = _edit_paths(record.get("edit_log") if isinstance(record, dict) else [])
+    paths.extend(paths_from_patch(patch_text))
+    return touched_test_paths(paths)
 
 
 def _topics_for(role):
@@ -313,64 +303,106 @@ def execute_public_checks(*, image, patch_text, test_paths=(), runner=None, scri
     return _parse_execute_result(result)
 
 
-_EXECUTE_DRIVER = """
-import pathlib, subprocess, sys
+_EXECUTE_DRIVER = r"""
+import json, os, pathlib, subprocess, sys
 root = pathlib.Path("/testbed")
 script_name, patch_path = sys.argv[1], sys.argv[2]
 tests = sys.argv[3:]
 script = root / script_name
+testbed_python = pathlib.Path("/opt/miniconda3/envs/testbed/bin/python")
+python_bin = str(testbed_python) if testbed_python.is_file() else "python3"
+env = dict(os.environ)
+prefix = "/opt/miniconda3/envs/testbed/bin:"
+if not env.get("PATH", "").startswith(prefix):
+    env["PATH"] = prefix + env.get("PATH", "")
 
 def run(argv):
-    completed = subprocess.run(argv, cwd=root, capture_output=True)
+    completed = subprocess.run(argv, cwd=root, capture_output=True, env=env)
     return completed.returncode
 
 before = after = None
 if script.is_file():
-    before = run(["python3", script_name])
+    before = run([python_bin, script_name])
 patch = pathlib.Path(patch_path).read_bytes()
-applied = 1
+applied = True
 if patch.strip():
-    applied = 1 if subprocess.run(
+    applied = subprocess.run(
         ["git", "-C", str(root), "apply", "--whitespace=nowarn", patch_path],
-        capture_output=True).returncode == 0 else 0
+        capture_output=True).returncode == 0
 if script.is_file():
-    after = run(["python3", script_name])
-test_code = ""
+    after = run([python_bin, script_name])
 existing = [path for path in tests if (root / path).is_file()]
+test_code = None
+runner = None
+reason = None
 if existing:
-    test_code = str(run(["python3", "-m", "pytest", *existing]))
-
-def field(value):
-    return "" if value is None else str(value)
-
-sys.stdout.write(field(before) + " " + field(after) + " " + test_code + " " + str(applied) + "\\n")
+    pytest_bin = pathlib.Path(python_bin).parent / "pytest"
+    if pytest_bin.is_file() or run([python_bin, "-c", "import pytest"]) == 0:
+        runner = "pytest"
+        command = [str(pytest_bin), *existing] if pytest_bin.is_file() else [python_bin, "-m", "pytest", *existing]
+        test_code = run(command)
+    elif (root / "tests" / "runtests.py").is_file():
+        runner = "django_runtests"
+        labels = []
+        for path in existing:
+            label = path[6:] if path.startswith("tests/") else path
+            if label.endswith(".py"):
+                label = label[:-3]
+            labels.append(label.replace("/", "."))
+        test_code = run([python_bin, "tests/runtests.py", "--verbosity=1", *labels])
+    elif (root / "bin" / "test").is_file():
+        runner = "sympy_bin_test"
+        test_code = run([python_bin, "bin/test", *existing])
+    else:
+        reason = "no_public_test_runner"
+payload = {"before": before, "after": after, "tests": test_code, "applied": applied,
+           "runner": runner, "reason": reason}
+sys.stdout.write(json.dumps(payload) + "\n")
 """
 
 
+def _parse_execute_payload(stdout):
+    """Last JSON object on stdout. Null fields stay missing instead of collapsing."""
+    if not isinstance(stdout, str):
+        return None
+    for line in reversed(stdout.splitlines()):
+        stripped = line.strip()
+        if not stripped.startswith("{"):
+            continue
+        try:
+            payload = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict) and "applied" in payload:
+            return payload
+    return None
+
+
 def _parse_execute_result(result):
-    if not isinstance(result, dict) or type(result.get("returncode")) is not int or result["returncode"] != 0:
+    payload = _parse_execute_payload(result.get("stdout") if isinstance(result, dict) else None)
+    if payload is None:
         evidence = repro_v1_evidence(before=None, after=None, tests=None)
+        failed = (not isinstance(result, dict) or type(result.get("returncode")) is not int
+                  or result.get("returncode") != 0)
         evidence.update(source="execute", proxy=False, controlled_before_after=False,
-                        execute_error="docker_replay_failed")
-        return evidence
-    parts = (result.get("stdout") or "").strip().split()
-    if len(parts) != 4:
-        evidence = repro_v1_evidence(before=None, after=None, tests=None)
-        evidence.update(source="execute", proxy=False, controlled_before_after=False,
-                        execute_error="unparsed_execute_output")
+                        execute_error="docker_replay_failed" if failed else "unparsed_execute_output")
         return evidence
 
-    def code(text):
-        if text == "":
+    def code(value):
+        if value is None or value == "":
             return None
-        if text.lstrip("-").isdigit():
-            return int(text)
+        if type(value) is int:
+            return value
+        if isinstance(value, str) and value.lstrip("-").isdigit():
+            return int(value)
         return None
 
-    before, after, tests, applied = code(parts[0]), code(parts[1]), code(parts[2]), parts[3] == "1"
+    before, after, tests = code(payload.get("before")), code(payload.get("after")), code(payload.get("tests"))
+    applied = payload.get("applied") is True
     evidence = repro_v1_evidence(before=before, after=after, tests=tests)
     evidence.update(source="execute", proxy=False, controlled_before_after=applied and before is not None,
-                    patch_applied=applied)
+                    patch_applied=applied, execute_runner=payload.get("runner"),
+                    execute_reason=payload.get("reason"))
     return evidence
 
 
@@ -401,26 +433,25 @@ def replay_run(run_dir, eval_dir, *, execute=False, executor=None):
         if payload is not None:
             adapters += 1
         node_signals = signals_from_adapter(payload) if payload else []
-        if node_signals:
-            combined = _combine(node_signals)
-            transcript_pairs.append((combined["signal"], resolved))
-            models = _assigned_models(record)
-            model = models[-1] if models else None
-            for item in node_signals:
-                role_model = model
-                transcript_updates.append((role_model, item["signal"], _topics_for(item.get("role"))))
+        # Every scored G2 unit is in the denominator. No transcript, an empty
+        # transcript, and a transcript with no test command are unknown.
+        if isinstance(resolved, bool):
+            transcript_pairs.append((_combine(node_signals)["signal"] if node_signals else "unknown", resolved))
+        for item in node_signals:
+            transcript_updates.append((item.get("model_id"), item["signal"], _topics_for(item.get("role"))))
         if execute:
             patch, image = _patch_and_image(run_dir, record.get("unit_id"))
+            test_paths = touched_tests_for_unit(record, patch or "")
             if patch is None:
                 evidence = repro_v1_evidence(before=None, after=None, tests=None)
                 evidence.update(source="execute", proxy=False, execute_error="patch_or_image_missing")
             else:
                 evidence = execute_public_checks(
-                    image=image, patch_text=patch, runner=executor,
-                    test_paths=proxy.get("touched_tests") or [])
-            execute_pairs.append((evidence["signal"], resolved))
-            models = _assigned_models(record)
-            execute_updates.append((models[-1] if models else None, evidence["signal"], S1_TOPICS))
+                    image=image, patch_text=patch, runner=executor, test_paths=test_paths)
+            if isinstance(resolved, bool):
+                execute_pairs.append((evidence["signal"], resolved))
+            execute_model = model_for_role(payload, "s1") if payload else None
+            execute_updates.append((execute_model, evidence["signal"], S1_TOPICS))
     transcript_posterior = _posterior(transcript_updates)
     execute_posterior = _posterior(execute_updates) if execute else None
     definitive = [row for row in transcript_updates if row[1] in {"pass", "fail"}]
@@ -450,7 +481,7 @@ def replay_run(run_dir, eval_dir, *, execute=False, executor=None):
                 "A single reproduction run is not a controlled before/after measurement. "
                 "Precision and recall use only definite pass or fail against SWE-bench resolved."
             ) if adapters else "no adapter.json transcripts in this run directory",
-            "precision_recall": precision_recall(transcript_pairs) if adapters else None,
+            "precision_recall": precision_recall(transcript_pairs) if transcript_pairs else None,
             "posterior": transcript_posterior,
             "beta_gt_1": _beta_gt_1(transcript_posterior),
             "definite_updates": len(definitive),

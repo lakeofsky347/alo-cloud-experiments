@@ -13,14 +13,19 @@ from pathlib import Path
 import subprocess
 
 from .public_check import _test_module, public_quality_signal
+from .public_tools import leading_json_object
 
 
 REPRO_CRITERION_ID = "repro-v1"
 REPRO_SCRIPT = "alo_repro.py"
 REPRO_INSTRUCTION = (
-    " Write alo_repro.py at the workspace root before editing the fix. "
-    "Running it on the unfixed code must exit non-zero. Running it after the fix must exit 0. "
-    "Do not weaken the script so it passes on the unfixed code. "
+    " s1 must do these steps in order, and no other edit before step 3. "
+    "1. Write alo_repro.py at the workspace root. It must fail on the unfixed code. "
+    "2. Run exactly `python3 alo_repro.py` and keep the non-zero exit. "
+    "3. Edit the source to fix the bug. Do not change alo_repro.py so step 2 would pass. "
+    "4. Run exactly `python3 alo_repro.py` again. This run must exit 0. "
+    "The criterion reads those two return codes from the transcript. "
+    "A script that passes both before and after the fix is a failure. "
     "Relevant public tests are test modules you touch; do not read hidden tests."
 )
 CELL = "type=debugging|complexity=na|uncertainty=na"
@@ -89,6 +94,82 @@ def repro_v1_evidence(*, before, after, tests, changed_paths=(), patch_text="", 
         "syntax_aware_signal": syntax_aware,
         "signal": status if reliable else "unknown",
     }
+
+
+def _argv_of(value):
+    if not isinstance(value, dict):
+        return None
+    arguments = value.get("arguments") if isinstance(value.get("arguments"), dict) else {}
+    argv = arguments.get("argv")
+    if value.get("tool") == "command" and isinstance(argv, list) and all(isinstance(item, str) for item in argv):
+        return argv
+    if value.get("tool") == "execute_code" and isinstance(arguments.get("code"), str):
+        return ["python3", "-c", arguments["code"]]
+    return None
+
+
+def _returncode_of(value):
+    if not isinstance(value, dict) or value.get("tool") not in {"command", "execute_code"}:
+        return None
+    result = value.get("result")
+    if isinstance(result, dict) and type(result.get("returncode")) is int:
+        return result["returncode"]
+    return None
+
+
+def command_results_from_messages(messages):
+    """Pair each command with its return code.
+
+    The assistant message may be a JSON object followed by stray text. The
+    tool result is the next user message, also read as a leading JSON object.
+    """
+    found = []
+    pending = None
+    for message in messages or []:
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        value = leading_json_object(content) if isinstance(content, str) else None
+        if message.get("role") == "assistant":
+            pending = _argv_of(value)
+        elif message.get("role") == "user" and pending is not None:
+            code = _returncode_of(value)
+            if code is not None:
+                found.append({"argv": pending, "returncode": code})
+            pending = None
+    return found
+
+
+def _is_repro_argv(argv):
+    return any(item == REPRO_SCRIPT or item.endswith("/" + REPRO_SCRIPT) or item.endswith(REPRO_SCRIPT)
+               for item in argv)
+
+
+def _is_test_argv(argv):
+    if any(item in {"pytest", "py.test", "unittest"} or item.endswith("/pytest") for item in argv):
+        return True
+    return any(item.endswith(".py") and ("test_" in Path(item).name or item.endswith("_test.py")
+                                         or "/tests/" in item or item.startswith("tests/"))
+               for item in argv)
+
+
+def repro_codes_from_messages(messages):
+    """Before, after, and public-test codes recorded in one node transcript.
+
+    Two reproduction runs are before then after. One run is after only.
+    """
+    commands = command_results_from_messages(messages)
+    repro = [item for item in commands if _is_repro_argv(item["argv"])]
+    tests = [item for item in commands if _is_test_argv(item["argv"]) and not _is_repro_argv(item["argv"])]
+    before = after = test_code = None
+    if len(repro) >= 2:
+        before = repro[0]["returncode"]
+        after = repro[-1]["returncode"]
+    elif len(repro) == 1:
+        after = repro[0]["returncode"]
+    if tests:
+        test_code = tests[-1]["returncode"]
+    return before, after, test_code
 
 
 def touched_test_paths(changed_paths):
@@ -162,33 +243,54 @@ def reproduction_before(services, root, script_name, timeout_s):
         _restore_patch(root, patch, script_name, script_bytes)
 
 
-def collect_repro_v1(services, *, changed_paths=(), patch_text="", timeout_s=60, script_name=REPRO_SCRIPT):
-    """Measure the script and the touched public tests. Missing pieces stay unknown."""
+def _prefer(measured, recorded):
+    """A fresh run wins. A recorded transcript code fills a gap."""
+    if type(measured) is int:
+        return measured
+    if type(recorded) is int:
+        return recorded
+    return None
+
+
+def collect_repro_v1(services, *, changed_paths=(), patch_text="", timeout_s=60, script_name=REPRO_SCRIPT,
+                     messages=None):
+    """Measure the script and the touched public tests. Missing pieces stay unknown.
+
+    Return codes already stored in ``messages`` are read first-class evidence.
+    A harness run, when it returns an integer, replaces the recorded code.
+    """
+    recorded_before, recorded_after, recorded_tests = repro_codes_from_messages(messages)
     workspace = getattr(services, "workspace", None)
     root = getattr(workspace, "root", None)
-    before = after = tests = None
+    measured_before = measured_after = measured_tests = None
     if root is not None:
         root = Path(root)
         script = root / script_name
         if script.is_file():
-            before = reproduction_before(services, root, script_name, timeout_s)
-            after = _command_code(services, ["python3", script_name], timeout_s)
+            measured_before = reproduction_before(services, root, script_name, timeout_s)
+            measured_after = _command_code(services, ["python3", script_name], timeout_s)
         existing = [path for path in touched_test_paths(changed_paths) if (root / path).is_file()]
         if existing:
-            tests = _command_code(services, ["python3", "-m", "pytest", *existing], timeout_s)
+            measured_tests = _command_code(services, ["python3", "-m", "pytest", *existing], timeout_s)
+    before = _prefer(measured_before, recorded_before)
+    after = _prefer(measured_after, recorded_after)
+    tests = _prefer(measured_tests, recorded_tests)
     evidence = repro_v1_evidence(
         before=before, after=after, tests=tests, changed_paths=changed_paths,
         patch_text=patch_text, root=root)
     evidence["changed_paths"] = [path for path in changed_paths if isinstance(path, str)]
+    evidence["recorded_before_returncode"] = recorded_before if type(recorded_before) is int else None
+    evidence["recorded_after_returncode"] = recorded_after if type(recorded_after) is int else None
     return evidence
 
 
-def cached_repro_v1(services, *, changed_paths=(), patch_text="", timeout_s=60):
+def cached_repro_v1(services, *, changed_paths=(), patch_text="", timeout_s=60, messages=None):
     cached = getattr(services, "_repro_v1_cache", None)
     if isinstance(cached, dict) and cached.get("criterion_id") == REPRO_CRITERION_ID:
         return cached
     bundle = collect_repro_v1(
-        services, changed_paths=changed_paths, patch_text=patch_text, timeout_s=timeout_s)
+        services, changed_paths=changed_paths, patch_text=patch_text, timeout_s=timeout_s,
+        messages=messages)
     try:
         services._repro_v1_cache = bundle
     except Exception:

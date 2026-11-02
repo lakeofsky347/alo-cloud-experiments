@@ -36,7 +36,7 @@ ROUTING_MODES = ("thompson", "fixed", "random")
 FIXED_ROUTE_MODEL = G1_DEEPSEEK_FLASH_MODEL
 FIXED_S1_S2_DAG = """subtasks:
   - id: s1
-    goal: Localize the bug. Write alo_repro.py so it fails on the unfixed code and passes after the fix, then edit the source.
+    goal: Write alo_repro.py and run python3 alo_repro.py before any fix so it exits non-zero. Then edit the source. Run python3 alo_repro.py again so it exits 0. Do not weaken the script.
     deps: []
     topics: [coding, implementation]
     role:
@@ -539,8 +539,11 @@ class HeterogeneousALO:
                 turn_cap = _node_turn_cap(adapter, node_id, role_id)
                 if type(turn_cap) is not int or turn_cap < 1:
                     raise PilotStopped("node_request_cap_invalid")
+                worker_system = system + "\n" + WORK_ORDER
+                if adapter.config.get("criterion_id") == REPRO_CRITERION_ID:
+                    worker_system += "\n" + REPRO_INSTRUCTION
                 result = persistent_tool_loop(BoundModel(services, self.model), prompt, messages,
-                    system=system + "\n" + WORK_ORDER, max_turns=turn_cap)
+                    system=worker_system, max_turns=turn_cap)
                 last["termination"] = result.get("termination")
                 last.update(model=self.model, submission_status=result["status"],
                             tool_index_after=getattr(services, "tools", None))
@@ -554,7 +557,22 @@ class HeterogeneousALO:
             signal = "unknown"
             changed = _changed_paths(services)
             if adapter.config.get("criterion_id") == REPRO_CRITERION_ID:
-                bundle = cached_repro_v1(services, changed_paths=changed)
+                role_messages = (adapter.state.get("worker_transcripts") or {}).get(role.role_id)
+                bundle = cached_repro_v1(
+                    services, changed_paths=changed,
+                    messages=role_messages if isinstance(role_messages, list) else None)
+                adapter.state.setdefault("repro_v1_measurements", []).append({
+                    "node_id": last.get("node_id"),
+                    "role_id": role.role_id,
+                    "model_id": last.get("model"),
+                    "repro_before_returncode": bundle.get("repro_before_returncode"),
+                    "repro_after_returncode": bundle.get("repro_after_returncode"),
+                    "recorded_before_returncode": bundle.get("recorded_before_returncode"),
+                    "recorded_after_returncode": bundle.get("recorded_after_returncode"),
+                    "tests_returncode": bundle.get("tests_returncode"),
+                    "signal": bundle.get("signal"),
+                    "reason": bundle.get("reason"),
+                })
                 # public_quality_signal sees the return codes inside the bundle.
                 # A syntax-only pass is not reused as the repro-v1 signal.
                 signal = bundle.get("signal") or "unknown"
