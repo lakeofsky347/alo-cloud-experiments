@@ -1,15 +1,18 @@
 """Opt-in reproduction signal. The frozen syntax criterion stays the default.
 
-``repro-v1`` is a public check. It does not read a hidden grader. A pass
-requires the reproduction script to fail on the unfixed tree and pass after
-the fix, and any touched public test that actually ran must pass. A syntax-only
-workspace stays unknown, so B and TMS do not move. Definite pass and fail are
-the only values those stores accept.
+``repro-v1`` is a public check. It does not read a hidden grader. A pass is a
+discriminating change: the reproduction script fails on the unfixed tree and
+passes after the fix, or the same frozen public tests fail on the baseline and
+pass after the fix under a comparable exit. A zero test code with no baseline,
+a weakened suite, or an environment failure is unknown, not a pass. A
+syntax-only workspace stays unknown, so B and TMS do not move. Definite pass
+and fail are the only values those stores accept.
 """
 from __future__ import annotations
 
 import hashlib
 from pathlib import Path
+import shutil
 import subprocess
 
 from .public_check import _test_module, public_quality_signal
@@ -33,29 +36,84 @@ S1_TOPICS = ("coding", "implementation")
 S2_TOPICS = ("testing", "validation")
 
 
-def repro_v1_status(*, before, after, tests):
+_ENV_MARKERS = (
+    "ModuleNotFoundError",
+    "ImportError",
+    "No module named",
+    "ERROR collecting",
+    "errors during collection",
+    "command not found",
+    "PermissionError",
+)
+
+
+def classify_test_exit(code, output, runner=None):
+    """Coarse exit class for a public test command.
+
+    ``failed`` is an assertion-style failure. ``environment`` is a missing
+    dependency, a collection error, or another exit that is not the bug.
+    ``unshown`` means the output does not show which of those happened.
+    """
+    if type(code) is not int:
+        return "missing"
+    text = output if isinstance(output, str) else ""
+    if code == 0:
+        return "passed"
+    if any(marker in text for marker in _ENV_MARKERS):
+        return "environment"
+    if code in {2, 3, 4, 5, 127}:
+        return "environment"
+    if "AssertionError" in text or "FAILED" in text or " failed" in text:
+        return "failed"
+    if runner in {None, "pytest"} and code == 1 and ("FAILED" in text or " failed" in text):
+        return "failed"
+    return "unshown"
+
+
+def frozen_tests_comparable(*, tests, tests_base, same_frozen_tests, comparable_exits):
+    """True only when the same frozen suite failed on the baseline and passed after.
+
+    A missing flag is not comparable. Callers that cannot show the suite and
+    the exit class must pass ``False`` and stay off the pass path.
+    """
+    return (type(tests) is int and tests == 0
+            and type(tests_base) is int and tests_base != 0
+            and same_frozen_tests is True
+            and comparable_exits is True)
+
+
+def repro_v1_status(*, before, after, tests, tests_base=None, same_frozen_tests=None,
+                    comparable_exits=None):
     """Map return codes onto pass, fail, or unknown.
 
     ``before`` is the reproduction script on the unfixed tree. ``after`` is the
     same script on the tree that contains the fix. ``tests`` is one return code
-    for the touched public tests. Missing codes are ``None`` and are not zeros.
+    for the touched public tests. ``tests_base`` is that same frozen suite on
+    the baseline tree. Missing codes are ``None`` and are not zeros.
+
+    Pass requires a discriminating change: ``before != 0`` and ``after == 0``,
+    or ``tests_base != 0`` and ``tests == 0`` on the same frozen tests with a
+    comparable functional exit. ``tests == 0`` alone is unknown.
     """
     failed_tests = type(tests) is int and tests != 0
     failed_after = type(after) is int and after != 0
     if failed_tests or failed_after:
         return "fail"
-    reproduced = type(before) is int and before != 0 and after == 0
-    tests_ok = type(tests) is int and tests == 0
     if type(before) is int and before == 0 and after == 0:
         return "fail"
+    reproduced = type(before) is int and before != 0 and after == 0
+    tests_ok = type(tests) is int and tests == 0
     if reproduced and (tests is None or tests_ok):
         return "pass"
-    if tests_ok and after is None and before is None:
+    if frozen_tests_comparable(
+            tests=tests, tests_base=tests_base, same_frozen_tests=same_frozen_tests,
+            comparable_exits=comparable_exits):
         return "pass"
     return "unknown"
 
 
-def repro_v1_reason(*, before, after, tests, status):
+def repro_v1_reason(*, before, after, tests, status, tests_base=None, same_frozen_tests=None,
+                    comparable_exits=None):
     if status == "fail" and type(tests) is int and tests != 0:
         return "public_tests_failed"
     if status == "fail" and type(after) is int and after != 0:
@@ -64,22 +122,35 @@ def repro_v1_reason(*, before, after, tests, status):
         return "repro_did_not_fail_before_fix"
     if status == "pass" and type(before) is int and before != 0 and after == 0:
         return "repro_failed_before_and_passed_after"
-    if status == "pass" and type(tests) is int and tests == 0:
-        return "public_tests_passed"
+    if status == "pass" and frozen_tests_comparable(
+            tests=tests, tests_base=tests_base, same_frozen_tests=same_frozen_tests,
+            comparable_exits=comparable_exits):
+        return "frozen_tests_failed_before_and_passed_after"
+    if status == "unknown" and type(tests) is int and tests == 0:
+        return "public_tests_not_discriminating"
     return "repro_not_run"
 
 
-def repro_v1_evidence(*, before, after, tests, changed_paths=(), patch_text="", root=None):
+def repro_v1_evidence(*, before, after, tests, changed_paths=(), patch_text="", root=None,
+                      tests_base=None, same_frozen_tests=None, comparable_exits=None,
+                      tests_failure_class=None, tests_base_failure_class=None):
     """Evidence for ``local_criterion``. Syntax alone cannot be a pass or a fail."""
-    status = repro_v1_status(before=before, after=after, tests=tests)
-    reason = repro_v1_reason(before=before, after=after, tests=tests, status=status)
+    status = repro_v1_status(
+        before=before, after=after, tests=tests, tests_base=tests_base,
+        same_frozen_tests=same_frozen_tests, comparable_exits=comparable_exits)
+    reason = repro_v1_reason(
+        before=before, after=after, tests=tests, status=status, tests_base=tests_base,
+        same_frozen_tests=same_frozen_tests, comparable_exits=comparable_exits)
     syntax_aware = "unknown"
     if root is not None and (type(after) is int or type(tests) is int):
         syntax_aware = public_quality_signal(
             root, changed_paths=changed_paths, patch_text=patch_text,
             repro_returncode=after, tests_returncode=tests)
     digest = hashlib.sha256(
-        f"{before}|{after}|{tests}|{status}".encode("utf-8")).hexdigest()[:16]
+        "|".join(str(part) for part in (
+            before, after, tests, tests_base, status,
+            same_frozen_tests is True, comparable_exits is True,
+        )).encode("utf-8")).hexdigest()[:16]
     reliable = status in {"pass", "fail"}
     return {
         "status": status if reliable else "unknown",
@@ -91,6 +162,11 @@ def repro_v1_evidence(*, before, after, tests, changed_paths=(), patch_text="", 
         "repro_before_returncode": before if type(before) is int else None,
         "repro_after_returncode": after if type(after) is int else None,
         "tests_returncode": tests if type(tests) is int else None,
+        "tests_base_returncode": tests_base if type(tests_base) is int else None,
+        "same_frozen_tests": same_frozen_tests is True,
+        "comparable_exits": comparable_exits is True,
+        "tests_failure_class": tests_failure_class if isinstance(tests_failure_class, str) else None,
+        "tests_base_failure_class": tests_base_failure_class if isinstance(tests_base_failure_class, str) else None,
         "syntax_aware_signal": syntax_aware,
         "signal": status if reliable else "unknown",
     }
@@ -236,6 +312,13 @@ def touched_test_paths(changed_paths):
 
 
 def _command_code(services, argv, timeout_s):
+    result = _command_result(services, argv, timeout_s)
+    if isinstance(result, dict):
+        return result["returncode"]
+    return None
+
+
+def _command_result(services, argv, timeout_s):
     command = getattr(services, "command", None)
     if not callable(command):
         return None
@@ -243,9 +326,11 @@ def _command_code(services, argv, timeout_s):
         result = command(list(argv), timeout_s=timeout_s)
     except Exception:
         return None
-    if isinstance(result, dict) and type(result.get("returncode")) is int:
-        return result["returncode"]
-    return None
+    if not isinstance(result, dict) or type(result.get("returncode")) is not int:
+        return None
+    stdout = result.get("stdout") if isinstance(result.get("stdout"), str) else ""
+    stderr = result.get("stderr") if isinstance(result.get("stderr"), str) else ""
+    return {"returncode": result["returncode"], "output": stdout + "\n" + stderr}
 
 
 def _git(root, args, *, input_bytes=None):
@@ -358,20 +443,66 @@ def _restore_candidate(root, orig_head, patch, script_name, script_bytes, untrac
         raise RuntimeError("repro_workspace_not_restored")
 
 
-def reproduction_before(services, root, script_name, timeout_s):
+def _frozen_test_bytes(root, paths):
+    """Bytes of ``paths`` at HEAD. A path that is not in HEAD is not frozen."""
+    frozen = {}
+    for rel in paths:
+        if not isinstance(rel, str) or not rel:
+            continue
+        shown = _git(root, ["show", f"HEAD:{rel}"])
+        if shown.returncode != 0:
+            continue
+        frozen[rel] = shown.stdout
+    return frozen
+
+
+def _clear_bytecode(root):
+    """Drop cached bytecode so the baseline run cannot hide a same-size edit."""
+    for directory in Path(root).rglob("__pycache__"):
+        if directory.is_dir() and ".git" not in directory.parts:
+            shutil.rmtree(directory, ignore_errors=True)
+
+
+def _run_frozen_suite(services, root, frozen, timeout_s):
+    """Run the frozen bytes on ``root`` and put the worktree copies back."""
+    if not frozen:
+        return None
+    _clear_bytecode(root)
+    saved = {}
+    for rel, data in frozen.items():
+        path = root / rel
+        saved[rel] = path.read_bytes() if path.is_file() else None
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    try:
+        return _command_result(
+            services, ["python3", "-m", "pytest", "-q", *list(frozen)], timeout_s)
+    finally:
+        for rel, current in saved.items():
+            path = root / rel
+            if current is None:
+                if path.is_file() or path.is_symlink():
+                    path.unlink()
+            else:
+                path.write_bytes(current)
+
+
+def reproduction_before(services, root, script_name, timeout_s, on_baseline=None, require_script=True):
     """Run the script on the unfixed tree, then restore the candidate fix.
 
     No git repository, an empty diff, or a reverse that does not apply stays
     unknown. The saved patch is taken against HEAD and includes staged files,
-    because a live workspace stages every edit.
+    because a live workspace stages every edit. ``on_baseline`` runs while the
+    tree is still the baseline, before the script, so the script cannot edit
+    the suite that is being compared.
     """
     root = Path(root)
     if not (root / ".git").is_dir():
         return None
     script = root / script_name
-    if not script.is_file():
+    if require_script and not script.is_file():
         return None
-    script_bytes = script.read_bytes()
+    script_bytes = script.read_bytes() if script.is_file() else None
     head = _git(root, ["rev-parse", "HEAD"])
     if head.returncode != 0:
         return None
@@ -389,9 +520,14 @@ def reproduction_before(services, root, script_name, timeout_s):
         reversed_diff = _git(root, ["apply", "-R", "--binary", "--whitespace=nowarn"], input_bytes=patch)
         if reversed_diff.returncode != 0:
             return None
-        if not script.is_file():
-            script.write_bytes(script_bytes)
-        measured = _command_code(services, ["python3", script_name], timeout_s)
+        if callable(on_baseline):
+            on_baseline()
+        measured = None
+        if script_bytes is not None:
+            if not script.is_file():
+                script.write_bytes(script_bytes)
+            if script.is_file():
+                measured = _command_code(services, ["python3", script_name], timeout_s)
         return measured
     finally:
         _restore_candidate(root, orig_head, patch, script_name, script_bytes, untracked)
@@ -406,32 +542,80 @@ def _prefer(measured, recorded):
     return None
 
 
+def _suite_comparison(base_result, after_result):
+    """Same runner and a shown functional failure, or not comparable."""
+    if not isinstance(base_result, dict) or not isinstance(after_result, dict):
+        return False, None, None
+    base_class = classify_test_exit(base_result["returncode"], base_result.get("output"), "pytest")
+    after_class = classify_test_exit(after_result["returncode"], after_result.get("output"), "pytest")
+    comparable = base_class == "failed" and after_class == "passed"
+    return comparable, base_class, after_class
+
+
 def collect_repro_v1(services, *, changed_paths=(), patch_text="", timeout_s=60, script_name=REPRO_SCRIPT,
                      messages=None):
-    """Measure the script and the touched public tests. Missing pieces stay unknown.
+    """Measure the script and the same frozen public tests on both trees.
 
     Return codes already stored in ``messages`` are read first-class evidence.
     A harness run, when it returns an integer, replaces the recorded code.
+    The baseline suite runs in the same process environment as the candidate
+    suite. A path that is not at HEAD is not part of that frozen set.
     """
     recorded_before, recorded_after, recorded_tests = repro_codes_from_messages(messages)
     workspace = getattr(services, "workspace", None)
     root = getattr(workspace, "root", None)
-    measured_before = measured_after = measured_tests = None
+    measured_before = measured_after = measured_tests = measured_base = None
+    same_frozen = False
+    comparable = False
+    base_class = after_class = None
     if root is not None:
         root = Path(root)
         script = root / script_name
-        if script.is_file():
-            measured_before = reproduction_before(services, root, script_name, timeout_s)
-            measured_after = _command_code(services, ["python3", script_name], timeout_s)
-        existing = [path for path in touched_test_paths(changed_paths) if (root / path).is_file()]
-        if existing:
-            measured_tests = _command_code(services, ["python3", "-m", "pytest", *existing], timeout_s)
+        frozen = _frozen_test_bytes(root, touched_test_paths(changed_paths)) if (root / ".git").is_dir() else {}
+        holder = {}
+
+        def on_baseline():
+            if frozen:
+                holder["base"] = _run_frozen_suite(services, root, frozen, timeout_s)
+
+        if script.is_file() or frozen:
+            measured_before = reproduction_before(
+                services, root, script_name, timeout_s,
+                on_baseline=on_baseline if frozen else None,
+                require_script=script.is_file())
+            if script.is_file():
+                measured_after = _command_code(services, ["python3", script_name], timeout_s)
+        if frozen and "base" in holder:
+            after_suite = _run_frozen_suite(services, root, frozen, timeout_s)
+            base_suite = holder.get("base")
+            if isinstance(base_suite, dict) and isinstance(after_suite, dict):
+                measured_base = base_suite["returncode"]
+                measured_tests = after_suite["returncode"]
+                same_frozen = True
+                comparable, base_class, after_class = _suite_comparison(base_suite, after_suite)
+            elif isinstance(after_suite, dict):
+                measured_tests = after_suite["returncode"]
+                after_class = classify_test_exit(after_suite["returncode"], after_suite.get("output"), "pytest")
+        if measured_tests is None:
+            # No frozen baseline. A current-tree failure is still a fail.
+            # A current-tree zero is not a pass unless the script discriminates.
+            existing = [path for path in touched_test_paths(changed_paths) if (root / path).is_file()]
+            if existing:
+                current = _command_result(
+                    services, ["python3", "-m", "pytest", "-q", *existing], timeout_s)
+                if isinstance(current, dict):
+                    measured_tests = current["returncode"]
+                    after_class = classify_test_exit(current["returncode"], current.get("output"), "pytest")
     before = _prefer(measured_before, recorded_before)
     after = _prefer(measured_after, recorded_after)
     tests = _prefer(measured_tests, recorded_tests)
+    # A transcript code is not a baseline. Only the harness measurement is.
+    tests_base = measured_base if type(measured_base) is int else None
     evidence = repro_v1_evidence(
         before=before, after=after, tests=tests, changed_paths=changed_paths,
-        patch_text=patch_text, root=root)
+        patch_text=patch_text, root=root, tests_base=tests_base,
+        same_frozen_tests=same_frozen, comparable_exits=comparable,
+        tests_failure_class=after_class, tests_base_failure_class=base_class)
     evidence["changed_paths"] = [path for path in changed_paths if isinstance(path, str)]
     evidence["recorded_before_returncode"] = recorded_before if type(recorded_before) is int else None
     evidence["recorded_after_returncode"] = recorded_after if type(recorded_after) is int else None

@@ -467,6 +467,42 @@ class DockerSandbox:
                 value = None
         return command
 
+    def readonly_argv(self, snapshot, argv):
+        """Same container contract as ``docker_argv``, with the snapshot mounted read-only.
+
+        The live workspace is not mounted. ``--cap-drop=ALL`` stays. A reviewer
+        command therefore cannot write the implementation and then measure it.
+        """
+        command = self.docker_argv(argv)
+        snapshot = Path(snapshot).resolve()
+        live = str(self.workspace)
+        rewritten = []
+        for item in command:
+            if item.startswith("type=bind,src=") and f"src={live}" in item:
+                item = item.replace(f"src={live}", f"src={snapshot}", 1)
+                if ",readonly" not in item:
+                    item += ",readonly"
+            rewritten.append(item)
+        if not any(str(snapshot) in item and "readonly" in item for item in rewritten):
+            raise ProtocolError("review_snapshot_not_mounted")
+        if any(f"src={live}" in item for item in rewritten):
+            raise ProtocolError("review_live_tree_still_mounted")
+        return rewritten
+
+    def readonly_command(self, snapshot, argv, timeout_s):
+        if isinstance(argv, list) and argv and argv[0] in {"python", "py"}:
+            argv = ["python3", *argv[1:]]
+        command = self.readonly_argv(snapshot, argv)
+        if self.runner is not None:
+            result = self.runner(command, timeout_s)
+        elif self.permit_execution:
+            result = subprocess_docker_runner(command, timeout_s)
+        else:
+            raise PilotStopped("sandbox_not_configured")
+        if _daemon_failure(result):
+            raise SandboxUnknown("tool_sandbox_unknown")
+        return known_sandbox_result(result)
+
     def command(self, argv, timeout_s):
         if isinstance(argv, list) and argv and argv[0] in {"python", "py"}:
             argv = ["python3", *argv[1:]]

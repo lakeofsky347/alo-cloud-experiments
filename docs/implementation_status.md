@@ -14,7 +14,9 @@ Linux执行需明确选择受支持的本地Docker后端，核对原生amd64、�
 
 当前能力信号的已知边界是可归因 Python 源码语法：B／TMS 的 pass／fail 不代表功能正确性。全局公开质量与资源观测独立建模。M2实验的结论必须与实际继承的信号一致。
 
-r2 冻结路径仍使用该语法判据，不因后续代码改变已经采集的 r2 结果含义。可选 `criterion_id="repro-v1"` 才把复现脚本的修改前／修改后返回码和已改动公开测试的返回码交给 `public_quality_signal`。语法单独通过在这条判据里保持 unknown。B／TMS 仍只在明确 pass 或 fail 时更新。`routing_mode` 的 `fixed` 与 `random`、`g1-deepseek-flash`，以及固定 DAG 和轻量 s2，都是冻结日程之外的对照配置。
+r2 冻结路径仍使用该语法判据，不因后续代码改变已经采集的 r2 结果含义。可选 `criterion_id="repro-v1"` 才使用复现脚本和冻结公开测试。语法单独通过在这条判据里保持 unknown。B／TMS 仍只在明确 pass 或 fail 时更新。`repro-v1` 的 pass 只在脚本修改前失败且修改后通过，或同一冻结测试集在可比的功能退出上从失败变为通过时成立。只有 `tests == 0`、测试被削弱、或依赖／环境失败，都是 unknown。unknown 不写 B／TMS，在 `repro-v1` 下也不是 DAG 节点成功。协议完成和功能 pass 分开记录。
+
+`g1-deepseek-flash`、`g2-fixed`、`g2-random` 共用锁定的 `fair-control-v1`：同一 `repro-v1`、同一单位请求帽上的 worker 请求会计、`max_attempts=1`、规划请求 0、验证节点模型请求 0。拓扑和路由是这三臂之间仍可分开的差。轻量 s2 是零请求的公开复测，不是独立审查。审查角色的 `command` 落在审查前的只读快照上。这些对照不在冻结日程里，也不改冻结 `g2` 的语法判据。路由在已有质量观测后按 `(model, topics)` 读取记到该角色名下的质量，不用整棵工作区的全局质量覆盖任务 cell。
 
 | 源码范围 | 本仓库包含什么 | 未接入的部分 |
 | --- | --- | --- |

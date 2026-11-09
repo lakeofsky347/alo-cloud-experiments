@@ -53,3 +53,23 @@ def test_transfer_rejects_extra_fields_before_creating_database(tmp_path):
     with pytest.raises(StateContractError):
         import_learning_state(target, value, allowed_models=("one", "two"))
     assert not target.exists()
+
+
+def test_topic_credit_transfers_and_role_id_does_not(tmp_path):
+    path = tmp_path / "organization.sqlite3"
+    org = Organization(str(path))
+    org.conn.close()
+    exported = export_learning_state(path, {"observations": {"one": [{
+        "public_quality": 1.0, "credited_quality": 1.0,
+        "topics": ["coding", "implementation"], "role_id": "s1", "requests": 1,
+    }]}}, allowed_models=("one", "two"))
+    row = exported["observations"]["one"][0]
+    assert row["topics"] == ["coding", "implementation"]
+    assert row["credited_quality"] == 1.0
+    assert "role_id" not in row
+    dropped = export_learning_state(path, {"observations": {"one": [{
+        "credited_quality": 1.0, "topics": ["not-a-topic"], "requests": 1,
+    }]}}, allowed_models=("one", "two"))
+    bare = dropped["observations"]["one"][0]
+    assert bare == {"requests": 1}
+    assert "credited_quality" not in bare

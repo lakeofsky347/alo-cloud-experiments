@@ -60,13 +60,21 @@ def test_records_proxy_does_not_invent_a_posterior_and_transcripts_do(tmp_path):
                                role="s1", model="deepseek-flash", trailer="\n<system>stray")),
         encoding="utf-8")
     (run / "checkpoints" / "u-pass").mkdir(parents=True, exist_ok=True)
-    both = _transcript(0, ["python3", "-m", "pytest", "tests/test_bug.py"], role="s2", model="mimo-v2.6-flash")
+    both = _transcript(0, ["python3", "alo_repro.py"], role="s2", model="mimo-v2.6-flash")
+    both["worker_transcripts"]["s2"] = [
+        {"role": "assistant", "content": json.dumps(
+            {"tool": "command", "arguments": {"argv": ["python3", "alo_repro.py"]}})},
+        {"role": "user", "content": json.dumps({"tool": "command", "result": {"returncode": 1}})},
+        {"role": "assistant", "content": json.dumps(
+            {"tool": "command", "arguments": {"argv": ["python3", "alo_repro.py"]}})},
+        {"role": "user", "content": json.dumps({"tool": "command", "result": {"returncode": 0}})},
+    ]
     both["assignments"]["s1"] = {"role_id": "s1", "model_id": "deepseek-flash", "identity_id": "a",
                                  "bandwidth": 1, "authority": ["inspect"]}
     both["worker_transcripts"]["s1"] = _transcript(
         0, ["python3", "alo_repro.py"], role="s1", model="deepseek-flash")["worker_transcripts"]["s1"]
-    # The pass unit's definite test signal is on s2 (mimo-flash). s1's alo_repro
-    # run is a single after-code of 0, which is not by itself a pass.
+    # The pass unit's definite signal is s2's before=1, after=0. A lone tests==0
+    # is not a pass. s1's single after-code of 0 is not a pass either.
     (run / "checkpoints" / "u-pass" / "adapter.json").write_text(json.dumps(both), encoding="utf-8")
     (run / "checkpoints" / "u-empty").mkdir(parents=True)
     (run / "checkpoints" / "u-empty" / "adapter.json").write_text(
@@ -95,6 +103,7 @@ def test_records_proxy_does_not_invent_a_posterior_and_transcripts_do(tmp_path):
     assert belief["mimo-v2.6-flash"]["alpha"] > 1
     assert "glm-5.3-flash" not in belief
     assert report["comparison"]["m1"]["oracle"]["tasks"] == 3
+    assert report["control_comparison"] is None
     text = replay_markdown(report)
     assert "Records-only proxy" in text
     assert "not a repro-v1 pass or fail" in text
@@ -217,12 +226,13 @@ def test_patch_script_is_measured_on_the_clean_tree_and_the_patched_tree(tmp_pat
 def _run_execute_driver(root, patch_path, *tests):
     import os
     import subprocess
+    import sys
     from alo_cloud.signal_replay import _EXECUTE_DRIVER
 
     env = os.environ.copy()
     env["ALO_REPRO_ROOT"] = str(root)
     return subprocess.run(
-        [os.environ.get("PYTHON", "python3"), "-c", _EXECUTE_DRIVER, "alo_repro.py", str(patch_path), *tests],
+        [os.environ.get("PYTHON") or sys.executable, "-c", _EXECUTE_DRIVER, "alo_repro.py", str(patch_path), *tests],
         capture_output=True, env=env, check=False)
 
 
@@ -473,3 +483,99 @@ def test_followup_projection_uses_observed_rates_and_names_the_cap(tmp_path):
     assert "cap_cny_per_model" in report
     assert report["within_cap"] is True
     assert Path(path).is_file()
+
+
+def test_tests_base_enters_the_signal_and_control_rows_enter_the_report(tmp_path):
+    from alo_cloud.signal_replay import _parse_execute_result
+
+    passed = _parse_execute_result({"returncode": 0, "stdout": json.dumps({
+        "before": None, "after": None, "tests": 0, "tests_base": 1,
+        "applied": True, "runner": "pytest", "reason": None,
+        "same_frozen_tests": True, "comparable_exits": True,
+        "tests_failure_class": "passed", "tests_base_failure_class": "failed",
+    }) + "\n", "stderr": ""})
+    assert passed["signal"] == "pass"
+    assert passed["tests_base_returncode"] == 1
+    assert passed["reason"] == "frozen_tests_failed_before_and_passed_after"
+    stored_only = _parse_execute_result({"returncode": 0, "stdout": json.dumps({
+        "before": None, "after": None, "tests": 0, "tests_base": 1,
+        "applied": True, "runner": "pytest", "reason": None,
+    }) + "\n", "stderr": ""})
+    assert stored_only["signal"] == "unknown"
+    assert stored_only["tests_base_returncode"] == 1
+    assert stored_only["tests_returncode"] == 0
+
+    run = tmp_path / "run"
+    evaluation = tmp_path / "eval"
+    records = [
+        _record("u-flash", "g1-deepseek-flash", "m1", "task-a", requests=2, micro=1000),
+        _record("u-fixed", "g2-fixed", "m1", "task-a", requests=2, micro=2000),
+        _record("u-main", "g1-main", "m1", "task-a", model="mimo-v2.6-flash", requests=2, micro=500),
+    ]
+    (run).mkdir()
+    (run / "records.jsonl").write_text("".join(json.dumps(row) + "\n" for row in records), encoding="utf-8")
+    evaluation.mkdir()
+    (evaluation / "m1_units.csv").write_text(
+        "unit_id,arm,task,resolved,cost_cny\n"
+        "u-flash,g1-deepseek-flash,task-a,True,0.001\n"
+        "u-fixed,g2-fixed,task-a,False,0.002\n"
+        "u-main,g1-main,task-a,True,0.0005\n",
+        encoding="utf-8")
+    report = replay_run(run, evaluation)
+    body = report["control_comparison"]["m1"]
+    assert "g1-main" not in body["conditions"]
+    assert body["best_single_model"]["condition"] == "g1-deepseek-flash"
+    assert "g2-fixed" in body["conditions"]
+    assert report["comparison"]["m1"]["conditions"]["g1-main"]["resolved"] == 1
+
+
+def test_execute_driver_uses_frozen_tests_and_rejects_a_weakened_suite(tmp_path):
+    import os
+    import subprocess
+    root = tmp_path / "repo"
+    root.mkdir()
+    _init_repo(root)
+    (root / "bug.py").write_text("VALUE = 0\n", encoding="utf-8")
+    (root / "test_bug.py").write_text(
+        "from bug import VALUE\n\ndef test_value():\n    assert VALUE == 1\n",
+        encoding="utf-8")
+    subprocess.check_call(["git", "add", "bug.py", "test_bug.py"], cwd=root)
+    subprocess.check_call(["git", "commit", "-q", "-m", "base"], cwd=root)
+
+    def _patch(edit):
+        edit()
+        subprocess.check_call(["git", "add", "bug.py", "test_bug.py"], cwd=root)
+        patch = subprocess.check_output(["git", "-C", str(root), "diff", "--cached", "--", "bug.py", "test_bug.py"])
+        subprocess.check_call(["git", "reset", "--hard", "HEAD"], cwd=root)
+        path = tmp_path / "model.patch"
+        path.write_bytes(patch)
+        return path
+
+    fixed = _patch(lambda: (root / "bug.py").write_text("VALUE = 1\n", encoding="utf-8"))
+    completed = _run_execute_driver(root, fixed, "test_bug.py")
+    assert completed.returncode == 0, completed.stderr.decode()
+    from alo_cloud.signal_replay import _parse_execute_result
+    evidence = _parse_execute_result({
+        "returncode": completed.returncode,
+        "stdout": completed.stdout.decode(),
+        "stderr": completed.stderr.decode(),
+    })
+    assert evidence["tests_base_returncode"] != 0
+    assert evidence["tests_returncode"] == 0
+    assert evidence["same_frozen_tests"] is True
+    assert evidence["comparable_exits"] is True
+    assert evidence["signal"] == "pass"
+    subprocess.check_call(["git", "reset", "--hard", "HEAD"], cwd=root)
+    subprocess.check_call(["git", "clean", "-fdq"], cwd=root)
+
+    weakened = _patch(lambda: (root / "test_bug.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8"))
+    completed = _run_execute_driver(root, weakened, "test_bug.py")
+    assert completed.returncode == 0, completed.stderr.decode()
+    evidence = _parse_execute_result({
+        "returncode": completed.returncode,
+        "stdout": completed.stdout.decode(),
+        "stderr": completed.stderr.decode(),
+    })
+    assert evidence["signal"] == "fail"
+    assert evidence["tests_returncode"] != 0
+    assert "VALUE == 1" in (root / "test_bug.py").read_text(encoding="utf-8")

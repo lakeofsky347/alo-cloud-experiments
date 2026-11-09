@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from alo.org.organization import Organization
 from alo_cloud.freeze import PlannedUnit
 from alo_cloud.native_bridge import classify_group_turn
 from alo_cloud.policy import ConstrainedThompsonPolicy
@@ -118,9 +119,19 @@ def test_public_signal_moves_the_quality_posterior_off_beta_11(tmp_path):
     policy = ConstrainedThompsonPolicy(
         observations, lambda model: {"requests": 20, "tokens": 1000, "seconds": 100, "cny": 10})
     model = next(iter(observations))
-    _selected, trace = policy.select(None, {}, [model], "type=generic|complexity=na|uncertainty=na", (), "u", random.Random(0))
+    credited = [row for row in observations[model] if row.get("credited_quality") is not None]
+    assert credited
+    topics = credited[0]["topics"]
+    _selected, trace = policy.select(
+        None, {}, [model], "type=generic|complexity=na|uncertainty=na", topics, "u", random.Random(0))
     score = trace["scores"][model]
+    assert score["quality_source"] == "role_conditioned_quality_beta_pseudo_posterior"
     assert (score["quality_alpha"], score["quality_beta"]) != (1, 1)
+    org = Organization(":memory:")
+    _ignored, global_trace = policy.select(
+        org, {}, [model], "type=generic|complexity=na|uncertainty=na", (), "u", random.Random(0))
+    org.conn.close()
+    assert global_trace["scores"][model]["quality_source"] == "native_local_bernoulli_prior"
     assert quality_from_signal("pass") == 1.0
     assert quality_from_signal("unknown") is None
     assert public_quality_signal(tmp_path, changed_paths=["pkg.py"], patch_text="diff --git a/pkg.py") in {"pass", "fail", "unknown"}

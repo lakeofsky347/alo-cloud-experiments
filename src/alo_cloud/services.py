@@ -806,6 +806,19 @@ class StudyServices:
 
         return self._use_tool(run, tool="command")
 
+    def review_command(self, argv, timeout_s=30):
+        """Account a review command and run it on the read-only snapshot."""
+        from .review_isolation import run_review_command
+        timeout_s = self._validate_timeout(timeout_s)
+        argv = _map_python_argv(argv)
+        if not isinstance(argv, list) or not argv or any(not isinstance(item, str) for item in argv):
+            raise ProtocolError("sandbox_argv_rejected")
+
+        def run():
+            return run_review_command(self, argv, timeout_s)
+
+        return self._use_tool(run, tool="command")
+
     def execute_code(self, language, code, timeout_s=30):
         if language in {"python", "py", "python3"}:
             argv = ["python3", "-c", code if isinstance(code, str) else ""]

@@ -276,3 +276,58 @@ def test_comparison_report_always_has_the_required_sections():
     assert "Best single model:" in text
     assert "g1-deepseek-flash" in text
     assert json.dumps(report)
+
+
+def test_fair_control_lock_is_shared_and_frozen_g2_stays_on_syntax():
+    from alo_cloud.r2 import FAIR_CONTROL_PROTOCOL_ID, fair_g1_config
+
+    sample = next(unit for unit in iter_control_units("m1") if unit.arm == "g2-fixed" and unit.phase == "B0")
+    siblings = [
+        unit for unit in iter_control_units("m1")
+        if unit.task_id == sample.task_id and unit.phase == "B0" and unit.study == "m1"
+    ]
+    locks = []
+    topologies = set()
+    for unit in siblings:
+        if unit.arm == "g1-deepseek-flash":
+            config = fair_g1_config(unit)
+            built = _build_adapter(unit)
+            assert built.fixed_model == "deepseek-flash"
+            assert built.criterion_id == REPRO_CRITERION_ID
+            assert built.protocol_id == FAIR_CONTROL_PROTOCOL_ID
+            assert built.max_turns == unit.request_cap
+            assert built.max_attempts == 1
+            locks.append((
+                config["protocol_id"], config["criterion_id"], config["request_accounting"],
+                config["max_turns"], config["max_attempts"], config["planner_requests"],
+                config["verifier_requests"],
+            ))
+            topologies.add(config["topology"])
+        else:
+            config = followup_g2_config(unit)
+            built = _build_adapter(unit)
+            assert built.config["protocol_id"] == FAIR_CONTROL_PROTOCOL_ID
+            assert built.config["max_attempts"] == 1
+            assert built.config["planner_requests"] == 0
+            assert built.config["verifier_requests"] == 0
+            assert built.config["fixed_topology"] is True
+            assert built.config["lightweight_verifier"] is True
+            locks.append((
+                config["protocol_id"], config["criterion_id"], config["request_accounting"],
+                config["node_request_caps"]["s1"], config["max_attempts"],
+                config["planner_requests"], config["verifier_requests"],
+            ))
+            topologies.add(config["topology"])
+            assert config["node_request_caps"] == {"s1": unit.request_cap, "s2": 0}
+    assert len(locks) == 3
+    assert len(set(locks)) == 1
+    assert locks[0][0] == FAIR_CONTROL_PROTOCOL_ID
+    assert topologies == {"single_agent", "fixed_s1_s2"}
+    modes = {followup_g2_config(unit)["routing_mode"] for unit in siblings if unit.arm.startswith("g2-")}
+    assert modes == {"fixed", "random"}
+    frozen = _build_adapter(next(unit for unit in iter_r2_m1_units() if unit.arm == "g2"))
+    assert frozen.config["criterion_id"] == CRITERION_ID
+    assert frozen.config["protocol_id"] is None
+    assert frozen.config["max_attempts"] == 2
+    assert frozen.config["fixed_topology"] is False
+    assert frozen.config["lightweight_verifier"] is False
