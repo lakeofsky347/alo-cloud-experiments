@@ -2,8 +2,9 @@
 
 The core ALO runtime currently accepts only Boolean criteria. Instance-local
 store wrappers gate its learning writes using a separate three-valued public
-local contract. An unknown contract can acknowledge protocol submission and
-allow the DAG to continue, but never becomes a B/TMS success or failure.
+local contract. Unknown does not become a B/TMS success or failure. Under
+``repro-v1`` it also does not mark the DAG node successful. Protocol completion
+and functional pass are separate fields.
 """
 from __future__ import annotations
 
@@ -25,10 +26,11 @@ from .contracts import G1_DEEPSEEK_FLASH_MODEL
 from .errors import PilotStopped
 from .public_tools import ACTION_INSTRUCTIONS, PublicToolCodeExecutor
 from .native_bridge import ROLE_INSTRUCTIONS, SHARED_INSTRUCTIONS, _terminated
-from .policy import ConstrainedThompsonPolicy, POLICY_VERSION
+from .policy import ConstrainedThompsonPolicy, POLICY_VERSION, workspace_quality_credit
 from .public_check import public_quality_signal, quality_from_signal
 from .public_tools import WORK_ORDER, coerce_actions, dispatch_action
 from .repro import REPRO_CRITERION_ID, REPRO_INSTRUCTION, cached_repro_v1
+from .review_isolation import role_is_review, snapshot_workspace, tree_digest
 from .sandbox import CRITERION_ID
 from .tool_loop import TOOL_LOOP_VERSION, persistent_tool_loop
 
@@ -141,20 +143,43 @@ def _node_turn_cap(adapter, node_id, role_id):
 class FixedSingleAgent:
     """One frozen model with a checkpoint-owned transcript and public tools."""
 
-    def __init__(self, *, fixed_model=None, max_turns=48):
+    def __init__(self, *, fixed_model=None, max_turns=48, criterion_id=None, protocol_id=None,
+                 request_accounting=None, max_attempts=None, planner_requests=None,
+                 verifier_requests=None, topology=None):
         if type(max_turns) is not int or max_turns < 1:
             raise PilotStopped("invalid_single_turn_limit")
+        if criterion_id is not None and criterion_id not in {CRITERION_ID, REPRO_CRITERION_ID}:
+            raise PilotStopped("invalid_criterion_id")
         self.fixed_model, self.max_turns, self.messages = fixed_model, max_turns, []
+        self.criterion_id = criterion_id
+        self.protocol_id = protocol_id
+        self.request_accounting = request_accounting
+        self.max_attempts = max_attempts
+        self.planner_requests = planner_requests
+        self.verifier_requests = verifier_requests
+        self.topology = topology
+        self.public_signal = None
+        self.protocol_completed = None
+        self.functional_pass = None
 
     def dump_state(self):
-        return {"schema": "dualbench-single-v2", "fixed_model": self.fixed_model,
-                "max_turns": self.max_turns, "tool_loop_version": TOOL_LOOP_VERSION,
-                "messages": copy.deepcopy(self.messages)}
+        payload = {"schema": "dualbench-single-v2", "fixed_model": self.fixed_model,
+                   "max_turns": self.max_turns, "tool_loop_version": TOOL_LOOP_VERSION,
+                   "messages": copy.deepcopy(self.messages)}
+        if self.criterion_id:
+            payload["criterion_id"] = self.criterion_id
+            payload["protocol_id"] = self.protocol_id
+            payload["public_signal"] = self.public_signal
+            payload["protocol_completed"] = self.protocol_completed
+            payload["functional_pass"] = self.functional_pass
+        return payload
 
     def load_state(self, state):
         if (state.get("schema") != "dualbench-single-v2" or state.get("max_turns") != self.max_turns
                 or state.get("tool_loop_version") != TOOL_LOOP_VERSION
                 or (self.fixed_model is not None and state.get("fixed_model") != self.fixed_model)):
+            raise PilotStopped("single_checkpoint_configuration_changed")
+        if self.criterion_id and state.get("criterion_id") != self.criterion_id:
             raise PilotStopped("single_checkpoint_configuration_changed")
         self.fixed_model = state["fixed_model"]
         self.messages = copy.deepcopy(state["messages"])
@@ -167,8 +192,40 @@ class FixedSingleAgent:
             raise PilotStopped("fixed_model_outside_common_pool")
         services.current_role = "g1"
         services.current_node = "g1"
-        return persistent_tool_loop(BoundModel(services, self.fixed_model),
-            json.dumps(stage, ensure_ascii=False), self.messages, max_turns=self.max_turns)
+        if self.criterion_id:
+            try:
+                services.active_criterion_id = self.criterion_id
+            except Exception:
+                pass
+        system = "\n" + REPRO_INSTRUCTION if self.criterion_id == REPRO_CRITERION_ID else ""
+        result = persistent_tool_loop(BoundModel(services, self.fixed_model),
+            json.dumps(stage, ensure_ascii=False), self.messages, system=system, max_turns=self.max_turns)
+        if self.criterion_id != REPRO_CRITERION_ID:
+            return result
+        bundle = cached_repro_v1(services, changed_paths=_changed_paths(services), messages=self.messages)
+        protocol_completed = result.get("status") == "completed"
+        functional_pass = bundle.get("signal") == "pass"
+        self.public_signal = bundle.get("signal")
+        self.protocol_completed = protocol_completed
+        self.functional_pass = functional_pass
+        self.repro_v1 = {
+            "signal": bundle.get("signal"),
+            "reason": bundle.get("reason"),
+            "protocol_completed": protocol_completed,
+            "functional_pass": functional_pass,
+            "repro_before_returncode": bundle.get("repro_before_returncode"),
+            "repro_after_returncode": bundle.get("repro_after_returncode"),
+            "tests_returncode": bundle.get("tests_returncode"),
+            "tests_base_returncode": bundle.get("tests_base_returncode"),
+        }
+        reported = dict(result)
+        reported["protocol_completed"] = protocol_completed
+        reported["functional_pass"] = functional_pass
+        reported["public_signal"] = bundle.get("signal")
+        reported["criterion_id"] = REPRO_CRITERION_ID
+        # Submission is not a functional pass. Unknown stays unsuccessful.
+        reported["status"] = "completed" if functional_pass else "failed"
+        return reported
 
 
 class HeterogeneousGroupChat:
@@ -325,7 +382,8 @@ class HeterogeneousALO:
                  policy_priors=None, safety_multiplier=1.25, organization_updates=_UNSET,
                  probe=False, cold_prior=False, user_preference=None, routing_mode="thompson",
                  criterion_id=None, fixed_topology=False, lightweight_verifier=False,
-                 node_request_caps=None):
+                 node_request_caps=None, protocol_id=None, request_accounting=None,
+                 planner_requests=None, verifier_requests=None, topology=None):
         if (type(max_turns) is not int or max_turns < 1
                 or type(max_attempts) is not int or max_attempts < 1):
             raise PilotStopped("invalid_alo_attempt_or_turn_limit")
@@ -366,6 +424,11 @@ class HeterogeneousALO:
                        "fixed_topology": bool(fixed_topology),
                        "lightweight_verifier": bool(lightweight_verifier),
                        "node_request_caps": copy.deepcopy(node_request_caps),
+                       "protocol_id": protocol_id,
+                       "request_accounting": request_accounting,
+                       "planner_requests": planner_requests,
+                       "verifier_requests": verifier_requests,
+                       "topology": topology,
                        "policy_version": POLICY_VERSION,
                        "tool_loop_version": TOOL_LOOP_VERSION}
         self.state = {"observations": {}, "worker_transcripts": {}, "planner_messages": []}
@@ -531,11 +594,15 @@ class HeterogeneousALO:
                 node_id = str(last.get("node_id") or "")
                 role_id = str(active.get("role_id") or "")
                 if adapter.config.get("lightweight_verifier") and _is_verifier(node_id, role_id):
+                    # Zero model requests. This is a public re-test of the
+                    # implementation, not an independent reviewer.
                     last["termination"] = "lightweight_verifier"
+                    last["verifier_kind"] = "zero_request_public_retest"
                     last.update(model=self.model, submission_status="completed",
                                 tool_index_after=getattr(services, "tools", None))
                     return Completion(
-                        "lightweight verifier runs the reproduction script and public tests", 0, 0, 0)
+                        "zero-request public re-test of the implementation; not an independent reviewer",
+                        0, 0, 0)
                 turn_cap = _node_turn_cap(adapter, node_id, role_id)
                 if type(turn_cap) is not int or turn_cap < 1:
                     raise PilotStopped("node_request_cap_invalid")
@@ -570,8 +637,13 @@ class HeterogeneousALO:
                     "recorded_before_returncode": bundle.get("recorded_before_returncode"),
                     "recorded_after_returncode": bundle.get("recorded_after_returncode"),
                     "tests_returncode": bundle.get("tests_returncode"),
+                    "tests_base_returncode": bundle.get("tests_base_returncode"),
+                    "same_frozen_tests": bundle.get("same_frozen_tests"),
+                    "comparable_exits": bundle.get("comparable_exits"),
                     "signal": bundle.get("signal"),
                     "reason": bundle.get("reason"),
+                    "protocol_completed": None,
+                    "functional_pass": bundle.get("signal") == "pass",
                 })
                 # public_quality_signal sees the return codes inside the bundle.
                 # A syntax-only pass is not reused as the repro-v1 signal.
@@ -608,6 +680,21 @@ class HeterogeneousALO:
                 "local_contract_status": local_status})
             if signal_quality is not None:
                 quality_after = signal_quality
+            workspace_changed = None
+            diff_nonempty = False
+            reader = getattr(services, "diff_nonempty", None)
+            if callable(reader):
+                try:
+                    diff_nonempty = bool(reader())
+                    workspace_changed = diff_nonempty
+                except Exception:
+                    diff_nonempty = False
+                    workspace_changed = None
+            role_tools = tuple(last.get("role_tools") or ())
+            topics = list(last.get("topics") or ())
+            credited = workspace_quality_credit(
+                quality_after, quality_before=last.get("quality_before"),
+                role_tools=role_tools, workspace_changed=workspace_changed)
             after = services.resources()
             before = last["resources_before"]
             input_tokens = _delta(after, before, "observed_input_tokens")
@@ -615,6 +702,9 @@ class HeterogeneousALO:
             observation = {"public_quality": quality_after, "quality_before": last["quality_before"],
                 "quality_after": quality_after,
                 "delta_quality": quality_after - last["quality_before"] if quality_after is not None and last["quality_before"] is not None else None,
+                "credited_quality": credited,
+                "topics": topics,
+                "role_id": role.role_id,
                 "input_tokens": input_tokens, "output_tokens": output_tokens,
                 "tokens": input_tokens + output_tokens if input_tokens is not None and output_tokens is not None else None,
                 "reasoning_tokens": _delta(after, before, "observed_reasoning_tokens"),
@@ -627,40 +717,46 @@ class HeterogeneousALO:
                 adapter.state["observations"].setdefault(last["model"], []).append(observation)
             services.event("alo_observation", {"model": last["model"], "context": context,
                 "local_evidence": evidence, "learning_update_allowed": learn(),
-                "global_quality_scope": "resulting_workspace_not_role_local_capability", **observation})
+                "global_quality_scope": "role_topics_credit_not_whole_workspace", **observation})
             # Core Boolean success describes execution/contract flow. The
             # instance-local stores above separately gate objective learning.
-            diff_nonempty = False
-            reader = getattr(services, "diff_nonempty", None)
-            if callable(reader):
-                try:
-                    diff_nonempty = bool(reader())
-                except Exception:
-                    diff_nonempty = False
             node_id = str(last.get("node_id") or "")
             role_id = str(role.role_id or "")
             verifier = node_id in {"s2", "verify", "verifier"} or "verif" in role_id.lower()
             last["diff_nonempty"] = bool(diff_nonempty)
+            protocol_completed = last.get("submission_status") == "completed"
+            functional_pass = signal == "pass"
+            last["protocol_completed"] = protocol_completed
+            last["functional_pass"] = functional_pass
+            adapter.state.setdefault("node_outcomes", []).append({
+                "node_id": last.get("node_id"),
+                "role_id": role.role_id,
+                "protocol_completed": protocol_completed,
+                "functional_pass": functional_pass,
+                "public_signal": signal,
+            })
+            measurements = adapter.state.get("repro_v1_measurements") or []
+            if measurements and measurements[-1].get("node_id") == last.get("node_id"):
+                measurements[-1]["protocol_completed"] = protocol_completed
+                measurements[-1]["functional_pass"] = functional_pass
             # A non-empty implementation diff still lets s2 run. An empty diff
             # fails the node only when a user preference asks for escalation.
             pref = adapter.config.get("user_preference")
             if adapter.config.get("criterion_id") == REPRO_CRITERION_ID:
-                # Definite repro-v1 outcomes are the node result. Unknown still
-                # lets a non-empty edit reach the verifier and does not teach B/TMS.
-                if signal == "fail":
-                    return False
-                if signal == "pass":
-                    return True
+                # Unknown is not node success. B/TMS still ignore it via the gate.
+                return functional_pass
             if isinstance(pref, dict) and not diff_nonempty:
                 return False
             if signal == "fail" and verifier:
                 return False
             if diff_nonempty and not verifier:
                 return True
-            return local_status == "pass" or (local_status == "unknown" and last.get("submission_status") == "completed")
+            return local_status == "pass" or (local_status == "unknown" and protocol_completed)
 
         @contextmanager
         def scope(phase, subtask, assignment, view, attempt):
+            review_dir = None
+            before_digest = None
             if phase == "worker":
                 started = time.monotonic()
                 before = services.resources()
@@ -673,16 +769,78 @@ class HeterogeneousALO:
                     services._repro_v1_cache = None
                 except Exception:
                     pass
+                tools = tuple(getattr(subtask.role, "tools", ()) or ())
+                topics = tuple(getattr(subtask, "topics", ()) or ())
                 last.clear()
                 last.update(started=started, resources_before=before, quality_before=quality_before,
                     pre_verifier_seconds=pre_verifier_seconds, node_id=subtask.id,
                     role_id=subtask.role.role_id, role_goal=subtask.goal, attempt=attempt,
-                    tool_index_before=getattr(services, "tools", None), local_contract_status="unknown")
+                    tool_index_before=getattr(services, "tools", None), local_contract_status="unknown",
+                    topics=topics, role_tools=tools)
+                try:
+                    services.role_tools = tools
+                except Exception:
+                    pass
+                root = getattr(getattr(services, "workspace", None), "root", None)
+                if role_is_review(tools) and root is not None:
+                    try:
+                        review_dir = tempfile.TemporaryDirectory(prefix="alo-review-")
+                        snap = Path(review_dir.name) / "snapshot"
+                        snapshot_workspace(root, snap)
+                        services.review_snapshot = snap
+                        before_digest = tree_digest(root)
+                        last["review_isolation"] = "readonly_pre_review_snapshot"
+                        last["pre_review_digest"] = before_digest
+                    except (OSError, PilotStopped):
+                        if review_dir is not None:
+                            review_dir.cleanup()
+                        review_dir = None
+                        try:
+                            services.review_snapshot = None
+                        except Exception:
+                            pass
+                        last["review_isolation"] = "review_snapshot_unavailable"
+                elif role_is_review(tools):
+                    try:
+                        services.review_snapshot = None
+                    except Exception:
+                        pass
+                    last["review_isolation"] = "review_snapshot_unavailable"
+                else:
+                    try:
+                        services.review_snapshot = None
+                    except Exception:
+                        pass
+                    last["review_isolation"] = "implementation_workspace"
             services.event("native_alo_context", {"phase": phase,
                 "node": subtask.id if subtask else None, "role_id": subtask.role.role_id if subtask else None,
                 "model": assignment.model_id if assignment else planner_model,
                 "view_keys": sorted(view) if view else [], "attempt": attempt})
-            yield
+
+            def _release_review():
+                mutated = False
+                if before_digest is not None:
+                    root = getattr(getattr(services, "workspace", None), "root", None)
+                    after_digest = tree_digest(root) if root is not None else None
+                    last["implementation_unchanged"] = after_digest == before_digest
+                    mutated = after_digest != before_digest
+                try:
+                    services.role_tools = None
+                    services.review_snapshot = None
+                except Exception:
+                    pass
+                if review_dir is not None:
+                    review_dir.cleanup()
+                return mutated
+
+            try:
+                yield
+            except BaseException:
+                _release_review()
+                raise
+            else:
+                if _release_review():
+                    raise PilotStopped("review_mutated_implementation")
 
         class BudgetedRemediation:
             include_prior_output = True

@@ -186,7 +186,10 @@ def dry_run_sender(url, body, headers):
 
 
 def _build_adapter(unit, user_preference=None):
-    if unit.arm in {"g1-main", "g1-strong", "g1-deepseek-flash"}:
+    if unit.arm == "g1-deepseek-flash":
+        from .r2 import fair_g1_config
+        return adapter_for("G1", fair_g1_config(unit))
+    if unit.arm in {"g1-main", "g1-strong"}:
         from .r2 import g1_model
         return adapter_for("G1", {"fixed_model": g1_model(unit.arm), "max_turns": unit.request_cap})
     if unit.arm in {"g2-fixed", "g2-random"}:

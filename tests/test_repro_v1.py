@@ -1,6 +1,7 @@
 """Offline checks for the opt-in repro-v1 signal. No docker and no model API."""
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 from alo.org.organization import Organization
@@ -35,6 +36,9 @@ class _Workspace:
 def _runner(root):
     def command(argv, timeout_s=30):
         del timeout_s
+        argv = list(argv)
+        if argv and argv[0] in {"python", "python3"}:
+            argv[0] = sys.executable
         completed = subprocess.run(argv, cwd=root, capture_output=True, check=False)
         return {"returncode": completed.returncode,
                 "stdout": completed.stdout.decode(errors="replace"),
@@ -78,7 +82,18 @@ def test_status_table_does_not_treat_syntax_as_a_pass(tmp_path):
     assert repro_v1_status(before=1, after=1, tests=0) == "fail"
     assert repro_v1_status(before=0, after=0, tests=0) == "fail"
     assert repro_v1_status(before=None, after=None, tests=1) == "fail"
-    assert repro_v1_status(before=None, after=None, tests=0) == "pass"
+    assert repro_v1_status(before=None, after=None, tests=0) == "unknown"
+    assert repro_v1_status(before=None, after=None, tests=0, tests_base=0) == "unknown"
+    assert repro_v1_status(before=None, after=None, tests=0, tests_base=1) == "unknown"
+    assert repro_v1_status(
+        before=None, after=None, tests=0, tests_base=1,
+        same_frozen_tests=True, comparable_exits=True) == "pass"
+    assert repro_v1_status(
+        before=None, after=None, tests=0, tests_base=1,
+        same_frozen_tests=False, comparable_exits=True) == "unknown"
+    assert repro_v1_status(
+        before=None, after=None, tests=0, tests_base=1,
+        same_frozen_tests=True, comparable_exits=False) == "unknown"
     assert repro_v1_status(before=None, after=0, tests=None) == "unknown"
     coded = repro_v1_evidence(
         before=1, after=1, tests=None, changed_paths=["pkg.py"], patch_text="diff --git a/pkg.py", root=tmp_path)
@@ -325,3 +340,123 @@ def test_untracked_files_survive_and_do_not_block_reapply(tmp_path):
         ["git", "-C", str(root), "show", ":extra.py"], capture_output=True, text=True, check=False)
     assert staged.returncode == 0
     assert staged.stdout == "NEW\n"
+
+
+def _failing_suite(root):
+    _git(root)
+    (root / "bug.py").write_text("VALUE = 0\n", encoding="utf-8")
+    (root / "test_bug.py").write_text(
+        "from bug import VALUE\n\ndef test_value():\n    assert VALUE == 1\n",
+        encoding="utf-8")
+    subprocess.check_call(["git", "add", "bug.py", "test_bug.py"], cwd=root)
+    subprocess.check_call(["git", "commit", "-q", "-m", "base"], cwd=root)
+
+
+def test_live_measurement_passes_only_the_same_frozen_suite(tmp_path):
+    root = tmp_path / "ws"
+    root.mkdir()
+    _failing_suite(root)
+    (root / "bug.py").write_text("VALUE = 1\n", encoding="utf-8")
+    services = type("S", (), {})()
+    services.workspace = _Workspace(root)
+    services.command = _runner(root)
+    evidence = collect_repro_v1(services, changed_paths=["test_bug.py"])
+    assert evidence["tests_base_returncode"] != 0
+    assert evidence["tests_returncode"] == 0
+    assert evidence["same_frozen_tests"] is True
+    assert evidence["comparable_exits"] is True
+    assert evidence["signal"] == "pass"
+    assert evidence["reason"] == "frozen_tests_failed_before_and_passed_after"
+    assert (root / "bug.py").read_text(encoding="utf-8") == "VALUE = 1\n"
+    assert "VALUE == 1" in (root / "test_bug.py").read_text(encoding="utf-8")
+
+
+def test_a_weakened_suite_or_an_import_error_is_not_a_pass(tmp_path):
+    weakened = tmp_path / "weak"
+    weakened.mkdir()
+    _failing_suite(weakened)
+    (weakened / "test_bug.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+    services = type("S", (), {})()
+    services.workspace = _Workspace(weakened)
+    services.command = _runner(weakened)
+    evidence = collect_repro_v1(services, changed_paths=["test_bug.py"])
+    assert evidence["same_frozen_tests"] is True
+    assert evidence["tests_returncode"] != 0
+    assert evidence["signal"] == "fail"
+
+    imported = tmp_path / "env"
+    imported.mkdir()
+    _git(imported)
+    (imported / "bug.py").write_text("VALUE = 0\n", encoding="utf-8")
+    (imported / "test_bug.py").write_text(
+        "import not_a_real_module_alo_audit\n\ndef test_value():\n    assert True\n",
+        encoding="utf-8")
+    subprocess.check_call(["git", "add", "bug.py", "test_bug.py"], cwd=imported)
+    subprocess.check_call(["git", "commit", "-q", "-m", "base"], cwd=imported)
+    (imported / "not_a_real_module_alo_audit.py").write_text("VALUE = 1\n", encoding="utf-8")
+    services = type("S", (), {})()
+    services.workspace = _Workspace(imported)
+    services.command = _runner(imported)
+    evidence = collect_repro_v1(services, changed_paths=["test_bug.py", "not_a_real_module_alo_audit.py"])
+    assert evidence["tests_returncode"] == 0
+    assert evidence["tests_base_returncode"] != 0
+    assert evidence["comparable_exits"] is False
+    assert evidence["signal"] == "unknown"
+
+
+def test_unknown_repro_signal_is_not_node_success_and_review_is_not_credited(tmp_path):
+    from alo_cloud.sandbox import Workspace
+
+    unknown = tmp_path / "unknown"
+    workspace = Workspace(unknown / "ws")
+    _git(workspace.root)
+    service = _Flow(unknown / "state", workspace, [json.dumps({"final": "submitted without a script"})])
+    service.state_dir.mkdir(parents=True, exist_ok=True)
+    adapter = HeterogeneousALO(
+        planner_model="deepseek-flash", fixed_topology=True, lightweight_verifier=True,
+        routing_mode="fixed", criterion_id=REPRO_CRITERION_ID, max_attempts=1, max_turns=2, seed=1)
+    assert adapter.run_stage({"prompt": "bug"}, service)["status"] == "failed"
+    outcome = adapter.state["node_outcomes"][0]
+    assert outcome["protocol_completed"] is True
+    assert outcome["functional_pass"] is False
+    assert outcome["public_signal"] == "unknown"
+    skipped = adapter.state["last_native_run"]["skipped_subtasks"]
+    assert any(item.get("subtask") == "s2" for item in skipped)
+    org = Organization(str(service.state_dir / "alo.sqlite3"))
+    assert org.conn.execute("SELECT count(*) FROM belief").fetchone()[0] == 0
+    assert org.conn.execute("SELECT count(*) FROM tms_outcomes").fetchone()[0] == 0
+    org.conn.close()
+
+    passed = tmp_path / "credit"
+    workspace = Workspace(passed / "ws")
+    _init = passed / "ws"
+    subprocess.check_call(["git", "init", "-q"], cwd=_init)
+    subprocess.check_call(["git", "config", "user.email", "t@example.com"], cwd=_init)
+    subprocess.check_call(["git", "config", "user.name", "t"], cwd=_init)
+    (_init / "bug.py").write_text("BUG\n", encoding="utf-8")
+    subprocess.check_call(["git", "add", "bug.py"], cwd=_init)
+    subprocess.check_call(["git", "commit", "-q", "-m", "base"], cwd=_init)
+    (_init / "bug.py").write_text("FIXED\n", encoding="utf-8")
+    (_init / "alo_repro.py").write_text(SCRIPT, encoding="utf-8")
+    service = _Flow(passed / "state", workspace, [
+        json.dumps({"final": "submitted the fix"}),
+    ])
+    service.state_dir.mkdir(parents=True, exist_ok=True)
+    adapter = HeterogeneousALO(
+        planner_model="deepseek-flash", fixed_topology=True, lightweight_verifier=True,
+        routing_mode="fixed", criterion_id=REPRO_CRITERION_ID, max_attempts=1, max_turns=2, seed=2)
+    assert adapter.run_stage({"prompt": "bug"}, service)["status"] == "completed"
+    rows = {row["role_id"]: row for row in adapter.state["observations"]["deepseek-flash"]}
+    assert rows["s1"]["credited_quality"] == 1.0
+    assert rows["s1"]["topics"] == ["coding", "implementation"]
+    assert rows["s2"]["quality_after"] == 1.0
+    assert rows["s2"]["credited_quality"] is None
+    assert rows["s2"]["topics"] == ["testing", "validation"]
+    assert rows["s2"]["role_id"] == "s2"
+    measured = adapter.state["repro_v1_measurements"]
+    assert measured[0]["functional_pass"] is True
+    assert measured[0]["protocol_completed"] is True
+    outputs = [node["output_text"] for node in adapter.state["last_native_run"]["node_results"]]
+    assert any("zero-request public re-test" in text for text in outputs)
+    assert any("not an independent reviewer" in text for text in outputs)
+    assert service.calls == ["deepseek-flash"]

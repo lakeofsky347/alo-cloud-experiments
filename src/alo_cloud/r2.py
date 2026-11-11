@@ -327,29 +327,79 @@ def g1_model(arm):
     return model
 
 
+FAIR_CONTROL_PROTOCOL_ID = "fair-control-v1"
+FAIR_REQUEST_ACCOUNTING = "worker_model_calls_against_unit_cap"
+
+
+def fair_control_lock(unit):
+    """Shared public feedback, request accounting, and attempt budget.
+
+    The three follow-up arms use this lock. Topology and routing are the
+    fields that still differ. The frozen ``g2`` arm does not.
+    """
+    if type(unit.request_cap) is not int or unit.request_cap < 1:
+        raise ValueError("invalid_fair_control_cap")
+    return {
+        "protocol_id": FAIR_CONTROL_PROTOCOL_ID,
+        "criterion_id": REPRO_CRITERION_ID,
+        "request_accounting": FAIR_REQUEST_ACCOUNTING,
+        "request_cap": unit.request_cap,
+        "max_attempts": 1,
+        "planner_requests": 0,
+        "verifier_requests": 0,
+        "verifier_kind": "zero_request_public_retest",
+    }
+
+
+def fair_g1_config(unit):
+    """Single-agent control on the fair-control lock. Not ``g1-main`` or ``g1-strong``."""
+    if unit.arm != "g1-deepseek-flash":
+        raise ValueError("unknown_fair_g1_arm")
+    lock = fair_control_lock(unit)
+    return {
+        "fixed_model": g1_model(unit.arm),
+        "max_turns": lock["request_cap"],
+        "criterion_id": lock["criterion_id"],
+        "protocol_id": lock["protocol_id"],
+        "request_accounting": lock["request_accounting"],
+        "max_attempts": lock["max_attempts"],
+        "planner_requests": lock["planner_requests"],
+        "verifier_requests": lock["verifier_requests"],
+        "topology": "single_agent",
+    }
+
+
 def followup_g2_config(unit):
     """Opt-in G2 controls. The frozen ``g2`` arm does not use this config.
 
     Fixed routing pins both nodes to deepseek-flash and does not reassign.
-    Random routing draws uniformly from the feasible set. Both use the
-    reproduction criterion, a fixed s1/s2 DAG, and a verifier that spends
-    no model requests.
+    Random routing draws uniformly from the feasible set. Both share the
+    fair-control lock with ``g1-deepseek-flash``: reproduction criterion,
+    one attempt, no planner request, and a verifier that spends no model
+    requests. That verifier is a public re-test, not an independent reviewer.
+    Routing mode is the ablation between these two arms.
     """
     if unit.arm not in {"g2-fixed", "g2-random"}:
         raise ValueError("unknown_followup_arm")
+    lock = fair_control_lock(unit)
     mode = "fixed" if unit.arm == "g2-fixed" else "random"
     return {
         "planner_model": G1_DEEPSEEK_FLASH_MODEL,
-        "max_turns": unit.request_cap,
-        "max_attempts": 1 if mode == "fixed" else 2,
+        "max_turns": lock["request_cap"],
+        "max_attempts": lock["max_attempts"],
         "seed": unit.seed,
         "probe": unit.phase == "probe",
         "cold_prior": unit.m2_condition == "cold",
         "routing_mode": mode,
-        "criterion_id": REPRO_CRITERION_ID,
+        "criterion_id": lock["criterion_id"],
         "fixed_topology": True,
         "lightweight_verifier": True,
-        "node_request_caps": {"s1": unit.request_cap, "s2": 0},
+        "node_request_caps": {"s1": lock["request_cap"], "s2": lock["verifier_requests"]},
+        "protocol_id": lock["protocol_id"],
+        "request_accounting": lock["request_accounting"],
+        "planner_requests": lock["planner_requests"],
+        "verifier_requests": lock["verifier_requests"],
+        "topology": "fixed_s1_s2",
     }
 
 

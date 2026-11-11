@@ -13,6 +13,8 @@ import re
 
 from .errors import ProtocolError, BaselineUnavailable
 from .native_bridge import ServiceCodeExecutor
+from .policy import MUTATING_TOOLS
+from .review_isolation import role_is_review, run_review_command
 
 WORK_ORDER = (
     "Work in this order: localize the bug, edit the source, then verify. "
@@ -531,7 +533,12 @@ class PublicActionExtractor:
 
 
 def dispatch_action(services, action):
-    """Explicit dispatch. Model strings never select arbitrary attributes."""
+    """Explicit dispatch. Model strings never select arbitrary attributes.
+
+    When ``services.role_tools`` is set, the role contract is enforced here.
+    A review role's ``command`` runs on the pre-review snapshot. It is not
+    given the live implementation tree.
+    """
     warnings = list(action.get("warnings") or [])
     arguments = dict(action["arguments"])
     clamp = getattr(services, "clamp_timeout", None)
@@ -540,7 +547,19 @@ def dispatch_action(services, action):
         warnings.extend(timeout_warnings)
     if action["tool"] not in TOOLS:
         raise ProtocolError("unknown public tool")
-    result = getattr(services, action["tool"])(**arguments)
+    role_tools = getattr(services, "role_tools", None)
+    if role_tools is not None and action["tool"] not in set(role_tools):
+        raise ProtocolError("tool_outside_role_contract")
+    if role_is_review(role_tools) and action["tool"] in MUTATING_TOOLS:
+        raise ProtocolError("review_role_cannot_mutate")
+    if action["tool"] == "command" and role_is_review(role_tools):
+        reviewer = getattr(services, "review_command", None)
+        if callable(reviewer):
+            result = reviewer(**arguments)
+        else:
+            result = run_review_command(services, arguments.get("argv"), arguments.get("timeout_s", 30))
+    else:
+        result = getattr(services, action["tool"])(**arguments)
     if warnings and isinstance(result, dict):
         result = dict(result)
         result.setdefault("warnings", [])

@@ -35,11 +35,12 @@ SWE-bench instance images. This does not call a model API.
         --output-dir /tmp/alo-repro-replay
 
 --execute applies each G2 model.patch inside that unit's sandbox image and
-runs alo_repro.py before and after the patch. It also runs public test files
-the agent changed. Those files may have been edited or weakened, so a pass is
-the agent's version of the test. The same paths are run again at the base
-commit, before the patch, and both return codes are reported. A missing script
-is unknown, not a failure. Each container is named and labeled and is removed
+runs alo_repro.py before and after the patch. It also runs the frozen bytes of
+public test files that exist at the base commit, on the baseline tree and again
+on the patched tree. A weakened copy of those tests is not the suite that can
+pass. An environment or collection failure is not a functional fail, so it
+cannot become a pass. A missing script is unknown, not a failure. Each container
+is named and labeled and is removed
 with docker rm -f when the run ends or times out. --jobs N (default 1) runs
 that many containers at once. --output-dir defaults to the current directory
 and must not be inside --run-dir.
@@ -350,15 +351,32 @@ script_name, patch_path = sys.argv[1], sys.argv[2]
 tests = sys.argv[3:]
 script = root / script_name
 testbed_python = pathlib.Path("/opt/miniconda3/envs/testbed/bin/python")
-python_bin = str(testbed_python) if testbed_python.is_file() else "python3"
+python_bin = str(testbed_python) if testbed_python.is_file() else sys.executable
 env = dict(os.environ)
+env["PYTHONDONTWRITEBYTECODE"] = "1"
 prefix = "/opt/miniconda3/envs/testbed/bin:"
 if not env.get("PATH", "").startswith(prefix):
     env["PATH"] = prefix + env.get("PATH", "")
 
 def run(argv):
     completed = subprocess.run(argv, cwd=root, capture_output=True, env=env)
-    return completed.returncode
+    text = (completed.stdout + b"\n" + completed.stderr).decode("utf-8", "replace")
+    return completed.returncode, text[-4000:]
+
+def classify(code, output):
+    if not isinstance(code, int):
+        return "missing"
+    text = output or ""
+    if code == 0:
+        return "passed"
+    markers = ("ModuleNotFoundError", "ImportError", "No module named",
+               "ERROR collecting", "errors during collection", "command not found",
+               "PermissionError")
+    if any(marker in text for marker in markers) or code in (2, 3, 4, 5, 127):
+        return "environment"
+    if "AssertionError" in text or "FAILED" in text or " failed" in text:
+        return "failed"
+    return "unshown"
 
 before = after = None
 # The candidate script often exists only inside model.patch. Stage the patch
@@ -389,19 +407,28 @@ if extracted is not None:
 elif script.is_file():
     extracted = script.read_bytes()
 if script.is_file():
-    before = run([python_bin, script_name])
+    before, _before_output = run([python_bin, script_name])
 if extracted is not None and not existed:
     script.unlink()
 elif existed and original is not None:
     script.write_bytes(original)
 
+def clear_bytecode():
+    for directory in root.rglob("__pycache__"):
+        if directory.is_dir() and ".git" not in directory.parts:
+            import shutil
+            shutil.rmtree(directory, ignore_errors=True)
+
 def run_suite(paths):
     if not paths:
-        return None, None, None
+        return None, "", None, None
+    clear_bytecode()
+    probe, probe_output = run([python_bin, "-c", "import pytest"])
     pytest_bin = pathlib.Path(python_bin).parent / "pytest"
-    if pytest_bin.is_file() or run([python_bin, "-c", "import pytest"]) == 0:
-        command = [str(pytest_bin), *paths] if pytest_bin.is_file() else [python_bin, "-m", "pytest", *paths]
-        return run(command), "pytest", None
+    if pytest_bin.is_file() or probe == 0:
+        command = [str(pytest_bin), "-q", *paths] if pytest_bin.is_file() else [python_bin, "-m", "pytest", "-q", *paths]
+        code, output = run(command)
+        return code, output, "pytest", None
     if (root / "tests" / "runtests.py").is_file():
         labels = []
         for path in paths:
@@ -409,13 +436,20 @@ def run_suite(paths):
             if label.endswith(".py"):
                 label = label[:-3]
             labels.append(label.replace("/", "."))
-        return run([python_bin, "tests/runtests.py", "--verbosity=1", *labels]), "django_runtests", None
+        code, output = run([python_bin, "tests/runtests.py", "--verbosity=1", *labels])
+        return code, output, "django_runtests", None
     if (root / "bin" / "test").is_file():
-        return run([python_bin, "bin/test", *paths]), "sympy_bin_test", None
-    return None, None, "no_public_test_runner"
+        code, output = run([python_bin, "bin/test", *paths])
+        return code, output, "sympy_bin_test", None
+    return None, "", None, "no_public_test_runner"
 
-base_paths = [path for path in tests if (root / path).is_file()]
-tests_base, runner, reason = run_suite(base_paths)
+frozen = {}
+for path in tests:
+    file = root / path
+    if file.is_file():
+        frozen[path] = file.read_bytes()
+frozen_paths = list(frozen)
+tests_base, tests_base_output, runner, reason = run_suite(frozen_paths)
 patch = pathlib.Path(patch_path).read_bytes()
 applied = True
 if patch.strip():
@@ -423,22 +457,38 @@ if patch.strip():
         ["git", "-C", str(root), "apply", "--whitespace=nowarn", patch_path],
         capture_output=True).returncode == 0
 test_code = patched_runner = patched_reason = None
+tests_output = ""
+same_frozen_tests = False
+comparable_exits = False
+tests_failure_class = tests_base_failure_class = None
 if not applied:
     # A failed apply must not score the clean tree. Tests there can exit 0.
     reason = "patch_not_applied"
 else:
     if script.is_file():
-        after = run([python_bin, script_name])
-    patched_paths = [path for path in tests if (root / path).is_file()]
-    test_code, patched_runner, patched_reason = run_suite(patched_paths)
+        after, _after_output = run([python_bin, script_name])
+    for path, data in frozen.items():
+        dest = root / path
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(data)
+    base_runner = runner
+    test_code, tests_output, patched_runner, patched_reason = run_suite(frozen_paths)
     if patched_runner:
         runner = patched_runner
     if reason is None:
         reason = patched_reason
+    same_frozen_tests = bool(
+        frozen_paths and base_runner is not None and patched_runner == base_runner)
+    tests_base_failure_class = classify(tests_base, tests_base_output)
+    tests_failure_class = classify(test_code, tests_output)
+    comparable_exits = bool(
+        same_frozen_tests and tests_base_failure_class == "failed" and tests_failure_class == "passed")
 payload = {
     "before": before, "after": after, "tests": test_code, "tests_base": tests_base,
     "applied": applied, "runner": runner, "reason": reason,
-    "note": "tests is the agent-changed files after the patch; tests_base is those paths at the base commit",
+    "same_frozen_tests": same_frozen_tests, "comparable_exits": comparable_exits,
+    "tests_failure_class": tests_failure_class, "tests_base_failure_class": tests_base_failure_class,
+    "note": "tests and tests_base are the frozen bytes of the base-commit test files",
 }
 sys.stdout.write(json.dumps(payload) + "\n")
 """
@@ -494,11 +544,17 @@ def _parse_execute_result(result):
         return evidence
 
     before, after, tests = code(payload.get("before")), code(payload.get("after")), code(payload.get("tests"))
-    evidence = repro_v1_evidence(before=before, after=after, tests=tests)
+    tests_base = code(payload.get("tests_base"))
+    evidence = repro_v1_evidence(
+        before=before, after=after, tests=tests, tests_base=tests_base,
+        same_frozen_tests=payload.get("same_frozen_tests") is True,
+        comparable_exits=payload.get("comparable_exits") is True,
+        tests_failure_class=payload.get("tests_failure_class"),
+        tests_base_failure_class=payload.get("tests_base_failure_class"))
     evidence.update(source="execute", proxy=False, controlled_before_after=before is not None,
                     patch_applied=True, execute_runner=payload.get("runner"),
                     execute_reason=payload.get("reason"),
-                    tests_base_returncode=code(payload.get("tests_base")),
+                    tests_base_returncode=tests_base,
                     tests_note=payload.get("note"))
     return evidence
 
@@ -522,7 +578,15 @@ def replay_run(run_dir, eval_dir, *, execute=False, executor=None, jobs=1):
     records = load_records(Path(run_dir) / "records.jsonl")
     scored = load_eval_dir(eval_dir) if eval_dir else []
     index = _eval_index(scored)
-    comparison = comparison_report(_comparison_rows(records, index))
+    comparison_rows = _comparison_rows(records, index)
+    comparison = comparison_report(comparison_rows)
+    from .r2 import CONTROL_ARMS
+    control_rows = [
+        row for row in comparison_rows
+        if str(row.get("arm") or "").split("/")[0] in CONTROL_ARMS
+        or str(row.get("condition") or "").split("/")[0] in CONTROL_ARMS
+    ]
+    control_comparison = comparison_report(control_rows) if control_rows else None
     proxy_rows = []
     resolved_s2_budget = 0
     transcript_pairs = []
@@ -623,10 +687,10 @@ def replay_run(run_dir, eval_dir, *, execute=False, executor=None, jobs=1):
             "proxy": False,
             "jobs": jobs,
             "note": (
-                "Docker replay of alo_repro.py and public test files the agent changed. "
-                "tests_returncode is those files after the patch. tests_base_returncode is "
-                "the same paths at the base commit. A patched pass can be a weakened test. "
-                "Hidden tests are not run."
+                "Docker replay of alo_repro.py and the frozen bytes of public test files "
+                "present at the base commit. tests_base_returncode is that suite on the "
+                "baseline. tests_returncode is the same bytes on the patched tree. A "
+                "weakened suite or an environment failure is not a pass. Hidden tests are not run."
             ),
             "precision_recall": precision_recall(execute_pairs),
             "posterior": execute_posterior,
@@ -634,6 +698,7 @@ def replay_run(run_dir, eval_dir, *, execute=False, executor=None, jobs=1):
             "units": execute_units,
         },
         "comparison": comparison,
+        "control_comparison": control_comparison,
         "instructions": EXECUTE_INSTRUCTIONS,
     }
 

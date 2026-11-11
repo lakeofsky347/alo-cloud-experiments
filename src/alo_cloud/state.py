@@ -33,10 +33,13 @@ DEFAULT_CELLS = tuple(
 )
 NUMERIC_OBSERVATIONS = frozenset({
     "public_quality", "quality_before", "quality_after", "delta_quality",
+    "credited_quality",
     "tokens", "input_tokens", "output_tokens", "reasoning_tokens", "seconds",
     "verifier_seconds", "cost_cny", "requests",
 })
-OBSERVATION_FIELDS = NUMERIC_OBSERVATIONS | {"local_contract_status"}
+OBSERVATION_FIELDS = NUMERIC_OBSERVATIONS | {"local_contract_status", "topics"}
+# Role identity stays in the task audit. It is not a cross-task field.
+_DROPPED_OBSERVATION_FIELDS = frozenset({"role_id"})
 TABLES = {
     "belief", "preference_obs", "tms_dir", "tms_outcomes", "tms_prov",
     "audit_log", "identities",
@@ -79,22 +82,45 @@ def _number(value, *, low=0, high=None, integer=False):
     return value
 
 
-def _observation(row):
-    if not isinstance(row, dict) or not row or set(row) - OBSERVATION_FIELDS:
+def _observation(row, allowed_topics=None):
+    if not isinstance(row, dict) or not row:
+        raise StateContractError("non_allowlisted_policy_observation")
+    # Drop role identity before the allowlist check so a task-local label
+    # cannot cross tasks by riding along in the observation.
+    row = {key: value for key, value in row.items() if key not in _DROPPED_OBSERVATION_FIELDS}
+    if set(row) - OBSERVATION_FIELDS:
         raise StateContractError("non_allowlisted_policy_observation")
     result = {}
+    topics = None
+    if "topics" in row:
+        raw_topics = row["topics"]
+        if not isinstance(raw_topics, (list, tuple)) or any(not isinstance(topic, str) for topic in raw_topics):
+            raise StateContractError("invalid_observation_topics")
+        allowed = set(DEFAULT_TOPICS if allowed_topics is None else allowed_topics)
+        topics = [topic for topic in raw_topics if topic in allowed]
+        if len(topics) != len(raw_topics):
+            # An unregistered topic would make the credit key match the wrong cell.
+            topics = None
     for field, value in row.items():
+        if field == "topics":
+            continue
         if field == "local_contract_status":
             if value not in ("pass", "fail", "unknown"):
                 raise StateContractError("invalid_local_contract_status")
         elif value is not None:
             if field == "delta_quality":
                 _number(value, low=-1, high=1)
-            elif field in ("public_quality", "quality_before", "quality_after"):
+            elif field in ("public_quality", "quality_before", "quality_after", "credited_quality"):
                 _number(value, high=1)
             else:
                 _number(value, integer=field in {"tokens", "input_tokens", "output_tokens", "reasoning_tokens", "requests"})
+        if field == "credited_quality" and topics is None:
+            continue
         result[field] = value
+    if topics:
+        result["topics"] = list(topics)
+    elif "credited_quality" in result and topics is None:
+        result.pop("credited_quality", None)
     return result
 
 
@@ -140,7 +166,7 @@ def export_learning_state(db_path, adapter_state, *, allowed_models,
     for model, rows in sorted(source_observations.items()):
         if not isinstance(rows, list) or len(rows) > 100000:
             raise StateContractError("invalid_policy_observation_sequence")
-        observations[model] = [_observation(row) for row in rows]
+        observations[model] = [_observation(row, topics) for row in rows]
     result = {
         "schema": SCHEMA, "transfer_policy": policy,
         "belief": belief, "tms_outcomes": tms, "observations": observations,
@@ -199,7 +225,7 @@ def validate_learning_state(value, *, allowed_models, allowed_topics=None, allow
         if not isinstance(rows, list) or len(rows) > 100000:
             raise StateContractError("invalid_policy_observation_sequence")
         for row in rows:
-            _observation(row)
+            _observation(row, topics)
     return True
 
 

@@ -19,11 +19,45 @@ POLICY_VERSION = "constrained-ts-quality-v1"
 RESOURCE_FIELDS = ("requests", "tokens", "seconds", "cny")
 UNIT_LOCAL_FIELDS = frozenset({"requests", "tokens", "seconds"})
 DEFAULT_PRIOR = {"requests": 2.0, "tokens": 8192.0, "seconds": 90.0, "cny": 0.1}
+MUTATING_TOOLS = frozenset({"write_file", "edit_file", "execute_code"})
 
 
 def _number(value):
     return (not isinstance(value, bool) and isinstance(value, (int, float))
             and math.isfinite(value) and value >= 0)
+
+
+def topic_key(topics):
+    """Stable topic identity. Order does not make a second cell."""
+    if isinstance(topics, str):
+        topics = (topics,)
+    if not isinstance(topics, (list, tuple)):
+        return ()
+    found = []
+    for topic in topics:
+        if isinstance(topic, str) and topic and topic not in found:
+            found.append(topic)
+    return tuple(sorted(found))
+
+
+def workspace_quality_credit(quality_after, *, quality_before, role_tools, workspace_changed=None):
+    """Quality this role may be credited with.
+
+    A role that cannot edit does not receive the workspace quality another
+    role already produced. An unchanged measurement is not a new credit.
+    ``workspace_changed is False`` means this node did not touch the tree.
+    ``None`` means the caller could not see a diff.
+    """
+    if not _number(quality_after) or quality_after > 1:
+        return None
+    tools = set(role_tools or ())
+    if not tools & MUTATING_TOOLS:
+        return None
+    if quality_before is not None and quality_after == quality_before:
+        return None
+    if workspace_changed is False:
+        return None
+    return float(quality_after)
 
 
 class ConstrainedThompsonPolicy:
@@ -77,19 +111,32 @@ class ConstrainedThompsonPolicy:
             estimate = self.resource_estimate(model)
             violated = [key for key in RESOURCE_FIELDS if estimate[key] > remaining[key]]
             rows = self.observations.get(model, []) if self.learn_quality else []
-            qualities = [float(row.get("quality_after", row.get("public_quality")))
-                         for row in rows
-                         if _number(row.get("quality_after", row.get("public_quality")))
-                         and row.get("quality_after", row.get("public_quality")) <= 1]
+            wanted = topic_key(topics)
+            # Only credited quality for this topic set. A global quality_after,
+            # or another role's workspace score, does not replace the task cell.
+            qualities = []
+            for row in rows:
+                if not isinstance(row, dict) or topic_key(row.get("topics")) != wanted or not wanted:
+                    continue
+                credited = row.get("credited_quality")
+                if _number(credited) and credited <= 1:
+                    qualities.append(float(credited))
             if qualities:
                 alpha, beta = 1 + sum(qualities), 1 + len(qualities) - sum(qualities)
-                source = "bounded_global_quality_beta_pseudo_posterior"
+                source = "role_conditioned_quality_beta_pseudo_posterior"
+                scope = "model_topics"
             else:
-                belief = org.belief.query(model, cell)
+                belief_store = getattr(org, "belief", None)
+                if belief_store is None:
+                    raise PilotStopped("belief_required_without_role_observations")
+                belief = belief_store.query(model, cell)
                 alpha, beta, source = belief.alpha, belief.beta, "native_local_bernoulli_prior"
+                scope = "task_cell"
             draw = rng.betavariate(alpha, beta) if not violated else None
             scores[model] = {"quality_draw": draw, "quality_alpha": alpha, "quality_beta": beta,
-                             "quality_source": source, "quality_observations": len(qualities),
+                             "quality_source": source, "quality_scope": scope,
+                             "quality_observations": len(qualities),
+                             "cell": cell, "topics": list(wanted),
                              "resource_prediction": estimate, "remaining": dict(remaining),
                              "feasible": not violated, "violated_resources": violated}
             if not violated:
@@ -105,7 +152,8 @@ class ConstrainedThompsonPolicy:
         # Stable pool order is the preregistered exact-tie rule.
         selected = max(feasible, key=lambda model: scores[model]["quality_draw"])
         return selected, {"schema": POLICY_VERSION, "selected": selected, "scores": scores,
-                          "eligible": list(worker_ids), "objective": "maximize_sampled_final_public_quality",
+                          "eligible": list(worker_ids), "cell": cell, "topics": list(topic_key(topics)),
+                          "objective": "maximize_sampled_role_conditioned_public_quality",
                           "resource_role": "hard_prediction_feasibility_filter",
                           "actual_hard_limits": "services_and_gateway",
                           "safety_multiplier": self.safety_multiplier}
