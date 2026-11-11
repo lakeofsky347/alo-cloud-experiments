@@ -289,10 +289,10 @@ def test_fair_control_lock_is_shared_and_frozen_g2_stays_on_syntax():
     locks = []
     topologies = set()
     for unit in siblings:
-        if unit.arm == "g1-deepseek-flash":
+        if unit.arm in {"g1-deepseek-flash", "g1-glm"}:
             config = fair_g1_config(unit)
             built = _build_adapter(unit)
-            assert built.fixed_model == "deepseek-flash"
+            assert built.fixed_model == g1_model(unit.arm)
             assert built.criterion_id == REPRO_CRITERION_ID
             assert built.protocol_id == FAIR_CONTROL_PROTOCOL_ID
             assert built.max_turns == unit.request_cap
@@ -319,7 +319,7 @@ def test_fair_control_lock_is_shared_and_frozen_g2_stays_on_syntax():
             ))
             topologies.add(config["topology"])
             assert config["node_request_caps"] == {"s1": unit.request_cap, "s2": 0}
-    assert len(locks) == 3
+    assert len(locks) == 4
     assert len(set(locks)) == 1
     assert locks[0][0] == FAIR_CONTROL_PROTOCOL_ID
     assert topologies == {"single_agent", "fixed_s1_s2"}

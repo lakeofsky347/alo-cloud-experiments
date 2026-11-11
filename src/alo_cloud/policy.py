@@ -71,7 +71,8 @@ class ConstrainedThompsonPolicy:
     """
 
     def __init__(self, observations, budget_remaining, *, priors=None,
-                 safety_multiplier=1.25, learn_quality=True):
+                 safety_multiplier=1.25, learn_quality=True,
+                 filter_resources_by_topics=False):
         if not _number(safety_multiplier) or safety_multiplier < 1:
             raise PilotStopped("invalid_policy_safety_multiplier")
         self.observations = observations
@@ -79,14 +80,26 @@ class ConstrainedThompsonPolicy:
         self.priors = dict(priors or {})
         self.safety_multiplier = float(safety_multiplier)
         self.learn_quality = bool(learn_quality)
+        # Default pools every row for the model. Role filtering is opt-in.
+        self.filter_resources_by_topics = bool(filter_resources_by_topics)
         for prior in self.priors.values():
             if (not isinstance(prior, dict) or set(prior) != set(RESOURCE_FIELDS)
                     or any(not _number(v) for v in prior.values())):
                 raise PilotStopped("invalid_model_resource_prior")
 
-    def resource_estimate(self, model):
+    def resource_estimate(self, model, topics=None):
+        """Mean plus one standard deviation, times the safety multiplier.
+
+        ``topics is None`` keeps the historical per-model pool. A topic tuple
+        filters to rows whose role topics are exactly that set, so a high-cost
+        implementer row does not move the verifier's prediction.
+        """
         prior = self.priors.get(model, DEFAULT_PRIOR)
         rows = self.observations.get(model, [])
+        if topics is not None:
+            wanted = topic_key(topics)
+            rows = [row for row in rows
+                    if isinstance(row, dict) and topic_key(row.get("topics")) == wanted]
         result = {}
         for resource in RESOURCE_FIELDS:
             key = "cost_cny" if resource == "cny" else resource
@@ -108,7 +121,10 @@ class ConstrainedThompsonPolicy:
             if (not isinstance(remaining, dict)
                     or any(not _number(remaining.get(key)) for key in RESOURCE_FIELDS)):
                 raise PilotStopped("unknown_remaining_budget")
-            estimate = self.resource_estimate(model)
+            if self.filter_resources_by_topics:
+                estimate = self.resource_estimate(model, topics)
+            else:
+                estimate = self.resource_estimate(model)
             violated = [key for key in RESOURCE_FIELDS if estimate[key] > remaining[key]]
             rows = self.observations.get(model, []) if self.learn_quality else []
             wanted = topic_key(topics)

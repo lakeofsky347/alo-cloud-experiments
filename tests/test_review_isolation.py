@@ -90,6 +90,30 @@ def test_docker_review_mounts_the_snapshot_read_only(tmp_path):
     assert "--network=none" in seen["argv"]
 
 
+def test_merge_review_locks_the_populated_tree_and_does_not_copy_back(tmp_path):
+    live = tmp_path / "live"
+    snap = tmp_path / "snap"
+    _tree(live)
+    _tree(snap, "SNAP\n")
+    sandbox = DockerSandbox(
+        live, image="example.invalid/alo:test", merge_image_workspace=True)
+    argv = sandbox.readonly_argv(snap, ["python3", "-c", "print(1)"])
+    rendered = "\n".join(argv)
+    assert f"src={snap.resolve()}" in rendered
+    assert "readonly" in rendered
+    assert f"src={live.resolve()}" not in rendered
+    assert "review_merge_tree_not_readonly" in rendered
+    assert "MS_RDONLY" in rendered
+    assert "tar -C /agent" in rendered
+    assert "tar -C /workspace -xf" in rendered
+    assert "tar -C /workspace --exclude" not in rendered
+    assert "--cap-add=SYS_ADMIN" in argv
+    assert "--cap-drop=ALL" in argv
+    normal = "\n".join(sandbox.docker_argv(["./executable"]))
+    assert "tar -C /workspace" in normal
+    assert "--read-only" not in sandbox.docker_argv(["./executable"])
+
+
 def test_missing_snapshot_does_not_fall_back_to_the_live_tree(tmp_path):
     live = tmp_path / "live"
     _tree(live)

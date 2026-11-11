@@ -24,11 +24,12 @@ import time
 from .native_bridge import BoundModel, native_client
 from .contracts import G1_DEEPSEEK_FLASH_MODEL
 from .errors import PilotStopped
-from .public_tools import ACTION_INSTRUCTIONS, PublicToolCodeExecutor
+from .public_tools import (
+    ACTION_INSTRUCTIONS, TOOLS, WORK_ORDER, PublicToolCodeExecutor, coerce_actions, dispatch_action,
+)
 from .native_bridge import ROLE_INSTRUCTIONS, SHARED_INSTRUCTIONS, _terminated
 from .policy import ConstrainedThompsonPolicy, POLICY_VERSION, workspace_quality_credit
 from .public_check import public_quality_signal, quality_from_signal
-from .public_tools import WORK_ORDER, coerce_actions, dispatch_action
 from .repro import REPRO_CRITERION_ID, REPRO_INSTRUCTION, cached_repro_v1
 from .review_isolation import role_is_review, snapshot_workspace, tree_digest
 from .sandbox import CRITERION_ID
@@ -36,6 +37,20 @@ from .tool_loop import TOOL_LOOP_VERSION, persistent_tool_loop
 
 ROUTING_MODES = ("thompson", "fixed", "random")
 FIXED_ROUTE_MODEL = G1_DEEPSEEK_FLASH_MODEL
+EXPORT_MODES = ("full", "resources")
+
+
+def role_tool_contract(role):
+    """Tools dispatch will enforce, or None for the full public set.
+
+    An empty declaration is not a restriction. Fallback generalists and any
+    other role with no tool contract keep the pre-#34 tool set. A non-empty
+    list, including a review role limited to ``command``, is enforced.
+    """
+    raw = getattr(role, "tools", None)
+    if not raw:
+        return None
+    return tuple(raw)
 FIXED_S1_S2_DAG = """subtasks:
   - id: s1
     goal: Write alo_repro.py and run python3 alo_repro.py before any fix so it exits non-zero. Then edit the source. Run python3 alo_repro.py again so it exits 0. Do not weaken the script.
@@ -383,7 +398,9 @@ class HeterogeneousALO:
                  probe=False, cold_prior=False, user_preference=None, routing_mode="thompson",
                  criterion_id=None, fixed_topology=False, lightweight_verifier=False,
                  node_request_caps=None, protocol_id=None, request_accounting=None,
-                 planner_requests=None, verifier_requests=None, topology=None):
+                 planner_requests=None, verifier_requests=None, topology=None,
+                 learn_quality=True, filter_resources_by_topics=False,
+                 fixed_model=None, export_mode=None):
         if (type(max_turns) is not int or max_turns < 1
                 or type(max_attempts) is not int or max_attempts < 1):
             raise PilotStopped("invalid_alo_attempt_or_turn_limit")
@@ -404,6 +421,10 @@ class HeterogeneousALO:
                            for key in ("first_try", "strong"))
                     or user_preference["first_try"] == user_preference["strong"]):
                 raise PilotStopped("invalid_user_preference")
+        if export_mode is not None and export_mode not in EXPORT_MODES:
+            raise PilotStopped("invalid_export_mode")
+        if fixed_model is not None and (not isinstance(fixed_model, str) or not fixed_model):
+            raise PilotStopped("invalid_fixed_model")
         if cold_prior and not probe:
             raise PilotStopped("cold_prior_requires_probe")
         if organization_updates is _UNSET:
@@ -431,6 +452,16 @@ class HeterogeneousALO:
                        "topology": topology,
                        "policy_version": POLICY_VERSION,
                        "tool_loop_version": TOOL_LOOP_VERSION}
+        # Opt-in fields stay out of the frozen g2 configuration when they are
+        # at the historical default, so an existing checkpoint still matches.
+        if learn_quality is not True:
+            self.config["learn_quality"] = bool(learn_quality)
+        if filter_resources_by_topics:
+            self.config["filter_resources_by_topics"] = True
+        if fixed_model not in (None, FIXED_ROUTE_MODEL):
+            self.config["fixed_model"] = fixed_model
+        if export_mode == "resources":
+            self.config["export_mode"] = "resources"
         self.state = {"observations": {}, "worker_transcripts": {}, "planner_messages": []}
 
     def dump_state(self):
@@ -508,7 +539,9 @@ class HeterogeneousALO:
             pass
         policy = ConstrainedThompsonPolicy(self.state.setdefault("observations", {}),
             services.budget_remaining, priors=self.config["policy_priors"],
-            safety_multiplier=self.config["safety_multiplier"])
+            safety_multiplier=self.config["safety_multiplier"],
+            learn_quality=self.config.get("learn_quality", True),
+            filter_resources_by_topics=self.config.get("filter_resources_by_topics", False))
         pref = self.config.get("user_preference")
         routing_mode = self.config["routing_mode"]
 
@@ -532,16 +565,17 @@ class HeterogeneousALO:
                 return actual, traced
 
         class RoutedPolicy:
-            """fixed keeps deepseek-flash. random draws uniformly from the feasible set."""
+            """fixed keeps the pinned model (default deepseek-flash). random draws uniformly."""
 
             def select(self, org, pool, worker_ids, cell, topics, user_id, rng=None):
                 chosen, trace = policy.select(org, pool, worker_ids, cell, topics, user_id, rng)
                 if routing_mode == "fixed":
-                    score = trace.get("scores", {}).get(FIXED_ROUTE_MODEL, {})
+                    pinned = adapter.config.get("fixed_model") or FIXED_ROUTE_MODEL
+                    score = trace.get("scores", {}).get(pinned, {})
                     if not (isinstance(score, dict) and score.get("feasible")
-                            and FIXED_ROUTE_MODEL in worker_ids):
+                            and pinned in worker_ids):
                         raise PilotStopped("fixed_model_infeasible")
-                    actual = FIXED_ROUTE_MODEL
+                    actual = pinned
                 else:
                     feasible = [model for model in worker_ids
                                 if trace["scores"][model]["feasible"]]
@@ -690,11 +724,13 @@ class HeterogeneousALO:
                 except Exception:
                     diff_nonempty = False
                     workspace_changed = None
-            role_tools = tuple(last.get("role_tools") or ())
+            declared = last.get("role_tools", ())
+            # None is the unbound full set. An empty tuple is not that signal.
+            credit_tools = TOOLS if declared is None else tuple(declared)
             topics = list(last.get("topics") or ())
             credited = workspace_quality_credit(
                 quality_after, quality_before=last.get("quality_before"),
-                role_tools=role_tools, workspace_changed=workspace_changed)
+                role_tools=credit_tools, workspace_changed=workspace_changed)
             after = services.resources()
             before = last["resources_before"]
             input_tokens = _delta(after, before, "observed_input_tokens")
@@ -769,7 +805,7 @@ class HeterogeneousALO:
                     services._repro_v1_cache = None
                 except Exception:
                     pass
-                tools = tuple(getattr(subtask.role, "tools", ()) or ())
+                tools = role_tool_contract(subtask.role)
                 topics = tuple(getattr(subtask, "topics", ()) or ())
                 last.clear()
                 last.update(started=started, resources_before=before, quality_before=quality_before,

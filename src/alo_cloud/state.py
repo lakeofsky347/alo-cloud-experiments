@@ -37,6 +37,16 @@ NUMERIC_OBSERVATIONS = frozenset({
     "tokens", "input_tokens", "output_tokens", "reasoning_tokens", "seconds",
     "verifier_seconds", "cost_cny", "requests",
 })
+QUALITY_OBSERVATION_FIELDS = frozenset({
+    "public_quality", "quality_before", "quality_after", "delta_quality",
+    "credited_quality",
+})
+# Role topics that exist on both SWE-bench Lite and ProgramBench DAGs.
+SHARED_ROLE_TOPICS = ("coding", "implementation", "testing", "validation")
+TASK_FAMILIES = ("swe-repair", "program-reconstruction")
+TRANSFER_SCHEMA = "alo-cross-track-transfer-v1"
+TARGET_SCHEMA = "alo-frozen-transfer-target-v1"
+SWE_TRACKS = frozenset({"SWE-bench_Lite", "SWE-bench"})
 OBSERVATION_FIELDS = NUMERIC_OBSERVATIONS | {"local_contract_status", "topics"}
 # Role identity stays in the task audit. It is not a cross-task field.
 _DROPPED_OBSERVATION_FIELDS = frozenset({"role_id"})
@@ -138,14 +148,24 @@ def _readonly_connection(path):
     return conn
 
 
+def _without_quality(row):
+    """Drop quality fields inside the exporter. Callers cannot leave them in."""
+    return {key: value for key, value in row.items() if key not in QUALITY_OBSERVATION_FIELDS}
+
+
 def export_learning_state(db_path, adapter_state, *, allowed_models,
-                          evidence_id=None, allowed_topics=None, allowed_cells=None):
+                          evidence_id=None, allowed_topics=None, allowed_cells=None,
+                          strip_quality=False):
     """Export B, TMS model/topic counts and numerical policy observations.
 
     Only predeclared topic/cell values are transferable.  Unregistered topics
     generated in a task are omitted, so a planner cannot encode task content
     in topic names.  Counts of omitted rows are audit metadata, never evidence
     that an outcome failed.  Unknown numerical observations remain null.
+
+    ``strip_quality=True`` is the resources-only export mode. Quality fields
+    are removed here, after validation, so a caller that forgets to delete
+    ``credited_quality`` or ``quality_after`` still cannot emit them.
     """
     policy = _policy(allowed_models, allowed_topics, allowed_cells)
     models, topics, cells = map(set, (policy["model_pool"], policy["topics"], policy["cells"]))
@@ -166,7 +186,15 @@ def export_learning_state(db_path, adapter_state, *, allowed_models,
     for model, rows in sorted(source_observations.items()):
         if not isinstance(rows, list) or len(rows) > 100000:
             raise StateContractError("invalid_policy_observation_sequence")
-        observations[model] = [_observation(row, topics) for row in rows]
+        kept = []
+        for row in rows:
+            cleaned = _observation(row, topics)
+            if strip_quality:
+                cleaned = _without_quality(cleaned)
+                if not cleaned:
+                    continue
+            kept.append(cleaned)
+        observations[model] = kept
     result = {
         "schema": SCHEMA, "transfer_policy": policy,
         "belief": belief, "tms_outcomes": tms, "observations": observations,
@@ -291,3 +319,240 @@ def probe_state_context(value, *, allowed_models, allowed_topics=None, allowed_c
             conn.close()
             if state_hash(value) != original_hash:
                 raise StateContractError("probe_mutated_main_learning_state")
+
+
+def transferable_task_type(topics):
+    """Shared role topics as the cross-track task type. A cell is not one."""
+    from .policy import topic_key
+    key = topic_key(topics)
+    if not key or any(topic not in SHARED_ROLE_TOPICS for topic in key):
+        return None
+    return "/".join(key)
+
+
+def division_key(model, role_topics):
+    """Explicit model × role × task-type identity for a transferable row."""
+    task_type = transferable_task_type(role_topics)
+    if not isinstance(model, str) or not model or task_type is None:
+        raise StateContractError("non_transferable_division_key")
+    from .policy import topic_key
+    role = list(topic_key(role_topics))
+    return {"model": model, "role": role, "task_type": task_type}
+
+
+def export_transfer_package(adapter_state, *, allowed_models, task_family=None,
+                            strip_quality=False):
+    """Cross-track profile. Default M2 export is a different function.
+
+    The package keeps role topics shared by both benchmarks and an optional
+    pre-registered ``task_family``. The ``extract_features`` cell is marked
+    non-transferable and is not copied. Rows whose topics are not entirely
+    inside the shared set are omitted.
+    """
+    from .policy import topic_key
+    if task_family is not None and task_family not in TASK_FAMILIES:
+        raise StateContractError("unregistered_task_family")
+    models = set(_policy(allowed_models, None, None)["model_pool"])
+    if not isinstance(adapter_state, dict):
+        raise StateContractError("adapter_state_must_be_mapping")
+    source = adapter_state.get("observations", {})
+    if not isinstance(source, dict) or set(source) - models:
+        raise StateContractError("unregistered_observation_model")
+    profiles = {}
+    omitted = 0
+    for model, rows in sorted(source.items()):
+        if not isinstance(rows, list) or len(rows) > 100000:
+            raise StateContractError("invalid_policy_observation_sequence")
+        kept = []
+        for row in rows:
+            if not isinstance(row, dict):
+                raise StateContractError("non_allowlisted_policy_observation")
+            body = {key: value for key, value in row.items() if key not in {"cell", "role_id"}}
+            task_type = transferable_task_type(body.get("topics"))
+            if task_type is None:
+                omitted += 1
+                continue
+            cleaned = _observation(body, SHARED_ROLE_TOPICS)
+            if strip_quality:
+                cleaned = _without_quality(cleaned)
+            if "cell" in cleaned:
+                raise StateContractError("cell_is_not_transferable")
+            role = list(topic_key(body.get("topics")))
+            identity = division_key(model, role)
+            cleaned["role_topics"] = identity["role"]
+            cleaned["task_type"] = identity["task_type"]
+            cleaned["topics"] = list(identity["role"])
+            kept.append(cleaned)
+        profiles[model] = kept
+    package = {
+        "schema": TRANSFER_SCHEMA,
+        "division_key": "model_x_role_x_task_type",
+        "task_family": task_family,
+        "shared_role_topics": list(SHARED_ROLE_TOPICS),
+        "non_transferable": ["cell"],
+        "profiles": profiles,
+        "audit": {"omitted_nonshared_rows": omitted},
+    }
+    validate_transfer_package(package, allowed_models=allowed_models)
+    return package
+
+
+def validate_transfer_package(value, *, allowed_models):
+    """Fail closed when a cross-track package carries a cell or a private topic."""
+    from .policy import topic_key
+    if (not isinstance(value, dict) or value.get("schema") != TRANSFER_SCHEMA
+            or value.get("division_key") != "model_x_role_x_task_type"
+            or value.get("non_transferable") != ["cell"]
+            or list(value.get("shared_role_topics") or []) != list(SHARED_ROLE_TOPICS)):
+        raise StateContractError("invalid_transfer_package")
+    if set(value) != {
+        "schema", "division_key", "task_family", "shared_role_topics",
+        "non_transferable", "profiles", "audit",
+    }:
+        raise StateContractError("invalid_transfer_package")
+    family = value.get("task_family")
+    if family is not None and family not in TASK_FAMILIES:
+        raise StateContractError("unregistered_task_family")
+    audit = value["audit"]
+    if not isinstance(audit, dict) or set(audit) != {"omitted_nonshared_rows"}:
+        raise StateContractError("non_allowlisted_audit_metadata")
+    _number(audit["omitted_nonshared_rows"], integer=True)
+    models = set(_policy(allowed_models, None, None)["model_pool"])
+    profiles = value["profiles"]
+    if not isinstance(profiles, dict) or set(profiles) - models:
+        raise StateContractError("unregistered_observation_model")
+    for model, rows in profiles.items():
+        if not isinstance(rows, list) or len(rows) > 100000:
+            raise StateContractError("invalid_policy_observation_sequence")
+        for row in rows:
+            if not isinstance(row, dict) or "cell" in row or "role_id" in row:
+                raise StateContractError("cell_is_not_transferable")
+            role = row.get("role_topics")
+            if transferable_task_type(role) != row.get("task_type"):
+                raise StateContractError("division_key_mismatch")
+            if list(topic_key(row.get("topics"))) != list(role):
+                raise StateContractError("division_key_mismatch")
+            if division_key(model, role)["task_type"] != row["task_type"]:
+                raise StateContractError("division_key_mismatch")
+            _observation(
+                {key: item for key, item in row.items() if key not in {"role_topics", "task_type"}},
+                SHARED_ROLE_TOPICS)
+    return True
+
+
+def reject_cross_benchmark_parent(parent_unit_id, child_track, parent_state=None):
+    """Refuse to let a ProgramBench learning state parent an SWE unit."""
+    if child_track not in SWE_TRACKS:
+        return None
+    parts = parent_unit_id.split(".") if isinstance(parent_unit_id, str) else []
+    parent_track = parts[1] if len(parts) > 1 else None
+    if parent_track == "ProgramBench":
+        raise StateContractError("target_learning_state_cannot_parent_swe")
+    if isinstance(parent_state, dict):
+        if parent_state.get("may_parent_swe") is False or parent_state.get("target_track") == "ProgramBench":
+            raise StateContractError("target_learning_state_cannot_parent_swe")
+        if parent_state.get("schema") == TARGET_SCHEMA:
+            raise StateContractError("target_learning_state_cannot_parent_swe")
+        if (parent_state.get("schema") == TRANSFER_SCHEMA
+                and parent_state.get("task_family") == "program-reconstruction"):
+            raise StateContractError("target_learning_state_cannot_parent_swe")
+    return None
+
+
+def _envelope_from_transfer(package, allowed_models):
+    """Policy observations only. Belief cells stay at the common prior."""
+    observations = {}
+    for model, rows in package["profiles"].items():
+        cleaned = []
+        for row in rows:
+            item = {key: value for key, value in row.items() if key not in {"role_topics", "task_type", "cell"}}
+            item["topics"] = list(row["role_topics"])
+            cleaned.append(_observation(item, SHARED_ROLE_TOPICS))
+        observations[model] = cleaned
+    envelope = {
+        "schema": SCHEMA,
+        "transfer_policy": _policy(allowed_models, None, None),
+        "belief": [],
+        "tms_outcomes": [],
+        "observations": observations,
+        "audit": {"evidence_sha256": None, "excluded_belief_rows": 0, "excluded_tms_rows": 0},
+    }
+    validate_learning_state(envelope, allowed_models=allowed_models)
+    return envelope
+
+
+class FrozenTransferLibrary:
+    """Temporary probe library over a frozen transfer file. Writes to the source raise."""
+
+    def __init__(self, source_path, source_bytes, source_digest, observations, package,
+                 target_track, connection):
+        self.source_path = Path(source_path)
+        self.source_bytes = bytes(source_bytes)
+        self.source_digest = source_digest
+        self.observations = observations
+        self.package = package
+        self.target_track = target_track
+        self.connection = connection
+        self.origin_track = "SWE-bench_Lite"
+
+    def write_back(self, *_args, **_kwargs):
+        raise StateContractError("frozen_transfer_writeback_forbidden")
+
+    def target_state(self):
+        """State of the held-out track. It is not a legal parent of an SWE unit."""
+        return {
+            "schema": TARGET_SCHEMA,
+            "source_track": self.origin_track,
+            "target_track": self.target_track,
+            "may_parent_swe": False,
+            "source_sha256": self.source_digest,
+            "division_key": "model_x_role_x_task_type",
+            "non_transferable": ["cell"],
+            "task_family": self.package.get("task_family"),
+            "profiles": copy.deepcopy(self.package.get("profiles")),
+            "observations": copy.deepcopy(self.observations),
+        }
+
+    def assert_source_unchanged(self):
+        current = self.source_path.read_bytes()
+        digest = hashlib.sha256(current).hexdigest()
+        if current != self.source_bytes or digest != self.source_digest:
+            raise StateContractError("frozen_transfer_source_mutated")
+
+
+@contextmanager
+def import_frozen_transfer(source_path, *, target_track, allowed_models):
+    """Load a frozen package into the probe temporary library.
+
+    Not M2 ``persist`` mode. The source file's bytes and hash are checked
+    around the import. ``write_back`` raises and does not open the source
+    for writing. A ProgramBench-targeted package cannot be loaded as an SWE parent.
+    """
+    if target_track not in {"ProgramBench", "SWE-bench_Lite"}:
+        raise StateContractError("unknown_transfer_target")
+    source_path = Path(source_path)
+    if not source_path.is_file():
+        raise StateContractError("frozen_transfer_source_missing")
+    source_bytes = source_path.read_bytes()
+    source_digest = hashlib.sha256(source_bytes).hexdigest()
+    try:
+        package = json.loads(source_bytes.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as error:
+        raise StateContractError("frozen_transfer_source_unreadable") from error
+    validate_transfer_package(package, allowed_models=allowed_models)
+    if target_track in SWE_TRACKS and package.get("task_family") == "program-reconstruction":
+        raise StateContractError("target_learning_state_cannot_parent_swe")
+    reject_cross_benchmark_parent("", target_track, package)
+    envelope = _envelope_from_transfer(package, allowed_models)
+    try:
+        with probe_state_context(envelope, allowed_models=allowed_models) as (conn, adapter_state):
+            library = FrozenTransferLibrary(
+                source_path, source_bytes, source_digest, adapter_state["observations"],
+                package, target_track, conn)
+            library.assert_source_unchanged()
+            yield library
+            library.assert_source_unchanged()
+    finally:
+        current = source_path.read_bytes()
+        if current != source_bytes or hashlib.sha256(current).hexdigest() != source_digest:
+            raise StateContractError("frozen_transfer_source_mutated")

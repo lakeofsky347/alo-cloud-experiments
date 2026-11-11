@@ -332,6 +332,63 @@ def subprocess_docker_runner(argv, timeout_s):
             "timed_out": False}
 
 
+_REVIEW_MERGE_SCRIPT = r"""
+if [ -n "$(ls -A /agent 2>/dev/null)" ]; then
+  tar -C /agent --exclude=.git --exclude=executable -cf - . | tar -C /workspace -xf - || exit 2
+fi
+python3 -c 'import ctypes,os,sys
+libc=ctypes.CDLL("libc.so.6", use_errno=True)
+libc.mount.argtypes=[ctypes.c_char_p,ctypes.c_char_p,ctypes.c_char_p,ctypes.c_ulong,ctypes.c_char_p]
+libc.mount.restype=ctypes.c_int
+MS_BIND,MS_REC,MS_RDONLY,MS_REMOUNT=4096,16384,1,32
+path=os.fsencode("/workspace")
+if libc.mount(path, path, None, MS_BIND|MS_REC, None)!=0:
+    sys.stderr.write("review_merge_tree_not_readonly\n"); sys.exit(2)
+if libc.mount(path, path, None, MS_BIND|MS_REC|MS_REMOUNT|MS_RDONLY, None)!=0:
+    sys.stderr.write("review_merge_tree_not_readonly\n"); sys.exit(2)
+' || { echo review_merge_tree_not_readonly >&2; exit 2; }
+exec setpriv --inh-caps -all --ambient-caps -all --bounding-set -all --reuid=__UID__ --regid=__GID__ -- "$@"
+"""
+
+
+def _readonly_merge_command(command):
+    """Lock the populated merge tree before the review command runs.
+
+    Setup may hold ``SYS_ADMIN`` long enough to remount ``/workspace``.
+    The review command itself is exec'd through ``setpriv`` with every
+    capability cleared. If the remount fails, the command is not started.
+    Nothing is copied back onto the snapshot.
+    """
+    command = list(command)
+    if "--cap-drop=ALL" not in command or "sh" not in command:
+        raise ProtocolError("review_merge_workspace_not_readonly")
+    drop = command.index("--cap-drop=ALL")
+    for cap in ("--cap-add=CHOWN", "--cap-add=SETGID", "--cap-add=SETUID", "--cap-add=SYS_ADMIN"):
+        if cap not in command:
+            command.insert(drop + 1, cap)
+    uid, gid = str(os.getuid()), str(os.getgid())
+    if "--user" in command:
+        index = command.index("--user")
+        spec = command[index + 1]
+        if not isinstance(spec, str) or ":" not in spec:
+            raise ProtocolError("review_merge_workspace_not_readonly")
+        uid, gid = spec.split(":", 1)
+        del command[index:index + 2]
+    shell = command.index("sh")
+    if command[shell + 1] != "-c" or "tar -C /agent" not in command[shell + 2]:
+        raise ProtocolError("review_merge_workspace_not_readonly")
+    if "tar -C /workspace" not in command[shell + 2]:
+        raise ProtocolError("review_merge_workspace_not_readonly")
+    command[shell + 2] = _REVIEW_MERGE_SCRIPT.replace("__UID__", uid).replace("__GID__", gid)
+    # Inbound populate uses `tar -C /workspace -xf`. The copy-back uses
+    # `tar -C /workspace --exclude` and must not remain.
+    if ("tar -C /workspace --exclude" in command[shell + 2]
+            or "review_merge_tree_not_readonly" not in command[shell + 2]
+            or "MS_RDONLY" not in command[shell + 2]):
+        raise ProtocolError("review_merge_workspace_not_readonly")
+    return command
+
+
 def _image_ok(image):
     return isinstance(image, str) and bool(image) and not image.startswith("-") and not any(ch.isspace() for ch in image)
 
@@ -472,6 +529,9 @@ class DockerSandbox:
 
         The live workspace is not mounted. ``--cap-drop=ALL`` stays. A reviewer
         command therefore cannot write the implementation and then measure it.
+        Merge mode normally copies ``/agent`` into a writable image ``/workspace``
+        and copies edits back. Review populates that tree and remounts it
+        read-only before the command, and it does not copy the result back.
         """
         command = self.docker_argv(argv)
         snapshot = Path(snapshot).resolve()
@@ -483,6 +543,8 @@ class DockerSandbox:
                 if ",readonly" not in item:
                     item += ",readonly"
             rewritten.append(item)
+        if self.merge_image_workspace:
+            rewritten = _readonly_merge_command(rewritten)
         if not any(str(snapshot) in item and "readonly" in item for item in rewritten):
             raise ProtocolError("review_snapshot_not_mounted")
         if any(f"src={live}" in item for item in rewritten):

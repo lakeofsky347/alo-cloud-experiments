@@ -9,6 +9,7 @@ resumed process reopens the same file and does not clear it.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import json
 import os
@@ -186,7 +187,7 @@ def dry_run_sender(url, body, headers):
 
 
 def _build_adapter(unit, user_preference=None):
-    if unit.arm == "g1-deepseek-flash":
+    if unit.arm in {"g1-deepseek-flash", "g1-glm"}:
         from .r2 import fair_g1_config
         return adapter_for("G1", fair_g1_config(unit))
     if unit.arm in {"g1-main", "g1-strong"}:
@@ -207,6 +208,9 @@ def _build_adapter(unit, user_preference=None):
             "cold_prior": unit.m2_condition == "cold",
             "user_preference": user_preference,
         })
+    if unit.arm in {"g2-learn", "g2-resources"}:
+        from .r2 import learning_g2_config
+        return adapter_for("G2", learning_g2_config(unit))
     if unit.arm == "g3":
         return adapter_for("G3", {
             "role_models": dict(G3_ROLES),
@@ -264,6 +268,14 @@ def _apply_parent(unit, adapter, services, run_dir):
             return "parent_missing"
         try:
             value = json.loads(export_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            return "parent_missing"
+        from .state import reject_cross_benchmark_parent
+        try:
+            reject_cross_benchmark_parent(unit.parent_unit_id, unit.track, value)
+        except StateContractError:
+            raise PilotStopped("target_learning_state_cannot_parent_swe") from None
+        try:
             imported = import_learning_state(
                 services.state_dir / "alo.sqlite3", value, allowed_models=MODEL_POOL, mode="persist")
         except (OSError, ValueError, StateContractError, json.JSONDecodeError):
@@ -271,6 +283,20 @@ def _apply_parent(unit, adapter, services, run_dir):
         adapter.state["observations"] = imported["observations"]
         return None
     return None
+
+
+@contextmanager
+def load_frozen_transfer(source_path, *, target_track, allowed_models=None):
+    """Import a frozen SWE transfer package into a temporary library.
+
+    This is not ``_apply_parent`` persist mode. The source file is not
+    written. A ProgramBench target state cannot parent an SWE unit.
+    """
+    from .state import import_frozen_transfer
+    models = MODEL_POOL if allowed_models is None else allowed_models
+    with import_frozen_transfer(
+            source_path, target_track=target_track, allowed_models=models) as library:
+        yield library
 
 
 def _termination_reason(status, reason, outcome):
@@ -1149,13 +1175,24 @@ def _persist_compact(unit, services, adapter, run_dir, record):
     database = services.state_dir / "alo.sqlite3"
     if database.is_file():
         shutil.copy2(database, checkpoint / "alo.sqlite3")
-        from .r2 import LEARNING_EXPORT_ARMS
-        if unit.arm in LEARNING_EXPORT_ARMS and unit.phase == "learning" and unit.m2_condition == "persist":
+        from .r2 import LEARNING_EXPORT_ARMS, TRANSFER_EXPORT_ARMS
+        if (unit.arm in set(LEARNING_EXPORT_ARMS) | set(TRANSFER_EXPORT_ARMS)
+                and unit.phase == "learning" and unit.m2_condition == "persist"):
             try:
+                strip = unit.arm == "g2-resources"
                 exported = export_learning_state(
-                    database, adapter.dump_state(), allowed_models=MODEL_POOL, evidence_id=unit.unit_id)
+                    database, adapter.dump_state(), allowed_models=MODEL_POOL,
+                    evidence_id=unit.unit_id, strip_quality=strip)
                 (checkpoint / "learning_state.json").write_text(
                     json.dumps(exported, ensure_ascii=False), encoding="utf-8")
+                if unit.arm in TRANSFER_EXPORT_ARMS:
+                    from .state import export_transfer_package
+                    family = "program-reconstruction" if unit.track == "ProgramBench" else "swe-repair"
+                    package = export_transfer_package(
+                        adapter.dump_state(), allowed_models=MODEL_POOL,
+                        task_family=family, strip_quality=strip)
+                    (checkpoint / "transfer_package.json").write_text(
+                        json.dumps(package, ensure_ascii=False), encoding="utf-8")
             except (ValueError, OSError) as error:
                 record["learning_export_error"] = type(error).__name__
     workspace = services.workspace.root
