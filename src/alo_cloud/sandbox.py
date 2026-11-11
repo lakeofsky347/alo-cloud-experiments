@@ -347,7 +347,7 @@ if libc.mount(path, path, None, MS_BIND|MS_REC, None)!=0:
 if libc.mount(path, path, None, MS_BIND|MS_REC|MS_REMOUNT|MS_RDONLY, None)!=0:
     sys.stderr.write("review_merge_tree_not_readonly\n"); sys.exit(2)
 ' || { echo review_merge_tree_not_readonly >&2; exit 2; }
-exec setpriv --inh-caps -all --ambient-caps -all --bounding-set -all --reuid=__UID__ --regid=__GID__ -- "$@"
+exec setpriv --clear-groups --inh-caps -all --ambient-caps -all --bounding-set -all --reuid=__UID__ --regid=__GID__ -- "$@"
 """
 
 
@@ -356,7 +356,9 @@ def _readonly_merge_command(command):
 
     Setup may hold ``SYS_ADMIN`` long enough to remount ``/workspace``.
     The review command itself is exec'd through ``setpriv`` with every
-    capability cleared. If the remount fails, the command is not started.
+    capability cleared and supplementary groups cleared. ``--regid`` is
+    rejected unless a group option is present. If the remount fails, the
+    command is not started.
     Nothing is copied back onto the snapshot.
     """
     command = list(command)

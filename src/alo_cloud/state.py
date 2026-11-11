@@ -165,7 +165,9 @@ def export_learning_state(db_path, adapter_state, *, allowed_models,
 
     ``strip_quality=True`` is the resources-only export mode. Quality fields
     are removed here, after validation, so a caller that forgets to delete
-    ``credited_quality`` or ``quality_after`` still cannot emit them.
+    ``credited_quality`` or ``quality_after`` still cannot emit them. Belief
+    and TMS rows are quality posteriors, so that mode omits them as well and
+    the next task stays on the common prior.
     """
     policy = _policy(allowed_models, allowed_topics, allowed_cells)
     models, topics, cells = map(set, (policy["model_pool"], policy["topics"], policy["cells"]))
@@ -179,6 +181,9 @@ def export_learning_state(db_path, adapter_state, *, allowed_models,
         conn.close()
     belief = [r for r in all_belief if r["model_id"] in models and r["cell"] in cells]
     tms = [r for r in all_tms if r["model_id"] in models and r["topic"] in topics]
+    if strip_quality:
+        belief = []
+        tms = []
     observations = {}
     source_observations = adapter_state.get("observations", {})
     if not isinstance(source_observations, dict) or set(source_observations) - models:

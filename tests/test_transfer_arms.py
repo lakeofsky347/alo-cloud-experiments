@@ -20,7 +20,7 @@ from alo_cloud.r2 import (
 from alo_cloud.run import _build_adapter, _apply_parent, load_frozen_transfer
 from alo_cloud.state import (
     QUALITY_OBSERVATION_FIELDS, StateContractError, export_learning_state,
-    export_transfer_package, reject_cross_benchmark_parent,
+    export_transfer_package, import_learning_state, reject_cross_benchmark_parent,
 )
 from tests.test_adapters import ScriptedServices, alo
 
@@ -182,6 +182,60 @@ def test_resources_arm_keeps_resource_rows_and_strips_quality_on_export(tmp_path
     assert kept["requests"] == 1
     assert kept["cost_cny"] == 4.0
     assert kept["topics"] == ["coding"]
+
+
+def test_resources_only_keeps_the_quality_prior_and_drops_native_counts(tmp_path):
+    learned_dir = tmp_path / "learned"
+    learned_dir.mkdir()
+    learned = ScriptedServices(learned_dir, criterion="pass")
+    trained = alo(planner_model="deepseek-flash")
+    trained.run_stage({"prompt": "public task"}, learned)
+    org = Organization(str(learned_dir / "alo.sqlite3"))
+    assert org.conn.execute("SELECT count(*) FROM belief").fetchone()[0] > 0
+    org.conn.close()
+
+    quiet_dir = tmp_path / "quiet"
+    quiet_dir.mkdir()
+    quiet = ScriptedServices(quiet_dir, criterion="pass")
+    held = alo(planner_model="deepseek-flash", learn_quality=False, filter_resources_by_topics=True,
+               export_mode="resources")
+    held.run_stage({"prompt": "public task"}, quiet)
+    org = Organization(str(quiet_dir / "alo.sqlite3"))
+    assert org.conn.execute("SELECT count(*) FROM belief").fetchone()[0] == 0
+    assert org.conn.execute("SELECT count(*) FROM tms_outcomes").fetchone()[0] == 0
+    org.conn.close()
+    assert held.state["observations"]
+    assert held.state["observations"][next(iter(held.state["observations"]))][0]["requests"] is not None
+
+    source = tmp_path / "posterior.sqlite3"
+    org = Organization(str(source))
+    cell = "type=debugging|complexity=na|uncertainty=na"
+    for _ in range(10):
+        org.belief.update_objective("deepseek-flash", cell, True)
+    org.tms.record_outcome("deepseek-flash", ("coding",), True)
+    org.conn.close()
+    payload = {"observations": {"deepseek-flash": [_quality_row(1.0, ["coding"], cost=4.0)]}}
+    full = export_learning_state(source, payload, allowed_models=MODEL_POOL)
+    assert full["belief"][0]["alpha"] == 11 and full["belief"][0]["beta"] == 1
+    assert full["tms_outcomes"]
+    stripped = export_learning_state(source, payload, allowed_models=MODEL_POOL, strip_quality=True)
+    assert stripped["belief"] == []
+    assert stripped["tms_outcomes"] == []
+    assert stripped["audit"]["excluded_belief_rows"] == len(full["belief"]) + full["audit"]["excluded_belief_rows"]
+    assert "credited_quality" not in json.dumps(stripped["observations"])
+    assert stripped["observations"]["deepseek-flash"][0]["cost_cny"] == 4.0
+    imported = import_learning_state(tmp_path / "next.sqlite3", stripped, allowed_models=MODEL_POOL)
+    restored = Organization(str(tmp_path / "next.sqlite3"))
+    policy = ConstrainedThompsonPolicy(
+        imported["observations"], lambda model: {"requests": 100, "tokens": 100000, "seconds": 1000, "cny": 50},
+        learn_quality=False)
+    _selected, trace = policy.select(
+        restored, {}, ["deepseek-flash"], cell, ("coding",), "user", random.Random(0))
+    score = trace["scores"]["deepseek-flash"]
+    assert score["quality_source"] == "native_local_bernoulli_prior"
+    assert score["quality_alpha"] == 1 and score["quality_beta"] == 1
+    assert score["resource_prediction"]["cny"] == 5.0
+    restored.conn.close()
 
 
 def test_glm_control_uses_the_fair_lock_and_fixed_model_is_a_parameter(tmp_path):

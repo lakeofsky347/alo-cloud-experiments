@@ -109,6 +109,8 @@ def test_merge_review_locks_the_populated_tree_and_does_not_copy_back(tmp_path):
     assert "tar -C /workspace --exclude" not in rendered
     assert "--cap-add=SYS_ADMIN" in argv
     assert "--cap-drop=ALL" in argv
+    assert "--clear-groups" in rendered
+    assert "--regid=" in rendered
     normal = "\n".join(sandbox.docker_argv(["./executable"]))
     assert "tar -C /workspace" in normal
     assert "--read-only" not in sandbox.docker_argv(["./executable"])

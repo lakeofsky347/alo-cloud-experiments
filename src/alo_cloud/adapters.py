@@ -529,7 +529,11 @@ class HeterogeneousALO:
             if probe_dir is not None:
                 probe_dir.cleanup()
             raise
-        learn = lambda: self.config["organization_updates"] and last.get("local_contract_status") in {"pass", "fail"}
+        learn = lambda: (
+            self.config["organization_updates"]
+            and self.config.get("learn_quality", True)
+            and last.get("local_contract_status") in {"pass", "fail"}
+        )
         org.belief, org.tms = _BeliefGate(org.belief, learn), _TMSGate(org.tms, learn)
         for role, assignment in self.state.get("assignments", {}).items():
             org._assignments[role] = Assignment(**assignment)
