@@ -171,6 +171,8 @@ def _reasoning_tokens(usage, completion):
 
 # Fold '.', '_' and '-' into one separator. A vendor prefix is the text up to
 # the last '/' (and a trailing ':' segment, which older responses also used).
+# 'p' is not a separator. Foxrouter's kimi-k3p1-pro is an accepted alias on
+# the Kimi model, not a general spelling of 3.1.
 _MODEL_SEPARATORS = re.compile(r"[._-]+")
 # One trailing snapshot tag. 8 digits are tried before 4 so a date is not cut in half.
 _SNAPSHOT_SUFFIX = re.compile(r"-(?:latest|preview|\d{8}|\d{4})$")

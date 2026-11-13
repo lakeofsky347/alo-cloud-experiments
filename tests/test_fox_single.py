@@ -628,7 +628,11 @@ def _gateway_call(model, returned, usage=None, content='{"final":"ok"}'):
 
 def test_gateway_model_ids_accept_cosmetic_aliases_and_reject_other_models():
     assert r2_freeze_sha256() == FROZEN_R2
-    assert all(row.accepted_aliases == () for row in FOX_MODELS)
+    kimi = resolve_model("fox/kimi-k3.1-pro")
+    assert kimi.accepted_aliases == ("kimi-k3p1-pro",)
+    assert all(
+        row.accepted_aliases == ()
+        for row in FOX_MODELS if row.internal != "fox/kimi-k3.1-pro")
     accepted = (
         ("fox/deepseek-flash", "deepseek-v4.1-flash"),
         ("fox/kimi-k3.1-pro", "kimi-k3-1-pro"),
@@ -719,6 +723,43 @@ def test_gateway_model_ids_accept_cosmetic_aliases_and_reject_other_models():
         FoxModel(
             "fox/glm-5.3-flash", "glm-5.3-flash", "fox/glm-5.3-flash", 128_000,
             accepted_aliases=("",))
+
+
+def test_kimi_k3p1_alias_accepts_only_that_gateway_spelling():
+    """``3p1`` is Kimi's gateway spelling of ``3.1``. ``p`` is not a separator."""
+    assert r2_freeze_sha256() == FROZEN_R2
+    kimi = resolve_model("fox/kimi-k3.1-pro")
+    assert kimi.upstream == "kimi-k3.1-pro"
+    assert kimi.accepted_aliases == ("kimi-k3p1-pro",)
+    qwen = resolve_model("fox/qwen3.8-max")
+    assert qwen.accepted_aliases == ()
+    for returned in ("kimi-k3p1-pro", "fw/kimi-k3p1-pro"):
+        row = _gateway_call(kimi, returned, content='{"final":"ok"}')
+        assert row["ok"] is True, returned
+        assert "failure" not in row
+        assert "model_mismatch" not in row
+        assert row["returned_model"] == returned
+        assert row["upstream_model"] == "kimi-k3.1-pro"
+        assert row["model_alias_normalized"] == {
+            "requested": "kimi-k3.1-pro", "returned": returned}
+        assert model_match_kind(returned, kimi.upstream, kimi.accepted_aliases) == "normalized"
+        assert model_match_kind(returned, kimi.upstream) == "mismatch"
+    for returned in ("kimi-k3p2-pro", "fw/kimi-k3p2-pro"):
+        row = _gateway_call(kimi, returned)
+        assert row["ok"] is False, returned
+        assert row["failure"] == "provider_error"
+        assert row["model_mismatch"] is True
+        assert "model_alias_normalized" not in row
+        assert row["returned_model"] == returned
+        assert model_match_kind(returned, kimi.upstream, kimi.accepted_aliases) == "mismatch"
+    for returned in ("kimi-k3p1-pro", "fw/kimi-k3p1-pro", "qwen3p8-max"):
+        row = _gateway_call(qwen, returned)
+        assert row["ok"] is False, returned
+        assert row["failure"] == "provider_error"
+        assert row["model_mismatch"] is True
+        assert "model_alias_normalized" not in row
+        assert row["upstream_model"] == "qwen3.8-max"
+        assert model_match_kind(returned, qwen.upstream, qwen.accepted_aliases) == "mismatch"
 
 
 def test_rejected_call_usage_stays_in_the_ledger_and_failure_log(tmp_path):

@@ -54,8 +54,11 @@ class FoxModel:
     """One gateway model. ``report_name`` is what summaries print.
 
     ``accepted_aliases`` lists gateway ids that should count as this model even
-    when separator and snapshot normalization would not. The scheduled models
-    leave it empty; observed Foxrouter ids are handled by that normalization.
+    when separator and snapshot normalization would not. Alias comparison still
+    strips a vendor prefix, so one unprefixed entry also accepts ``fw/<id>``.
+    ``p`` is not a separator. ``fox/kimi-k3.1-pro`` lists ``kimi-k3p1-pro``
+    because the gateway returns that spelling of ``3.1``. The other scheduled
+    models leave the tuple empty.
     """
 
     internal: str
@@ -86,7 +89,8 @@ class FoxModel:
 # in reports; the upstream id stays metadata.
 FOX_MODELS = (
     FoxModel("fox/deepseek-flash", "deepseek-v4.1-flash-1017", "deepseek-flash", 128_000),
-    FoxModel("fox/kimi-k3.1-pro", "kimi-k3.1-pro", "fox/kimi-k3.1-pro", 128_000),
+    FoxModel("fox/kimi-k3.1-pro", "kimi-k3.1-pro", "fox/kimi-k3.1-pro", 128_000,
+             accepted_aliases=("kimi-k3p1-pro",)),
     FoxModel("fox/qwen3.8-max", "qwen3.8-max", "fox/qwen3.8-max", 128_000),
     FoxModel("fox/qwen3.8-flash", "qwen3.8-flash", "fox/qwen3.8-flash", 128_000),
     FoxModel("fox/glm-5.3-flash", "glm-5.3-flash", "fox/glm-5.3-flash", 128_000),
