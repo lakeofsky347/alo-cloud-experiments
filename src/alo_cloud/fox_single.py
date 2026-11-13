@@ -52,7 +52,7 @@ from .fox_pool import (
 )
 from .images import swebench_instance_image
 from .prices import charge_if_priced
-from .providers import parse_openai_chat_completion, parse_sse
+from .providers import _same_model, parse_openai_chat_completion, parse_sse
 from .repro import REPRO_CRITERION_ID
 from .run import load_public_payload, stage_for
 from .sandbox import DockerSandbox, SWE_TESTBED_PATH
@@ -62,7 +62,9 @@ from .workspace_prep import resolve_image_head, seed_image_tree
 _BANNED_DIR_NAMES = frozenset({
     "r1", "r2", "r3", "alo-r1-run", "alo-r2-run", "alo-r3-run",
 })
-_STOP_FAILURES = frozenset({"provider_error", "timeout", "context_limit", "budget_cap"})
+_STOP_FAILURES = frozenset({
+    "provider_error", "timeout", "context_limit", "budget_cap", "resource_limit",
+})
 
 
 class FoxStopped(PilotStopped):
@@ -180,15 +182,26 @@ def _decode_payload(raw, upstream):
 
 
 def post_with_retries(model, messages, max_tokens, *, key, sender, timeout_s, sleep, clock,
-                      max_attempts=DEFAULT_MAX_ATTEMPTS, url=FOX_CHAT_URL):
-    """POST one completion. Transient failures are retried and every failure is returned."""
+                      max_attempts=DEFAULT_MAX_ATTEMPTS, max_sends=None, url=FOX_CHAT_URL):
+    """POST one completion. Transient failures are retried and every failure is returned.
+
+    ``max_sends`` is the remaining worker-request allowance. Each HTTP attempt,
+    including a retry, consumes one send. Retries stop when that allowance is gone.
+    """
     if type(max_attempts) is not int or not 1 <= max_attempts <= 8:
         raise FoxStopped("invalid_retry_attempts")
+    if max_sends is not None and (type(max_sends) is not int or max_sends < 1):
+        raise FoxStopped("turn_cap")
+    allowed = max_attempts if max_sends is None else min(max_attempts, max_sends)
+    if allowed < 1:
+        raise FoxStopped("turn_cap")
     body = request_body(model, messages, max_tokens)
     headers = auth_headers(key)
     retries = []
     last = None
-    for attempt in range(1, max_attempts + 1):
+    sends = 0
+    for attempt in range(1, allowed + 1):
+        sends += 1
         status = None
         kind = None
         payload = None
@@ -208,6 +221,8 @@ def post_with_retries(model, messages, max_tokens, *, key, sender, timeout_s, sl
             payload, raw_text = _decode_payload(raw, model.upstream)
             last = {"status": status, "kind": "http", "payload": payload, "raw_text": raw_text}
             if not is_transient_status(status):
+                last["sends"] = sends
+                last["timestamp"] = _stamp(clock())
                 return last, retries, body
             kind = "http"
         retries.append({
@@ -217,8 +232,11 @@ def post_with_retries(model, messages, max_tokens, *, key, sender, timeout_s, sl
             "cloudflare_error": cloudflare_error_code(payload, raw_text),
             "timestamp": _stamp(clock()),
         })
-        if attempt < max_attempts:
+        if attempt < allowed:
             sleep(min(30.0, float(2 ** (attempt - 1))))
+    if isinstance(last, dict):
+        last["sends"] = sends
+        last["timestamp"] = _stamp(clock())
     return last, retries, body
 
 
@@ -243,8 +261,11 @@ def interpret_call(model, sent_messages, max_tokens, result, retries, *, estimat
     usage = payload.get("usage") if isinstance(payload, dict) and isinstance(payload.get("usage"), dict) else None
     raw_usage = json_safe(usage) if isinstance(usage, dict) else None
     text, reasoning_present = _message_text(payload)
+    identity_ok = True
+    if isinstance(payload, dict) and payload.get("model") is not None:
+        identity_ok = _same_model(payload.get("model"), model.upstream)
     parsed = None
-    if isinstance(payload, dict):
+    if isinstance(payload, dict) and identity_ok:
         try:
             parsed = parse_openai_chat_completion(payload, model.upstream)
         except PilotStopped:
@@ -258,7 +279,11 @@ def interpret_call(model, sent_messages, max_tokens, result, retries, *, estimat
         total = parsed["total_tokens"]
         reasoning = parsed["reasoning_tokens"]
         finish = parsed["finish_reason"]
-    elif isinstance(usage, dict):
+        if isinstance(usage, dict):
+            reported_reasoning = reasoning_tokens_of(usage, completion)
+            if reported_reasoning is not None:
+                reasoning = reported_reasoning
+    elif isinstance(usage, dict) and identity_ok:
         if type(usage.get("prompt_tokens")) is int:
             prompt = usage["prompt_tokens"]
         if type(usage.get("completion_tokens")) is int:
@@ -271,7 +296,7 @@ def interpret_call(model, sent_messages, max_tokens, result, retries, *, estimat
         quirk = "completion_tokens_exactly_512"
     status = result.get("status") if isinstance(result, dict) else None
     truncated = suspected_truncation(estimated, prompt) if type(prompt) is int else False
-    parsed_ok = parsed is not None or bool(text) or reasoning_present
+    parsed_ok = identity_ok and (parsed is not None or bool(text) or reasoning_present)
     ok = status == 200 and parsed_ok
     row = {
         "experiment": EXPERIMENT,
@@ -296,8 +321,14 @@ def interpret_call(model, sent_messages, max_tokens, result, retries, *, estimat
         "suspected_truncation": truncated,
         "finish_reason": finish,
         "cloudflare_error": cloudflare_error_code(payload, result.get("raw_text") or "") if isinstance(result, dict) else None,
+        "timestamp": result.get("timestamp") if isinstance(result, dict) else None,
+        "sends": result.get("sends") if isinstance(result, dict) else None,
         "text": text if isinstance(text, str) else "",
     }
+    if not identity_ok:
+        row["ok"] = False
+        row["failure"] = "provider_error"
+        return row
     if status != 200 or parsed is None and not row["text"] and not reasoning_present:
         row["ok"] = False
         row["failure"] = "timeout" if any(item.get("kind") == "timeout" for item in retries) and status is None else "provider_error"
@@ -343,14 +374,34 @@ class FoxServices:
         self._clock = clock or time.monotonic
         self._started = self._clock()
         self._requests = 0
+        self._turns = 0
+        self._tokens = 0
+
+    def _elapsed(self):
+        delta = self._clock() - self._started
+        if hasattr(delta, "total_seconds"):
+            return float(delta.total_seconds())
+        return float(delta)
+
+    def _wall_remaining(self):
+        return float(self.limits.get("seconds", 1200)) - self._elapsed()
+
+    def _tokens_left(self):
+        return int(self.limits.get("tokens", 900_000)) - self._tokens
+
+    def _ensure_runtime(self):
+        if self._wall_remaining() <= 0 or self._tokens_left() <= 0:
+            raise FoxStopped("resource_limit")
 
     def budget_remaining(self, model=None):
         del model
         left = max(0, int(self.limits["requests"]) - self._requests)
-        elapsed = self._clock() - self._started
-        seconds = max(0.0, float(self.limits.get("seconds", 1200)) - elapsed)
         # No CNY field. A missing list price must not look like a zero balance.
-        return {"requests": left, "tokens": int(self.limits.get("tokens", 900_000)), "seconds": seconds}
+        return {
+            "requests": left,
+            "tokens": max(0, self._tokens_left()),
+            "seconds": max(0.0, self._wall_remaining()),
+        }
 
     def _budget_blocked(self):
         if self.budget_cap is None:
@@ -362,7 +413,9 @@ class FoxServices:
             raise FoxStopped("model_outside_fox_pool")
         if self._budget_blocked():
             raise FoxStopped("budget_cap")
-        if self._requests >= self.limits["requests"]:
+        self._ensure_runtime()
+        remaining_sends = int(self.limits["requests"]) - self._requests
+        if remaining_sends < 1:
             raise FoxStopped("turn_cap")
         sent_max = self.settings["max_tokens"] if max_tokens >= 4096 else max_tokens
         if type(sent_max) is not int or sent_max < 1:
@@ -389,8 +442,18 @@ class FoxServices:
                 **context,
             })
             raise FoxStopped("context_limit")
-        self._requests += 1
-        result, retries = self.transport(self.model_spec, prepared, sent_max)
+        if context["estimated_prompt_tokens"] > self._tokens_left():
+            raise FoxStopped("resource_limit")
+        self._turns += 1
+        try:
+            result, retries = self.transport(
+                self.model_spec, prepared, sent_max, max_sends=remaining_sends)
+        except TypeError:
+            result, retries = self.transport(self.model_spec, prepared, sent_max)
+        sends = result.get("sends") if isinstance(result, dict) else None
+        if type(sends) is not int or sends < 1:
+            sends = 1 + len(retries or [])
+        self._requests += sends
         row = interpret_call(
             self.model_spec, prepared, sent_max, result, retries,
             estimated=context["estimated_prompt_tokens"])
@@ -398,6 +461,13 @@ class FoxServices:
         amount = numeric_amount(row.get("cost"))
         if amount is not None:
             self.spent_cost += amount
+        used = row.get("total_tokens")
+        if type(used) is not int:
+            prompt_n, completion_n = row.get("prompt_tokens"), row.get("completion_tokens")
+            if type(prompt_n) is int and type(completion_n) is int:
+                used = prompt_n + completion_n
+        if type(used) is int and used > 0:
+            self._tokens += used
         self.calls.append(row)
         if not row.get("ok"):
             failure = row.get("failure") or "provider_error"
@@ -417,6 +487,7 @@ class FoxServices:
         return any(row.get("paths") for row in self.edit_log)
 
     def _tool(self, action):
+        self._ensure_runtime()
         if self.tools >= int(self.limits.get("tools", 120)):
             raise FoxStopped("turn_cap")
         self.tools += 1
@@ -449,8 +520,16 @@ class FoxServices:
         if not isinstance(timeout_s, (int, float)) or isinstance(timeout_s, bool):
             raise ProtocolError("public action timeout must be numeric")
         if timeout_s > 120:
-            return 120, ["timeout clamped to 120"]
-        return timeout_s, []
+            timeout_s = 120
+            notes = ["timeout clamped to 120"]
+        else:
+            notes = []
+        remaining = self._wall_remaining()
+        if remaining <= 0:
+            raise FoxStopped("resource_limit")
+        if timeout_s > remaining:
+            return remaining, notes + ["timeout clamped to remaining unit seconds"]
+        return timeout_s, notes
 
     def command(self, argv, timeout_s=30):
         if self.sandbox is None:
@@ -798,7 +877,7 @@ def _transport_for(*, live, sender, timeout_s, sleep, clock, max_attempts):
     if live and sender is None and not key_configured():
         raise FoxStopped("credential_missing")
 
-    def transport(model, messages, max_tokens):
+    def transport(model, messages, max_tokens, max_sends=None):
         key = _read_key() if live and sender is None else os.environ.get(FOX_KEY_ENV)
         try:
             if isinstance(key, str) and key:
@@ -810,7 +889,7 @@ def _transport_for(*, live, sender, timeout_s, sleep, clock, max_attempts):
                 result, retries, _body = post_with_retries(
                     model, messages, max_tokens, key=key if isinstance(key, str) else "",
                     sender=post, timeout_s=timeout_s, sleep=sleep, clock=clock,
-                    max_attempts=max_attempts)
+                    max_attempts=max_attempts, max_sends=max_sends)
             except FoxStopped:
                 raise
             except (OSError, urllib.error.URLError) as error:
@@ -829,14 +908,60 @@ def _transport_for(*, live, sender, timeout_s, sleep, clock, max_attempts):
     return transport
 
 
+_MANIFEST_LOCKED = (
+    "split", "turn_cap", "max_attempts", "criterion_id", "protocol_id",
+    "context_policy", "budget_cap", "dataset_revision", "live",
+)
+
+
+def _same_manifest_value(left, right):
+    if left == right:
+        return True
+    if numeric_amount(left) is not None and numeric_amount(right) is not None:
+        return numeric_amount(left) == numeric_amount(right)
+    return False
+
+
+def _merge_manifest(existing, payload):
+    """Keep the recorded schedule. A resume may add units, not relabel finished ones."""
+    if existing.get("experiment") != EXPERIMENT:
+        raise FoxStopped("fox_run_dir_experiment_mismatch")
+    for key in _MANIFEST_LOCKED:
+        if key in existing and not _same_manifest_value(existing.get(key), payload.get(key)):
+            raise FoxStopped("fox_run_settings_mismatch")
+    known = {row.get("internal_model"): row for row in existing.get("models") or [] if isinstance(row, dict)}
+    merged_models = list(existing.get("models") or [])
+    for row in payload.get("models") or []:
+        if not isinstance(row, dict):
+            continue
+        previous = known.get(row.get("internal_model"))
+        if previous is None:
+            merged_models.append(row)
+            continue
+        for field in ("upstream_model", "report_model", "context_token_cap", "max_tokens"):
+            if field in previous and previous.get(field) != row.get(field):
+                raise FoxStopped("fox_run_settings_mismatch")
+    instances = list(existing.get("instances") or [])
+    for instance_id in payload.get("instances") or []:
+        if instance_id not in instances:
+            instances.append(instance_id)
+    payload = dict(payload)
+    payload["models"] = merged_models
+    payload["instances"] = instances
+    payload["units"] = max(
+        int(existing.get("units") or 0),
+        len(merged_models) * len(instances),
+    )
+    return payload
+
+
 def _write_manifest(run_dir, payload):
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
     path = run_dir / "manifest.json"
     if path.is_file():
         existing = json.loads(path.read_text(encoding="utf-8"))
-        if existing.get("experiment") != EXPERIMENT:
-            raise FoxStopped("fox_run_dir_experiment_mismatch")
+        payload = _merge_manifest(existing, payload)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
@@ -951,6 +1076,8 @@ def run_schedule(run_dir, *, split, models="all", limit=None, instance_ids=None,
                         "unit_id": record["unit_id"],
                         "kind": call["failure"],
                         "http_status": call.get("http_status"),
+                        "cloudflare_error": call.get("cloudflare_error"),
+                        "timestamp": call.get("timestamp"),
                         "suspected_truncation": bool(call.get("suspected_truncation")),
                     })
             if record.get("failure"):
@@ -1090,6 +1217,8 @@ def aggregate_report(records, calls):
             "split": record.get("split"),
             "instances": 0,
             "resolved": 0,
+            "scored": 0,
+            "unscored": 0,
             "prompt_tokens": 0,
             "completion_tokens": 0,
             "reasoning_tokens": 0,
@@ -1104,6 +1233,11 @@ def aggregate_report(records, calls):
         bucket["instances"] += 1
         if record.get("resolved") is True:
             bucket["resolved"] += 1
+            bucket["scored"] += 1
+        elif record.get("resolved") is False:
+            bucket["scored"] += 1
+        else:
+            bucket["unscored"] += 1
         for token_key in ("prompt_tokens", "completion_tokens"):
             if type(record.get(token_key)) is int:
                 bucket[token_key] += record[token_key]
@@ -1134,7 +1268,18 @@ def aggregate_report(records, calls):
             bucket["reasoning_tokens"] = None
         bucket.pop("reasoning_tokens_reported", None)
         instances = bucket["instances"]
-        bucket["resolved_rate"] = (bucket["resolved"] / instances) if instances else None
+        scored = bucket["scored"]
+        unscored = bucket["unscored"]
+        # A rate is a score only when every attempted instance was actually evaluated.
+        if instances and unscored == 0:
+            bucket["resolved_rate"] = bucket["resolved"] / instances
+        else:
+            bucket["resolved_rate"] = None
+        bucket["resolved_rate_bounds"] = {
+            "lower": (bucket["resolved"] / instances) if instances else None,
+            "upper": ((bucket["resolved"] + unscored) / instances) if instances else None,
+            "label": "measured" if unscored == 0 else "estimate_bounds",
+        }
         bucket["cost_units"] = "as_returned"
         rows.append(bucket)
     del calls

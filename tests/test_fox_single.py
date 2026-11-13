@@ -257,7 +257,7 @@ def test_raw_usage_cost_and_suspected_truncation_are_recorded():
     services = FoxServices(
         Path("/tmp") / "fox-trunc-should-not-persist", mimo,
         settings=model_settings(mimo), transport=transport,
-        limits={"requests": 2, "tokens": 1000, "tools": 2, "seconds": 30})
+        limits={"requests": 2, "tokens": 100_000, "tools": 2, "seconds": 30})
     services.complete_for_model(
         mimo.internal, [{"role": "user", "content": "y" * 40_000}], max_tokens=4096)
     assert seen["max_tokens"] == 16384
@@ -479,6 +479,108 @@ def test_resume_keeps_the_recorded_budget(tmp_path):
     lines = (run_dir / "records.jsonl").read_text(encoding="utf-8").splitlines()
     assert len(lines) == 1
     assert json.loads(lines[0])["raw_cost_sum"] == 1
+
+
+def test_review_fixes_for_identity_limits_resume_and_unknown_scores(tmp_path):
+    model = resolve_model("fox/glm-5.3-flash")
+    usage = {"prompt_tokens": 8, "completion_tokens": 512, "total_tokens": 520, "reasoning_tokens": 520}
+    good = _completion(model.upstream, "hi", usage)
+    row = interpret_call(model, [], 16384, {"status": 200, "payload": good, "raw_text": ""}, [], estimated=8)
+    assert row["ok"] is True
+    assert row["reasoning_tokens"] == 520
+    foreign = _completion("some-other-model", "hi", usage)
+    rejected = interpret_call(
+        model, [], 16384, {"status": 200, "payload": foreign, "raw_text": ""}, [], estimated=8)
+    assert rejected["ok"] is False
+    assert rejected["failure"] == "provider_error"
+    aliased = _completion("vendor/glm-5.3-flash", "hi", usage)
+    assert interpret_call(
+        model, [], 16384, {"status": 200, "payload": aliased, "raw_text": ""}, [], estimated=8)["ok"] is True
+
+    attempts = {"n": 0}
+
+    def always_fail(url, body, headers, timeout_s):
+        del url, body, headers, timeout_s
+        attempts["n"] += 1
+        return 502, b"error code: 520"
+
+    _result, retries, _body = post_with_retries(
+        model, [{"role": "user", "content": "hi"}], 32, key="", sender=always_fail,
+        timeout_s=1, sleep=lambda _n: None, clock=_clock, max_attempts=4, max_sends=2)
+    assert attempts["n"] == 2
+    assert len(retries) == 2
+
+    calls = []
+
+    def transport(spec, messages, max_tokens, max_sends=None):
+        calls.append(max_sends)
+        body = _completion(spec.upstream, '{"final":"x"}', {
+            "prompt_tokens": 6, "completion_tokens": 4, "total_tokens": 10,
+        })
+        return {"status": 200, "payload": body, "raw_text": "", "sends": 1,
+                "timestamp": "2026-11-13T08:00:00Z"}, []
+
+    services = FoxServices(
+        tmp_path / "limits", model, settings=model_settings(model), transport=transport,
+        limits={"requests": 4, "tokens": 10, "tools": 4, "seconds": 30})
+    services.complete_for_model(model.internal, [{"role": "user", "content": "hi"}], max_tokens=32)
+    assert calls == [4]
+    assert services.budget_remaining()["tokens"] == 0
+    with pytest.raises(FoxStopped, match="resource_limit"):
+        services.complete_for_model(model.internal, [{"role": "user", "content": "hi"}], max_tokens=32)
+    assert calls == [4]
+
+    frozen = {"t": 0.0}
+    stalled = FoxServices(
+        tmp_path / "wall", model, settings=model_settings(model), transport=transport,
+        limits={"requests": 4, "tokens": 100, "tools": 4, "seconds": 5},
+        clock=lambda: frozen["t"])
+    frozen["t"] = 6.0
+    with pytest.raises(FoxStopped, match="resource_limit"):
+        stalled.complete_for_model(model.internal, [{"role": "user", "content": "hi"}], max_tokens=32)
+
+    def forbidden(url, body, headers, timeout_s):
+        del url, body, headers, timeout_s
+        return 403, "error code: 1010"
+
+    run_dir = tmp_path / "fail-log"
+    run_schedule(
+        run_dir, split="dev", models=["fox/glm-5.3-flash"], limit=1, live=False,
+        sender=forbidden, turn_cap=2, clock=_clock, sleep=lambda _n: None, seed_images=False)
+    failures = [json.loads(line) for line in (run_dir / "failures.jsonl").read_text().splitlines()]
+    provider = next(row for row in failures if row.get("kind") == "provider_error" and row.get("http_status") == 403)
+    assert provider["cloudflare_error"] == "1010"
+    assert provider["timestamp"] == "2026-11-13T08:00:00Z"
+
+    summary = aggregate_report([
+        {"experiment": EXPERIMENT, "report_model": "deepseek-flash", "split": "dev",
+         "resolved": None, "failure": "eval_unavailable", "prompt_tokens": 1,
+         "completion_tokens": 1, "reasoning_tokens": None, "retries": 0},
+    ], [])
+    group = summary["by_model_split"][0]
+    assert group["unscored"] == 1
+    assert group["resolved_rate"] is None
+    assert group["resolved_rate_bounds"]["lower"] == 0
+    assert group["resolved_rate_bounds"]["upper"] == 1
+    assert group["resolved_rate_bounds"]["label"] == "estimate_bounds"
+
+    broad = tmp_path / "schedule"
+    kwargs = dict(
+        split="dev", models=["fox/deepseek-flash"], live=False, turn_cap=2,
+        clock=_clock, sleep=lambda _n: None, seed_images=False,
+        sender=lambda url, body, headers, timeout_s: (
+            200, _completion(body["model"], '{"final":"noop"}',
+                             {"prompt_tokens": 2, "completion_tokens": 2, "total_tokens": 4})),
+    )
+    run_schedule(broad, limit=2, **kwargs)
+    manifest = json.loads((broad / "manifest.json").read_text(encoding="utf-8"))
+    assert len(manifest["instances"]) == 2
+    run_schedule(broad, limit=1, **kwargs)
+    kept = json.loads((broad / "manifest.json").read_text(encoding="utf-8"))
+    assert kept["instances"] == manifest["instances"]
+    assert kept["units"] >= 2
+    with pytest.raises(FoxStopped, match="fox_run_settings_mismatch"):
+        run_schedule(broad, limit=1, turn_cap=9, **{k: v for k, v in kwargs.items() if k != "turn_cap"})
 
 
 def test_image_seed_does_not_delete_or_prune_images(tmp_path):

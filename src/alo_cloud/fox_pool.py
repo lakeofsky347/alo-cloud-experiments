@@ -44,6 +44,7 @@ FAILURE_TAXONOMY = (
     "budget_cap",
     "payload_missing",
     "image_unavailable",
+    "resource_limit",
 )
 _CF_ERROR = re.compile(r"error code:\s*(\d+)", re.IGNORECASE)
 
