@@ -96,6 +96,18 @@ def verified_models():
     return tuple(model for model, row in PRICE_TABLE.items() if row.get("verified"))
 
 
+def charge_if_priced(model, usage):
+    """Charge a verified list price, or return None when the model has none.
+
+    Foxrouter models are not in ``PRICE_TABLE``. Callers that must keep going
+    without a CNY price use this. ``charge_microcny`` still refuses them.
+    """
+    row = PRICE_TABLE.get(model)
+    if not row or not row.get("verified"):
+        return None
+    return charge_microcny(model, usage)
+
+
 def _rates(model):
     row = PRICE_TABLE.get(model)
     if not row or not row.get("verified"):

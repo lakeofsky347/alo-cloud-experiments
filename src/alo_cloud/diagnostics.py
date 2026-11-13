@@ -48,7 +48,7 @@ def diagnostics_directory(ledger):
 
 def _secrets():
     found = []
-    for name in ("DEEPSEEK_API_KEY", "MIMO_API_KEY", "ZAI_API_KEY"):
+    for name in ("DEEPSEEK_API_KEY", "MIMO_API_KEY", "ZAI_API_KEY", "FOXROUTER_API_KEY"):
         value = os.environ.get(name)
         if isinstance(value, str) and value:
             found.append(value)

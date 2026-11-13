@@ -730,13 +730,19 @@ def test_harness_cwd_is_inside_the_run_dir(tmp_path, monkeypatch):
 
 
 def test_repository_text_does_not_call_the_model_by_a_snapshot_suffix():
+    """Direct-pool text must not name a snapshot suffix.
+
+    Foxrouter's DeepSeek upstream id is exactly ``deepseek-v4.1-flash-1017``.
+    That full id is allowed. A bare ``v4.1`` suffix is still rejected.
+    """
     root = Path(__file__).resolve().parents[1]
     needles = ("V4.1", "v4.1")
+    allowed = "deepseek-v4.1-flash-1017"
     for folder in ("src", "docs", "scripts"):
         for path in (root / folder).rglob("*"):
             if not path.is_file() or path.suffix not in {".py", ".md", ".sh", ".yml"}:
                 continue
-            text = path.read_text(encoding="utf-8")
+            text = path.read_text(encoding="utf-8").replace(allowed, "")
             for needle in needles:
                 assert needle not in text, path
 

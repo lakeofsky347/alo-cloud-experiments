@@ -31,7 +31,7 @@ _BINARY_SUFFIXES = {
     ".bz2", ".xz", ".7z", ".whl", ".jar", ".so", ".o", ".a", ".pyc", ".pyo", ".exe",
     ".bin", ".dylib", ".dll", ".class", ".wasm",
 }
-CREDENTIAL_ENV_NAMES = ("DEEPSEEK_API_KEY", "MIMO_API_KEY", "ZAI_API_KEY")
+CREDENTIAL_ENV_NAMES = ("DEEPSEEK_API_KEY", "MIMO_API_KEY", "ZAI_API_KEY", "FOXROUTER_API_KEY")
 DEFAULT_SANDBOX_MEMORY = "4g"
 DEFAULT_SANDBOX_PIDS = "512"
 DEFAULT_SANDBOX_TMPFS = "1g"
