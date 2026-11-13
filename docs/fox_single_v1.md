@@ -33,63 +33,76 @@ HTTP 429, 502, 503, 504, 520–524, timeouts, and connection resets are retried 
 
 SWE-bench Lite revision `6ec7bb89b9342f664a54a6e0a6ea6501d3437cc2`.
 
-| Split | Instances | Units with all 6 models |
-| --- | ---: | ---: |
-| `dev` | 23 | 138 |
-| `test` | 300 | 1800 |
-| `both` | 323 | 1938 |
+The first run is the **dev** split: 23 instances × 6 models = 138 units. `--split` defaults to `dev`. The test split (300) is deferred and stays selectable with `--split test`.
 
-`dev` is the official Lite development split (the 23 ids are in `alo_cloud.fox_pool.SWEBENCH_LITE_DEV`). `test` is the 300 ids already in `SWEBENCH_LITE_FRAME`. They do not overlap. Best-single can later be locked on `dev`. The commands below do not start that full grid by themselves: pass `--all`, `--limit`, or `--instance-ids`.
+| Split | Instances | Units with all 6 models | This run |
+| --- | ---: | ---: | --- |
+| `dev` (default) | 23 | 138 | first run |
+| `test` | 300 | 1800 | deferred |
+| `both` | 323 | 1938 | not scheduled |
+
+`dev` is the official Lite development split (the 23 ids are in `alo_cloud.fox_pool.SWEBENCH_LITE_DEV`). `test` is the 300 ids already in `SWEBENCH_LITE_FRAME`. They do not overlap. Best-single can later be locked on `dev`. A full grid still needs `--all`. `--limit` and `--instance-ids` select a smaller set. Instance ids from `test` need `--split test` or `--split both`, because the default split is `dev`.
 
 The agent is the existing G1 single-model loop: same public tools, `repro-v1`, `fair-control-v1`, `max_attempts=1`. Default `--turn-cap` is 24, the fair-control M1 request cap. Smoke uses 4 unless you pass another cap. The resolved bit in the summary is the SWE-bench harness result, not the repro-v1 signal. Both are stored.
 
 ## Commands
 
-Estimate, no API call:
+Estimate, no API call. The first command is the scheduled dev grid (138). The test line is only a size check:
 
 ```sh
-python -m alo_cloud.fox_single estimate --split dev --all
+python -m alo_cloud.fox_single estimate --all
 python -m alo_cloud.fox_single estimate --split test --all
-python -m alo_cloud.fox_single estimate --split dev --limit 5 --models fox/deepseek-flash
+python -m alo_cloud.fox_single estimate --limit 5 --models fox/deepseek-flash
 ```
 
-`units` in that JSON is models × instances.
+`units` in that JSON is models × instances. `--all` with no `--split` is dev.
+
+After a dev run, extrapolate a test-300 cost from the observed per-instance tokens and raw cost/credit. The block is labeled `estimate`. It is not a measurement of the test split. Each model is mean ± sample standard deviation per instance; the test-300 total is that mean times 300, and the spread is the standard deviation times 300 (not a confidence interval):
+
+```sh
+python -m alo_cloud.fox_single estimate --from-run-dir /tmp/fox-single-v1
+python -m alo_cloud.fox_single report --run-dir /tmp/fox-single-v1
+```
+
+`report` writes the same `test_300_extrapolation` object into `summary.json`.
 
 Stage public task JSON at `$FOX_DATA_DIR/SWE-bench_Lite/<instance_id>.json` (problem statement, repo, `base_commit`). Gold patches and tests are stripped if they are present. Do not put the API key in those files.
 
-Smoke on a machine that already has Docker, the SWE-bench instance images, `swebench==4.1.0`, and the key. One instance, one model:
+The run machine already has the official images `swebench/sweb.eval.x86_64.<instance>:latest` (Docker 29, Python 3.12 via uv, `swebench==4.1.0`). fox-single copies `/testbed` out of a local image with `docker create` and `docker cp`, then removes only that temporary container. It does not `docker pull`, `docker rmi`, `docker image rm`, or any `docker` `prune` (including `docker image prune` and `docker system prune`).
+
+Smoke, one dev instance, one model:
 
 ```sh
 export FOXROUTER_API_KEY=...
 python -m alo_cloud.fox_single smoke --live --execute \
   --run-dir /tmp/fox-single-v1-smoke \
   --data-dir "$FOX_DATA_DIR" \
-  --split dev --limit 1 \
+  --limit 1 \
   --models fox/deepseek-flash
 ```
 
-Two instances, every fox model:
+Two dev instances, every fox model:
 
 ```sh
 python -m alo_cloud.fox_single smoke --live --execute \
   --run-dir /tmp/fox-single-v1-smoke \
   --data-dir "$FOX_DATA_DIR" \
-  --split dev --limit 2 \
+  --limit 2 \
   --models all
 ```
 
-A larger run is explicit. This example is the full dev split, not a default:
+The first full run is the default dev split (138 units). `--all` is what selects all 23 instances; omitting `--split` still means dev:
 
 ```sh
 python -m alo_cloud.fox_single run --live --execute \
   --run-dir /tmp/fox-single-v1 \
   --data-dir "$FOX_DATA_DIR" \
-  --split dev --all \
+  --all \
   --models all \
   --turn-cap 24
 ```
 
-Swap `--split test --all` for the 300-instance split (1800 units). Add `--budget-cap N` only if you want a stop on summed raw `cost`. Add `--context-cap fox/mimo-v2.6-flash=50000` to lower that model's cap. `--context-policy trim` compacts instead of failing the call.
+`--split test --all` remains available later (1800 units) and is not this run. Add `--budget-cap N` only if you want a stop on summed raw `cost`. Add `--context-cap fox/mimo-v2.6-flash=50000` to lower that model's cap. `--context-policy trim` compacts instead of failing the call.
 
 Report:
 

@@ -27,9 +27,11 @@ from .fox_pool import (
     DEFAULT_MAX_ATTEMPTS,
     DEFAULT_READ_TIMEOUT_S,
     DEFAULT_TURN_CAP,
+    DEFAULT_SPLIT,
     EXPERIMENT,
     FAILURE_TAXONOMY,
     FOX_CHAT_URL,
+    TEST_EXTRAPOLATION_INSTANCES,
     FOX_KEY_ENV,
     FOX_MODELS,
     apply_context_limit,
@@ -938,6 +940,115 @@ def run_schedule(run_dir, *, split, models="all", limit=None, instance_ids=None,
     return {"experiment": EXPERIMENT, "wrote": len(written), "units": manifest["units"], "run_dir": str(run_dir)}
 
 
+def _usage_number(value):
+    if type(value) is int:
+        return float(value)
+    return numeric_amount(value)
+
+
+def _sample_spread(values):
+    """Mean and sample standard deviation. One observation has spread 0."""
+    nums = [item for item in (_usage_number(value) for value in values) if item is not None]
+    if not nums:
+        return None
+    count = len(nums)
+    mean = sum(nums) / count
+    if count == 1:
+        stdev = 0.0
+    else:
+        variance = sum((item - mean) ** 2 for item in nums) / (count - 1)
+        stdev = variance ** 0.5
+    return {"n": count, "mean": mean, "stdev": stdev, "min": min(nums), "max": max(nums)}
+
+
+def _scale_to_target(stat, instances):
+    if stat is None:
+        return {"available": False, "total_at_mean": None, "spread": None}
+    return {
+        "available": True,
+        "total_at_mean": stat["mean"] * instances,
+        "spread": stat["stdev"] * instances,
+        "per_instance_mean": stat["mean"],
+        "per_instance_stdev": stat["stdev"],
+    }
+
+
+def extrapolate_test_300(records):
+    """Project a 300-instance test split from observed per-instance usage.
+
+    This is an estimate, not a measurement of the test split. For each model,
+    per-instance prompt, completion, and reasoning tokens, plus raw cost and
+    credit, are summarized as mean ± sample standard deviation. The test-300
+    total is that mean times 300. The reported spread is the per-instance
+    standard deviation times 300. It is not a confidence interval.
+    """
+    target = TEST_EXTRAPOLATION_INSTANCES
+    fields = (
+        ("prompt_tokens", "prompt_tokens"),
+        ("completion_tokens", "completion_tokens"),
+        ("reasoning_tokens", "reasoning_tokens"),
+        ("raw_cost", "raw_cost_sum"),
+        ("raw_credit", "raw_credit_sum"),
+    )
+    by_model = {}
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        if record.get("experiment") not in (None, EXPERIMENT):
+            continue
+        name = record.get("report_model")
+        if not isinstance(name, str) or not name:
+            continue
+        bucket = by_model.setdefault(name, {
+            "model": name,
+            "internal_model": record.get("internal_model"),
+            "upstream_model": record.get("upstream_model"),
+            "records": [],
+            "splits": set(),
+            "instance_ids": set(),
+        })
+        bucket["records"].append(record)
+        if isinstance(record.get("split"), str):
+            bucket["splits"].add(record["split"])
+        if isinstance(record.get("instance_id"), str):
+            bucket["instance_ids"].add(record["instance_id"])
+    rows = []
+    order = [model.report_name for model in FOX_MODELS]
+    names = order + [name for name in by_model if name not in order]
+    for name in names:
+        bucket = by_model.get(name)
+        observed = [] if bucket is None else bucket["records"]
+        per_instance = {}
+        projected = {}
+        for label, key in fields:
+            stat = _sample_spread([row.get(key) for row in observed])
+            per_instance[label] = stat
+            projected[label] = _scale_to_target(stat, target)
+        model_row = next((model for model in FOX_MODELS if model.report_name == name), None)
+        rows.append({
+            "model": name,
+            "internal_model": None if bucket is None else bucket["internal_model"],
+            "upstream_model": None if model_row is None else model_row.upstream,
+            "observed_records": len(observed),
+            "observed_instances": 0 if bucket is None else len(bucket["instance_ids"]),
+            "observed_splits": [] if bucket is None else sorted(bucket["splits"]),
+            "per_instance": per_instance,
+            "test_300_estimate": projected,
+        })
+    return {
+        "label": "estimate",
+        "kind": "extrapolation_from_observed_per_instance_usage",
+        "measured_test_split": False,
+        "target_split": "test",
+        "target_instances": target,
+        "method": (
+            "per-instance mean ± sample standard deviation, multiplied by 300. "
+            "Spread is stdev × 300, not a confidence interval."
+        ),
+        "by_model": rows,
+    }
+
+
 def aggregate_report(records, calls):
     """Per report-model × split totals. Raw cost is summed as returned."""
     groups = {}
@@ -1000,12 +1111,14 @@ def aggregate_report(records, calls):
         bucket["cost_units"] = "as_returned"
         rows.append(bucket)
     del calls
-    return {
+    summary = {
         "experiment": EXPERIMENT,
         "schema": "fox-single-v1-summary",
         "prices": "none",
         "by_model_split": rows,
+        "test_300_extrapolation": extrapolate_test_300(records),
     }
+    return summary
 
 
 def write_report(run_dir):
@@ -1048,7 +1161,8 @@ def _parse_max_tokens(value):
 
 
 def _add_selection(parser):
-    parser.add_argument("--split", choices=("dev", "test", "both"))
+    parser.add_argument("--split", choices=("dev", "test", "both"), default=None,
+                        help="SWE-bench Lite split. Default is dev (23). test (300) stays selectable.")
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--instance-ids", nargs="+", default=None)
     parser.add_argument("--all", action="store_true", help="Use every instance in the split. Required for a full run.")
@@ -1057,9 +1171,7 @@ def _add_selection(parser):
 
 
 def _selection_from_args(args, *, default_models):
-    if not args.split and not args.instance_ids:
-        raise FoxStopped("selection_required")
-    split = args.split or "both"
+    split = args.split or DEFAULT_SPLIT
     return split, args.models or default_models, args.limit, args.instance_ids, bool(args.all)
 
 
@@ -1067,8 +1179,10 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="fox-single-v1 SWE-bench Lite baseline. Does not call an API unless --live.")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    estimate = sub.add_parser("estimate", help="Print models × instances. No API call.")
+    estimate = sub.add_parser("estimate", help="Print models × instances, or extrapolate test-300 from a run. No API call.")
     _add_selection(estimate)
+    estimate.add_argument("--from-run-dir", default=None,
+                          help="Extrapolate test-300 cost from observed per-instance usage in this run. Labeled as an estimate.")
 
     run = sub.add_parser("run", help="Run the selected grid.")
     _add_selection(run)
@@ -1107,9 +1221,15 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         if args.command == "estimate":
-            split, models, limit, instance_ids, allow_all = _selection_from_args(args, default_models="all")
-            payload = estimate_size(
-                split=split, models=models, limit=limit, instance_ids=instance_ids, allow_all=allow_all)
+            wants_grid = bool(args.all or args.limit or args.instance_ids or args.split)
+            payload = {"experiment": EXPERIMENT, "api_calls": 0}
+            if args.from_run_dir:
+                rows = _load_jsonl(Path(args.from_run_dir) / "records.jsonl")
+                payload["test_300_extrapolation"] = extrapolate_test_300(rows)
+            if wants_grid or not args.from_run_dir:
+                split, models, limit, instance_ids, allow_all = _selection_from_args(args, default_models="all")
+                payload.update(estimate_size(
+                    split=split, models=models, limit=limit, instance_ids=instance_ids, allow_all=allow_all))
             print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
             return 0
         if args.command == "report":

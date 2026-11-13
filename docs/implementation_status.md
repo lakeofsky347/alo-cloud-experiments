@@ -2,7 +2,7 @@
 
 日期：2026-10-30。2026-11-01 增加了 round-2 批号 `r2`（见 [protocol_freeze_r2.md](protocol_freeze_r2.md) 与 README 的运行说明）。r2 不与 r1 结果合并，也不改 r1 冻结哈希。r2 账本的冻结期初是 0：本轮每模型重新获得 50 CNY。`ALO_PRIOR_LEDGER` 不设置就不带入旧账。Pro 的 48 CNY 软停止只看这笔 r2 花费。
 
-2026-11-13 增加了独立实验 `fox-single-v1`（见 [fox_single_v1.md](fox_single_v1.md)）。它是 Foxrouter 上的单模型 SWE-bench Lite 基线，输出目录与 r1／r2／r3 分开，不进入 `iter_r2_units`，不改冻结 `g2`，也不改 `r2_freeze_sha256`。六个模型使用 `fox/` 内部名，请求体里的上游 id 只进运行元数据。DeepSeek 在报告里仍写作 `deepseek-flash`。密钥只读环境变量 `FOXROUTER_API_KEY`，不写入清单或账本。这六个模型没有 CNY／USD 单价；缺价格不阻断。`--budget-cap` 默认关闭，只在 API 原样返回的 `cost` 上可选封顶。`fox/mimo-v2.6-flash` 的上下文上限默认 60000，且必须低于 70000；超限默认记 `context_limit` 并且不发送。官方 dev（23）与 test（300）可按 `--split`、`--limit`、`--instance-ids` 选择，全量不是默认。六模型全 dev 为 138 个单元，全 test 为 1800 个单元。离线测试不发请求。带 Docker、SWE-bench 镜像和密钥的机器上再跑 `--live`。
+2026-11-13 增加了独立实验 `fox-single-v1`（见 [fox_single_v1.md](fox_single_v1.md)）。它是 Foxrouter 上的单模型 SWE-bench Lite 基线，输出目录与 r1／r2／r3 分开，不进入 `iter_r2_units`，不改冻结 `g2`，也不改 `r2_freeze_sha256`。六个模型使用 `fox/` 内部名，请求体里的上游 id 只进运行元数据。DeepSeek 在报告里仍写作 `deepseek-flash`。密钥只读环境变量 `FOXROUTER_API_KEY`，不写入清单或账本。这六个模型没有 CNY／USD 单价；缺价格不阻断。`--budget-cap` 默认关闭，只在 API 原样返回的 `cost` 上可选封顶。`fox/mimo-v2.6-flash` 的上下文上限默认 60000，且必须低于 70000；超限默认记 `context_limit` 并且不发送。`--split` 默认 `dev`。第一轮是 dev 23 题 × 6 模型 = 138 个单元；test 300 题推迟，仍可用 `--split test` 选择。报告和 `estimate --from-run-dir` 能按已观测的逐题 token 与原始 cost／credit（均值 ± 样本标准差）外推 test-300，并标明这是估计而不是 test 实测。运行机上的官方镜像 `swebench/sweb.eval.x86_64.*` 只读出 `/testbed`；该路径不 `docker rmi`、不 `docker image rm`、也不做任何 `prune`。离线测试不发请求。带本机镜像、Docker 29、uv 下的 Python 3.12 和密钥的机器上再跑 `--live`。
 
 本仓库承载 M1／M2 的实验计划和初步代码，**不构成正式就绪包或已完成实验的证据**。研究定义见[实验计划](experiment_plan.md)与[实验协议](protocol.md)。本文件不附模型输出、运行成绩或历史审计材料。
 

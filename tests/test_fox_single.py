@@ -11,6 +11,7 @@ from alo_cloud.fox_pool import (
     FOX_MODELS,
     FOX_USER_AGENT,
     MIMO_CONTEXT_HARD_MAX,
+    TEST_EXTRAPOLATION_INSTANCES,
     apply_context_limit,
     auth_headers,
     estimate_prompt_tokens,
@@ -36,6 +37,7 @@ from alo_cloud.providers import POOL_ENDPOINTS
 from alo_cloud.r2 import r2_freeze_sha256
 from alo_cloud.sandbox import CREDENTIAL_ENV_NAMES
 from alo_cloud.swebench_lite_frame import SWEBENCH_LITE_FRAME
+from alo_cloud.workspace_prep import docker_argv_deletes_images, seed_image_tree
 
 
 FROZEN_R2 = "77bddfbfd3472ae4c0d280c3dacf20810f11b5f9b5c247c17650629ebf9e241f"
@@ -388,6 +390,78 @@ def test_report_aggregation_and_key_is_not_stored(tmp_path, monkeypatch):
     assert by_split["test"]["suspected_truncation"] == 1
     assert by_split["dev"]["failure_taxonomy"]["timeout"] == 1
     assert by_split["dev"]["reasoning_tokens"] is None
+
+
+def test_dev_is_the_default_split_and_test_300_extrapolation_is_labeled(tmp_path, capsys):
+    assert TEST_EXTRAPOLATION_INSTANCES == 300 == len(SWEBENCH_LITE_FRAME)
+    assert main(["estimate", "--all"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["split"] == "dev"
+    assert payload["instances"] == 23
+    assert payload["units"] == 138
+    assert payload["api_calls"] == 0
+
+    run_dir = tmp_path / "observed"
+    run_dir.mkdir()
+    rows = []
+    for prompt, cost, credit in ((10, 1, 2), (30, 3, 4)):
+        rows.append({
+            "experiment": "fox-single-v1",
+            "report_model": "deepseek-flash",
+            "internal_model": "fox/deepseek-flash",
+            "upstream_model": "deepseek-v4.1-flash-1017",
+            "split": "dev",
+            "instance_id": f"inst-{prompt}",
+            "prompt_tokens": prompt,
+            "completion_tokens": 4,
+            "reasoning_tokens": None,
+            "raw_cost_sum": cost,
+            "raw_credit_sum": credit,
+        })
+    (run_dir / "records.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    assert main(["estimate", "--from-run-dir", str(run_dir)]) == 0
+    estimate = json.loads(capsys.readouterr().out)["test_300_extrapolation"]
+    assert estimate["label"] == "estimate"
+    assert estimate["measured_test_split"] is False
+    assert estimate["target_instances"] == 300
+    deepseek = next(row for row in estimate["by_model"] if row["model"] == "deepseek-flash")
+    assert deepseek["observed_instances"] == 2
+    assert deepseek["observed_splits"] == ["dev"]
+    spread = (200 ** 0.5)
+    assert deepseek["per_instance"]["prompt_tokens"]["mean"] == pytest.approx(20)
+    assert deepseek["per_instance"]["prompt_tokens"]["stdev"] == pytest.approx(spread)
+    projected = deepseek["test_300_estimate"]["prompt_tokens"]
+    assert projected["total_at_mean"] == pytest.approx(6000)
+    assert projected["spread"] == pytest.approx(300 * spread)
+    assert deepseek["test_300_estimate"]["raw_cost"]["total_at_mean"] == pytest.approx(600)
+    assert deepseek["test_300_estimate"]["raw_credit"]["total_at_mean"] == pytest.approx(900)
+    assert deepseek["test_300_estimate"]["reasoning_tokens"]["available"] is False
+    missing = next(row for row in estimate["by_model"] if row["model"] == "fox/kimi-k3.1-pro")
+    assert missing["observed_instances"] == 0
+    assert missing["test_300_estimate"]["raw_cost"]["available"] is False
+
+
+def test_image_seed_does_not_delete_or_prune_images(tmp_path):
+    assert docker_argv_deletes_images(["docker", "rm", "-f", "alo-seed-1"]) is False
+    assert docker_argv_deletes_images(
+        ["docker", "create", "--name", "c", "swebench/sweb.eval.x86_64.example:latest"]) is False
+    assert docker_argv_deletes_images(["docker", "rmi", "swebench/sweb.eval.x86_64.example:latest"]) is True
+    assert docker_argv_deletes_images(["docker", "image", "rm", "swebench/sweb.eval.x86_64.example:latest"]) is True
+    assert docker_argv_deletes_images(["docker", "image", "prune", "-a"]) is True
+    assert docker_argv_deletes_images(["docker", "system", "prune", "-af"]) is True
+    seen = []
+
+    def docker(argv):
+        seen.append(list(argv))
+        if docker_argv_deletes_images(argv):
+            raise AssertionError(argv)
+
+    seed_image_tree(
+        "swebench/sweb.eval.x86_64.example:latest", "/testbed", tmp_path / "tree", docker=docker)
+    assert [argv[1] for argv in seen] == ["create", "cp", "rm"]
+    assert all(argv[1] != "rmi" and "prune" not in argv for argv in seen)
+    assert seen[0][-1].startswith("swebench/sweb.eval.x86_64.")
 
 
 def test_cli_estimate_and_run_dir_guard(tmp_path, capsys):

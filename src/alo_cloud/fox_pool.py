@@ -16,6 +16,9 @@ from .swebench_lite_frame import SWEBENCH_LITE_FRAME, SWEBENCH_LITE_REVISION
 
 
 EXPERIMENT = "fox-single-v1"
+# First scheduled grid. ``test`` stays selectable and is not this run.
+DEFAULT_SPLIT = "dev"
+TEST_EXTRAPOLATION_INSTANCES = 300
 FOX_KEY_ENV = "FOXROUTER_API_KEY"
 FOX_API_BASE = "https://foxrouter.org/v1"
 FOX_CHAT_URL = FOX_API_BASE + "/chat/completions"
