@@ -1,5 +1,6 @@
 """Review commands stay on a read-only snapshot. Offline, no model API."""
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -88,6 +89,46 @@ def test_docker_review_mounts_the_snapshot_read_only(tmp_path):
     assert f"src={live.resolve()}" not in rendered
     assert "--cap-drop=ALL" in seen["argv"]
     assert "--network=none" in seen["argv"]
+
+
+def test_merge_review_locks_the_populated_tree_and_does_not_copy_back(tmp_path):
+    live = tmp_path / "live"
+    snap = tmp_path / "snap"
+    _tree(live)
+    _tree(snap, "SNAP\n")
+    sandbox = DockerSandbox(
+        live, image="example.invalid/alo:test", merge_image_workspace=True)
+    argv = sandbox.readonly_argv(snap, ["python3", "-c", "print(1)"])
+    rendered = "\n".join(argv)
+    assert f"src={snap.resolve()}" in rendered
+    assert "readonly" in rendered
+    assert f"src={live.resolve()}" not in rendered
+    assert "review_merge_tree_not_readonly" in rendered
+    assert "MS_RDONLY" in rendered
+    assert "tar -C /agent" in rendered
+    assert "tar -C /workspace -xf" in rendered
+    assert "tar -C /workspace --exclude" not in rendered
+    assert "--cap-add=SYS_ADMIN" in argv
+    assert "--cap-drop=ALL" in argv
+    assert "--clear-groups" in rendered
+    assert "--cap-add=SETPCAP" in argv
+    assert "--regid=" in rendered
+    # Codex finding: --regid without a supplementary-group option is rejected
+    # before the review command can start.
+    rejected = subprocess.run(
+        ["setpriv", "--reuid", "0", "--regid", "0", "--", "true"],
+        capture_output=True, text=True, check=False)
+    assert rejected.returncode != 0
+    assert "requires" in rejected.stderr and "groups" in rejected.stderr
+    uid, gid = str(__import__("os").getuid()), str(__import__("os").getgid())
+    accepted = subprocess.run(
+        ["setpriv", "--clear-groups", "--reuid", uid, "--regid", gid, "--", "true"],
+        capture_output=True, text=True, check=False)
+    assert "requires" not in accepted.stderr
+    assert "--[re]gid" not in accepted.stderr
+    normal = "\n".join(sandbox.docker_argv(["./executable"]))
+    assert "tar -C /workspace" in normal
+    assert "--read-only" not in sandbox.docker_argv(["./executable"])
 
 
 def test_missing_snapshot_does_not_fall_back_to_the_live_tree(tmp_path):

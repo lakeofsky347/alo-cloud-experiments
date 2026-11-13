@@ -40,11 +40,15 @@ PRIOR_SPEND_CNY = {model: "0.000" for model in MODEL_POOL}
 PRIOR_SPEND_TOTAL_CNY = "0.000"
 USER_PREFERENCE = {"first_try": "deepseek-flash", "strong": "mimo-v2.6-pro"}
 # Follow-up arms. They are not part of the frozen r2 schedule or its hash.
-CONTROL_ARMS = ("g1-deepseek-flash", "g2-fixed", "g2-random")
+CONTROL_ARMS = ("g1-deepseek-flash", "g1-glm", "g2-fixed", "g2-random")
+# Opt-in learning arms. Not part of CONTROL_ARMS and not in iter_r2_units.
+TRANSFER_EXPORT_ARMS = ("g2-learn", "g2-resources")
+G1_GLM_MODEL = "glm-5.3-flash"
 G1_ARM_MODELS = {
     "g1-main": G1_MAIN_MODEL,
     "g1-strong": G1_STRONG_MODEL,
     "g1-deepseek-flash": G1_DEEPSEEK_FLASH_MODEL,
+    "g1-glm": G1_GLM_MODEL,
 }
 # Not a freeze field. These images are checked out at a commit that is not the
 # task base and not a mode-only child of it, so the runner skips them.
@@ -351,9 +355,12 @@ def fair_control_lock(unit):
     }
 
 
+FAIR_G1_ARMS = frozenset({"g1-deepseek-flash", "g1-glm"})
+
+
 def fair_g1_config(unit):
     """Single-agent control on the fair-control lock. Not ``g1-main`` or ``g1-strong``."""
-    if unit.arm != "g1-deepseek-flash":
+    if unit.arm not in FAIR_G1_ARMS:
         raise ValueError("unknown_fair_g1_arm")
     lock = fair_control_lock(unit)
     return {
@@ -369,10 +376,10 @@ def fair_g1_config(unit):
     }
 
 
-def followup_g2_config(unit):
+def followup_g2_config(unit, *, fixed_model=None):
     """Opt-in G2 controls. The frozen ``g2`` arm does not use this config.
 
-    Fixed routing pins both nodes to deepseek-flash and does not reassign.
+    Fixed routing pins both nodes to ``fixed_model`` (default deepseek-flash) and does not reassign.
     Random routing draws uniformly from the feasible set. Both share the
     fair-control lock with ``g1-deepseek-flash``: reproduction criterion,
     one attempt, no planner request, and a verifier that spends no model
@@ -383,7 +390,7 @@ def followup_g2_config(unit):
         raise ValueError("unknown_followup_arm")
     lock = fair_control_lock(unit)
     mode = "fixed" if unit.arm == "g2-fixed" else "random"
-    return {
+    config = {
         "planner_model": G1_DEEPSEEK_FLASH_MODEL,
         "max_turns": lock["request_cap"],
         "max_attempts": lock["max_attempts"],
@@ -401,6 +408,40 @@ def followup_g2_config(unit):
         "verifier_requests": lock["verifier_requests"],
         "topology": "fixed_s1_s2",
     }
+    if mode == "fixed":
+        chosen = G1_DEEPSEEK_FLASH_MODEL if fixed_model is None else fixed_model
+        if not isinstance(chosen, str) or not chosen:
+            raise ValueError("invalid_fixed_model")
+        config["fixed_model"] = chosen
+    return config
+
+
+def learning_g2_config(unit):
+    """Thompson learning with no preference override. Not the frozen ``g2`` arm.
+
+    ``g2-learn`` records role-conditioned quality. ``g2-resources`` sets
+    ``learn_quality=False`` and marks the export as resources-only. Both
+    filter resource predictions by the node's role topics. Neither arm is
+    part of ``iter_r2_units``.
+    """
+    if unit.arm not in TRANSFER_EXPORT_ARMS:
+        raise ValueError("unknown_learning_arm")
+    worker_turns = max(1, unit.request_cap - 1 - 3)
+    resources_only = unit.arm == "g2-resources"
+    config = {
+        "planner_model": "deepseek-flash",
+        "max_turns": worker_turns,
+        "max_attempts": 2,
+        "seed": unit.seed,
+        "probe": unit.phase == "probe",
+        "cold_prior": unit.m2_condition == "cold",
+        "routing_mode": "thompson",
+        "learn_quality": not resources_only,
+        "filter_resources_by_topics": True,
+    }
+    if resources_only:
+        config["export_mode"] = "resources"
+    return config
 
 
 LEARNING_EXPORT_ARMS = ("g2", "g2-fixed", "g2-random")
@@ -436,6 +477,7 @@ def iter_control_units(study=None):
     for unit in source:
         if unit.arm == "g1-main":
             yield replace(unit, arm="g1-deepseek-flash")
+            yield replace(unit, arm="g1-glm")
         elif unit.arm == "g2":
             for arm in ("g2-fixed", "g2-random"):
                 yield replace(unit, arm=arm, parent_unit_id=control_parent(unit.parent_unit_id, arm))
@@ -517,7 +559,7 @@ def r2_shard_of(unit, num_shards):
         raise ValueError("invalid_shard")
     assignment = _r2_assignment(num_shards)
     if unit.arm in CONTROL_ARMS:
-        twin = "g1-main" if unit.arm == "g1-deepseek-flash" else "g2"
+        twin = "g1-main" if unit.arm in {"g1-deepseek-flash", "g1-glm"} else "g2"
         unit = replace(unit, arm=twin)
     if unit.study == "m1":
         return assignment[("task", unit.track, unit.task_id)]

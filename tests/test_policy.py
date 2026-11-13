@@ -111,3 +111,33 @@ def test_select_uses_topics_and_ignores_uncredited_workspace_quality():
     assert trace["scores"]["deepseek-flash"]["quality_source"] == "native_local_bernoulli_prior"
     assert "bounded_global_quality_beta_pseudo_posterior" not in str(trace)
     org.conn.close()
+
+
+def test_role_filter_ignores_other_topic_costs_and_learn_quality_keeps_the_prior():
+    org = Organization(":memory:")
+    s1 = {"topics": ["coding", "implementation"], "credited_quality": 1.0, "quality_after": 1.0,
+          "requests": 40, "tokens": 500000, "seconds": 400, "cost_cny": 30.0}
+    s2 = {"topics": ["testing", "validation"], "credited_quality": 0.0, "quality_after": 0.0,
+          "requests": 1, "tokens": 20, "seconds": 2, "cost_cny": 0.02}
+    observations = {"deepseek-flash": [s1, s2]}
+    pooled = ConstrainedThompsonPolicy(observations, remaining_for())
+    filtered = ConstrainedThompsonPolicy(
+        observations, remaining_for(), filter_resources_by_topics=True)
+    only_s2 = ConstrainedThompsonPolicy({"deepseek-flash": [s2]}, remaining_for())
+    assert filtered.resource_estimate("deepseek-flash", ["validation", "testing"]) == (
+        only_s2.resource_estimate("deepseek-flash"))
+    assert pooled.resource_estimate("deepseek-flash")["cny"] > (
+        filtered.resource_estimate("deepseek-flash", ["testing", "validation"])["cny"])
+    assert pooled.resource_estimate("deepseek-flash")["requests"] > (
+        filtered.resource_estimate("deepseek-flash", ["testing", "validation"])["requests"])
+    blind = ConstrainedThompsonPolicy(
+        observations, remaining_for(), learn_quality=False, filter_resources_by_topics=True)
+    _selected, trace = blind.select(
+        org, {}, ["deepseek-flash"], CELL, ("testing", "validation"), "user", random.Random(0))
+    score = trace["scores"]["deepseek-flash"]
+    assert score["quality_source"] == "native_local_bernoulli_prior"
+    assert score["quality_alpha"] == 1 and score["quality_beta"] == 1
+    assert score["resource_prediction"] == filtered.resource_estimate(
+        "deepseek-flash", ["testing", "validation"])
+    assert score["resource_prediction"]["cny"] < pooled.resource_estimate("deepseek-flash")["cny"]
+    org.conn.close()
