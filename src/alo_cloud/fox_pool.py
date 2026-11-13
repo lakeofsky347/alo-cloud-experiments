@@ -51,13 +51,19 @@ _CF_ERROR = re.compile(r"error code:\s*(\d+)", re.IGNORECASE)
 
 @dataclass(frozen=True)
 class FoxModel:
-    """One gateway model. ``report_name`` is what summaries print."""
+    """One gateway model. ``report_name`` is what summaries print.
+
+    ``accepted_aliases`` lists gateway ids that should count as this model even
+    when separator and snapshot normalization would not. The scheduled models
+    leave it empty; observed Foxrouter ids are handled by that normalization.
+    """
 
     internal: str
     upstream: str
     report_name: str
     context_token_cap: int
     max_tokens: int = DEFAULT_MAX_TOKENS
+    accepted_aliases: tuple = ()
 
     def __post_init__(self):
         if not self.internal.startswith("fox/") or self.internal in MODEL_POOL:
@@ -71,6 +77,9 @@ class FoxModel:
             raise ValueError("invalid_context_cap")
         if type(self.max_tokens) is not int or self.max_tokens < 1:
             raise ValueError("invalid_max_tokens")
+        aliases = self.accepted_aliases
+        if type(aliases) is not tuple or any(type(item) is not str or not item.strip() for item in aliases):
+            raise ValueError("invalid_accepted_aliases")
 
 
 # Upstream ids are the gateway's model strings. DeepSeek is ``deepseek-flash``

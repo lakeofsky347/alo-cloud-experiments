@@ -52,7 +52,7 @@ from .fox_pool import (
 )
 from .images import swebench_instance_image
 from .prices import charge_if_priced
-from .providers import _same_model, parse_openai_chat_completion, parse_sse
+from .providers import model_match_kind, parse_openai_chat_completion, parse_sse
 from .repro import REPRO_CRITERION_ID
 from .run import load_public_payload, stage_for
 from .sandbox import DockerSandbox, SWE_TESTBED_PATH
@@ -255,23 +255,47 @@ def _message_text(payload):
     return text, isinstance(reasoning, str) and reasoning != ""
 
 
+def _stored_model_id(value):
+    """Keep a model id JSON-serializable. Strings are stored as returned."""
+    if value is None or isinstance(value, str):
+        return value
+    return json_safe(value)
+
+
 def interpret_call(model, sent_messages, max_tokens, result, retries, *, estimated):
-    """One ledger row. Raw usage and gateway cost fields are copied, not priced."""
+    """One ledger row. Raw usage and gateway cost fields are copied, not priced.
+
+    Usage is copied even when the call is later rejected, so a billed response
+    still lands in the unit totals. A cosmetic model id is a warning. A
+    different model is ``provider_error``.
+    """
     payload = result.get("payload") if isinstance(result, dict) else None
     usage = payload.get("usage") if isinstance(payload, dict) and isinstance(payload.get("usage"), dict) else None
     raw_usage = json_safe(usage) if isinstance(usage, dict) else None
     text, reasoning_present = _message_text(payload)
-    identity_ok = True
-    if isinstance(payload, dict) and payload.get("model") is not None:
-        identity_ok = _same_model(payload.get("model"), model.upstream)
+    returned_model = payload.get("model") if isinstance(payload, dict) and "model" in payload else None
+    aliases = getattr(model, "accepted_aliases", ()) or ()
+    if returned_model is None:
+        identity = "exact"
+    else:
+        identity = model_match_kind(returned_model, model.upstream, aliases)
+    identity_ok = identity != "mismatch"
     parsed = None
     if isinstance(payload, dict) and identity_ok:
         try:
-            parsed = parse_openai_chat_completion(payload, model.upstream)
+            parsed = parse_openai_chat_completion(payload, model.upstream, aliases)
         except PilotStopped:
             parsed = None
     prompt = completion = total = reasoning = None
     finish = None
+    if isinstance(usage, dict):
+        if type(usage.get("prompt_tokens")) is int:
+            prompt = usage["prompt_tokens"]
+        if type(usage.get("completion_tokens")) is int:
+            completion = usage["completion_tokens"]
+        if type(usage.get("total_tokens")) is int:
+            total = usage["total_tokens"]
+        reasoning = reasoning_tokens_of(usage, completion)
     if parsed is not None:
         text = parsed["text"]
         prompt = parsed["input_tokens"]
@@ -283,14 +307,6 @@ def interpret_call(model, sent_messages, max_tokens, result, retries, *, estimat
             reported_reasoning = reasoning_tokens_of(usage, completion)
             if reported_reasoning is not None:
                 reasoning = reported_reasoning
-    elif isinstance(usage, dict) and identity_ok:
-        if type(usage.get("prompt_tokens")) is int:
-            prompt = usage["prompt_tokens"]
-        if type(usage.get("completion_tokens")) is int:
-            completion = usage["completion_tokens"]
-        if type(usage.get("total_tokens")) is int:
-            total = usage["total_tokens"]
-        reasoning = reasoning_tokens_of(usage, completion)
     quirk = None
     if completion == 512:
         quirk = "completion_tokens_exactly_512"
@@ -302,6 +318,7 @@ def interpret_call(model, sent_messages, max_tokens, result, retries, *, estimat
         "experiment": EXPERIMENT,
         "internal_model": model.internal,
         "upstream_model": model.upstream,
+        "returned_model": _stored_model_id(returned_model),
         "report_model": model.report_name,
         "max_tokens": max_tokens,
         "http_status": status,
@@ -325,9 +342,15 @@ def interpret_call(model, sent_messages, max_tokens, result, retries, *, estimat
         "sends": result.get("sends") if isinstance(result, dict) else None,
         "text": text if isinstance(text, str) else "",
     }
+    if identity == "normalized":
+        row["model_alias_normalized"] = {
+            "requested": model.upstream,
+            "returned": row["returned_model"],
+        }
     if not identity_ok:
         row["ok"] = False
         row["failure"] = "provider_error"
+        row["model_mismatch"] = True
         return row
     if status != 200 or parsed is None and not row["text"] and not reasoning_present:
         row["ok"] = False
@@ -438,6 +461,7 @@ class FoxServices:
                 "prompt_tokens": None,
                 "completion_tokens": None,
                 "reasoning_tokens": None,
+                "returned_model": None,
                 "suspected_truncation": False,
                 **context,
             })
@@ -1071,7 +1095,7 @@ def run_schedule(run_dir, *, split, models="all", limit=None, instance_ids=None,
                         **retry,
                     })
                 if call.get("failure"):
-                    _append_jsonl(run_dir / "failures.jsonl", {
+                    failure_row = {
                         "experiment": EXPERIMENT,
                         "unit_id": record["unit_id"],
                         "kind": call["failure"],
@@ -1079,15 +1103,26 @@ def run_schedule(run_dir, *, split, models="all", limit=None, instance_ids=None,
                         "cloudflare_error": call.get("cloudflare_error"),
                         "timestamp": call.get("timestamp"),
                         "suspected_truncation": bool(call.get("suspected_truncation")),
-                    })
+                        "upstream_model": call.get("upstream_model"),
+                        "returned_model": call.get("returned_model"),
+                    }
+                    if call.get("model_mismatch"):
+                        failure_row["model_mismatch"] = True
+                    _append_jsonl(run_dir / "failures.jsonl", failure_row)
             if record.get("failure"):
-                _append_jsonl(run_dir / "failures.jsonl", {
+                unit_failure = {
                     "experiment": EXPERIMENT,
                     "unit_id": record["unit_id"],
                     "kind": record["failure"],
                     "report_model": record["report_model"],
                     "split": record["split"],
-                })
+                }
+                mismatched = next((call for call in services.calls if call.get("model_mismatch")), None)
+                if mismatched is not None:
+                    unit_failure["upstream_model"] = mismatched.get("upstream_model")
+                    unit_failure["returned_model"] = mismatched.get("returned_model")
+                    unit_failure["model_mismatch"] = True
+                _append_jsonl(run_dir / "failures.jsonl", unit_failure)
             if record.get("spent_cost") is not None:
                 spent = float(record["spent_cost"])
             written.append(record)
