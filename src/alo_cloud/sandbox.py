@@ -365,7 +365,10 @@ def _readonly_merge_command(command):
     if "--cap-drop=ALL" not in command or "sh" not in command:
         raise ProtocolError("review_merge_workspace_not_readonly")
     drop = command.index("--cap-drop=ALL")
-    for cap in ("--cap-add=CHOWN", "--cap-add=SETGID", "--cap-add=SETUID", "--cap-add=SYS_ADMIN"):
+    # SETPCAP is required to drop the bounding set. SETGID is required for
+    # --clear-groups. Both are dropped again by setpriv before the review command.
+    for cap in ("--cap-add=CHOWN", "--cap-add=SETGID", "--cap-add=SETUID",
+                "--cap-add=SETPCAP", "--cap-add=SYS_ADMIN"):
         if cap not in command:
             command.insert(drop + 1, cap)
     uid, gid = str(os.getuid()), str(os.getgid())

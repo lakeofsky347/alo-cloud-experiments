@@ -1,5 +1,6 @@
 """Review commands stay on a read-only snapshot. Offline, no model API."""
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -110,7 +111,21 @@ def test_merge_review_locks_the_populated_tree_and_does_not_copy_back(tmp_path):
     assert "--cap-add=SYS_ADMIN" in argv
     assert "--cap-drop=ALL" in argv
     assert "--clear-groups" in rendered
+    assert "--cap-add=SETPCAP" in argv
     assert "--regid=" in rendered
+    # Codex finding: --regid without a supplementary-group option is rejected
+    # before the review command can start.
+    rejected = subprocess.run(
+        ["setpriv", "--reuid", "0", "--regid", "0", "--", "true"],
+        capture_output=True, text=True, check=False)
+    assert rejected.returncode != 0
+    assert "requires" in rejected.stderr and "groups" in rejected.stderr
+    uid, gid = str(__import__("os").getuid()), str(__import__("os").getgid())
+    accepted = subprocess.run(
+        ["setpriv", "--clear-groups", "--reuid", uid, "--regid", gid, "--", "true"],
+        capture_output=True, text=True, check=False)
+    assert "requires" not in accepted.stderr
+    assert "--[re]gid" not in accepted.stderr
     normal = "\n".join(sandbox.docker_argv(["./executable"]))
     assert "tar -C /workspace" in normal
     assert "--read-only" not in sandbox.docker_argv(["./executable"])
