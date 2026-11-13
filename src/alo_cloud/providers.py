@@ -17,6 +17,7 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import re
 import socket
 import threading
 import time
@@ -168,22 +169,84 @@ def _reasoning_tokens(usage, completion):
     return top if top is not None else detail
 
 
-def _same_model(returned, model):
-    """Accept the pool id and a vendor prefix or different capitalisation."""
-    if returned == model:
-        return True
-    if not isinstance(returned, str):
+# Fold '.', '_' and '-' into one separator. A vendor prefix is the text up to
+# the last '/' (and a trailing ':' segment, which older responses also used).
+_MODEL_SEPARATORS = re.compile(r"[._-]+")
+# One trailing snapshot tag. 8 digits are tried before 4 so a date is not cut in half.
+_SNAPSHOT_SUFFIX = re.compile(r"-(?:latest|preview|\d{8}|\d{4})$")
+
+
+def _model_identity_key(value):
+    """Lowercase id with the vendor prefix removed and separators folded."""
+    if not isinstance(value, str):
+        return ""
+    text = value.strip().casefold()
+    if "/" in text:
+        text = text.rsplit("/", 1)[-1]
+    if ":" in text:
+        text = text.rsplit(":", 1)[-1]
+    return _MODEL_SEPARATORS.sub("-", text).strip("-")
+
+
+def _strip_snapshot(key):
+    """Drop one trailing snapshot/date tag. Size words such as flash are kept."""
+    stripped = _SNAPSHOT_SUFFIX.sub("", key, count=1).strip("-")
+    return stripped
+
+
+def _identity_equivalent(returned, requested):
+    """True when two ids are the same model after cosmetic normalization."""
+    left = _model_identity_key(returned)
+    right = _model_identity_key(requested)
+    if not left or not right:
         return False
-    folded = returned.strip().casefold().replace("_", "-")
-    wanted = model.casefold()
-    return folded == wanted or folded.endswith("/" + wanted) or folded.endswith(":" + wanted)
+    if left == right:
+        return True
+    base_left = _strip_snapshot(left)
+    base_right = _strip_snapshot(right)
+    changed = base_left != left or base_right != right
+    return bool(changed and base_left and base_left == base_right)
 
 
-def parse_openai_chat_completion(payload, model):
+def model_match_kind(returned, requested, aliases=()):
+    """``exact``, ``normalized``, or ``mismatch``.
+
+    ``normalized`` is a cosmetic alias: vendor prefix, letter case, ``.`` / ``_``
+    / ``-``, or one trailing snapshot tag (``-1017``, ``-20251017``, ``-latest``,
+    ``-preview``), or an id in ``aliases``. A different family or size is
+    ``mismatch``.
+    """
+    if returned == requested:
+        return "exact"
+    if _identity_equivalent(returned, requested):
+        return "normalized"
+    for alias in aliases or ():
+        if type(alias) is not str or not alias.strip():
+            continue
+        if returned == alias or _identity_equivalent(returned, alias):
+            return "normalized"
+    return "mismatch"
+
+
+def _same_model(returned, model, aliases=()):
+    """Accept a cosmetic gateway id. Reject a different family or size.
+
+    A vendor prefix (text up to the last ``/``, then a ``:`` segment) is ignored.
+    ``.``, ``_`` and ``-`` fold to one separator on both sides. One trailing
+    snapshot tag may differ. ``aliases`` are extra ids the caller already
+    accepts for this model. ``mimo-v2.6-flash`` still does not match
+    ``mimo-v2.6-pro``.
+    """
+    return model_match_kind(returned, model, aliases) != "mismatch"
+
+
+def parse_openai_chat_completion(payload, model, aliases=()):
     """Known usage only. Inconsistent or missing token fields are unknown.
 
     ``content`` may be null or empty when usage is well formed. That is a billed
     completion whose visible text is empty, not an unknown transport result.
+    ``aliases`` are extra accepted model ids; cosmetic variants of ``model``
+    do not need an entry.
     """
     if not isinstance(payload, dict):
         raise PilotStopped("provider_outcome_unknown")
@@ -218,7 +281,7 @@ def parse_openai_chat_completion(payload, model):
     if finish is not None and not isinstance(finish, str):
         raise PilotStopped("provider_outcome_unknown")
     returned = payload.get("model")
-    if returned is not None and not _same_model(returned, model):
+    if returned is not None and not _same_model(returned, model, aliases):
         raise PilotStopped("provider_outcome_unknown")
     usage = payload.get("usage")
     if not isinstance(usage, dict):

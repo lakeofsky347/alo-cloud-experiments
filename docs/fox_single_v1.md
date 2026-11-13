@@ -27,6 +27,10 @@ There is no CNY or USD price table for these models. A missing price does not bl
 
 Reasoning models get `max_tokens` 16384 unless `--max-tokens` overrides it. Token totals use the reported usage, including `reasoning_tokens` when present. Kimi often omits that count even when `reasoning_content` is present; the count stays unset rather than zero. A non-streaming completion of exactly 512 tokens is recorded as `usage_quirk=completion_tokens_exactly_512`. The raw `usage` object is stored on each call.
 
+The gateway sometimes returns a cosmetic `model` id. Matching ignores a vendor prefix (text up to the last `/`), letter case, and whether `.`, `_`, or `-` was used. One trailing snapshot tag may also differ: `-1017`, `-20251017`, `-latest`, or `-preview`. These stay the same model: the DeepSeek upstream id `deepseek-v4.1-flash-1017` with its trailing `-1017` tag removed; `kimi-k3.1-pro` and `kimi-k3-1-pro`; `qwen3.8-max` and `qwen/qwen3.8-max`; `qwen3.8-flash` and `qwen/qwen3-8-flash` (a later probe also returned `qwen3.8-flash` exactly). `glm-5.3-flash` and `mimo-v2.6-flash` already match exactly. A different family or size is still `provider_error` (`qwen3.8-max` vs `qwen3.8-flash`, `kimi-k3.1-pro` vs `kimi-k3.1`, flash vs pro). `FoxModel.accepted_aliases` can list extra ids for one model. The six scheduled models leave that tuple empty.
+
+Every call row stores `returned_model` and the requested `upstream_model`. A match that needed this normalization sets `model_alias_normalized` to those two ids. That field is a warning, and the call is not failed for it. A real mismatch stays `provider_error`, sets `model_mismatch`, and writes both ids on the call row and in `failures.jsonl`. Prompt, completion, reasoning, and total tokens, plus raw `cost` / `credit` / `quota`, are copied from the response even when that call is rejected. The unit report still sums them, including calls that succeeded before the rejected one.
+
 HTTP 429, 502, 503, 504, 520–524, timeouts, and connection resets are retried with backoff. Each failed attempt is appended to `failures.jsonl` with status, Cloudflare error code when the body has one, and a UTC timestamp.
 
 ## Task set
@@ -112,6 +116,6 @@ python -m alo_cloud.fox_single report --run-dir /tmp/fox-single-v1
 
 `summary.json` has one row per report-model × split: instances, resolved count, resolved rate, prompt / completion / reasoning tokens, raw cost / credit / quota sums, retry count, suspected-truncation count, and the failure taxonomy (`provider_error`, `timeout`, `context_limit`, `suspected_truncation`, `empty_patch`, `apply_fail`, `tests_fail`, `turn_cap`, `eval_unavailable`, `budget_cap`, and setup gaps such as `payload_missing`).
 
-Per-call rows are in `calls.jsonl` (`raw_usage`, `cost`, `credit`, `quota`, upstream id, retries). Retries and unit failures are in `failures.jsonl`. Predictions for the harness are under `sealed/swe_units/`.
+Per-call rows are in `calls.jsonl` (`raw_usage`, `cost`, `credit`, `quota`, requested `upstream_model`, `returned_model`, retries). A normalized gateway id adds `model_alias_normalized`. Retries and unit failures are in `failures.jsonl`. A model mismatch there includes both ids. Predictions for the harness are under `sealed/swe_units/`.
 
 `--live` is what opens the socket. Offline tests inject a sender and do not read a real key. This repository does not start the paid run.

@@ -12,6 +12,7 @@ from alo_cloud.fox_pool import (
     FOX_USER_AGENT,
     MIMO_CONTEXT_HARD_MAX,
     TEST_EXTRAPOLATION_INSTANCES,
+    FoxModel,
     apply_context_limit,
     auth_headers,
     estimate_prompt_tokens,
@@ -35,7 +36,7 @@ from alo_cloud.fox_single import (
     write_report,
 )
 from alo_cloud.prices import PRICE_TABLE, UnpricedModel, charge_if_priced, charge_microcny
-from alo_cloud.providers import POOL_ENDPOINTS
+from alo_cloud.providers import POOL_ENDPOINTS, _same_model, model_match_kind
 from alo_cloud.r2 import r2_freeze_sha256
 from alo_cloud.sandbox import CREDENTIAL_ENV_NAMES
 from alo_cloud.swebench_lite_frame import SWEBENCH_LITE_FRAME
@@ -603,6 +604,198 @@ def test_image_seed_does_not_delete_or_prune_images(tmp_path):
     assert [argv[1] for argv in seen] == ["create", "cp", "rm"]
     assert all(argv[1] != "rmi" and "prune" not in argv for argv in seen)
     assert seen[0][-1].startswith("swebench/sweb.eval.x86_64.")
+
+
+def _billed_usage():
+    return {
+        "prompt_tokens": 11,
+        "completion_tokens": 7,
+        "total_tokens": 18,
+        "reasoning_tokens": 2,
+        "cost": 0.4,
+    }
+
+
+def _gateway_call(model, returned, usage=None, content='{"final":"ok"}'):
+    if usage is None:
+        usage = _billed_usage()
+    payload = _completion(returned, content, usage)
+    return interpret_call(
+        model, [], 16384,
+        {"status": 200, "payload": payload, "raw_text": "", "timestamp": "2026-11-13T08:00:00Z", "sends": 1},
+        [], estimated=8)
+
+
+def test_gateway_model_ids_accept_cosmetic_aliases_and_reject_other_models():
+    assert r2_freeze_sha256() == FROZEN_R2
+    assert all(row.accepted_aliases == () for row in FOX_MODELS)
+    accepted = (
+        ("fox/deepseek-flash", "deepseek-v4.1-flash"),
+        ("fox/kimi-k3.1-pro", "kimi-k3-1-pro"),
+        ("fox/qwen3.8-max", "qwen/qwen3.8-max"),
+        ("fox/qwen3.8-flash", "qwen3.8-flash"),
+        ("fox/qwen3.8-flash", "qwen/qwen3-8-flash"),
+        ("fox/qwen3.8-flash", "qwen3-8-flash"),
+        ("fox/glm-5.3-flash", "glm-5.3-flash"),
+        ("fox/mimo-v2.6-flash", "mimo-v2.6-flash"),
+    )
+    for name, returned in accepted:
+        model = resolve_model(name)
+        row = _gateway_call(model, returned, content='{"tool":"read_file","arguments":{"path":"bug.py"}}')
+        assert row["ok"] is True, (name, returned)
+        assert "failure" not in row
+        assert "model_mismatch" not in row
+        assert row["returned_model"] == returned
+        assert row["upstream_model"] == model.upstream
+        assert row["prompt_tokens"] == 11
+        assert row["completion_tokens"] == 7
+        assert row["total_tokens"] == 18
+        assert row["reasoning_tokens"] == 2
+        assert row["cost"] == 0.4
+        assert row["finish_reason"] == "stop"
+        assert row["text"] == '{"tool":"read_file","arguments":{"path":"bug.py"}}'
+        if returned == model.upstream:
+            assert "model_alias_normalized" not in row
+            assert model_match_kind(returned, model.upstream) == "exact"
+        else:
+            assert row["model_alias_normalized"] == {"requested": model.upstream, "returned": returned}
+            assert model_match_kind(returned, model.upstream) == "normalized"
+
+    rejected = (
+        ("fox/qwen3.8-max", "qwen3.8-flash"),
+        ("fox/qwen3.8-max", "qwen/qwen3-8-flash"),
+        ("fox/qwen3.8-flash", "qwen3.8-max"),
+        ("fox/kimi-k3.1-pro", "kimi-k3.1"),
+        ("fox/kimi-k3.1-pro", "kimi-k3-1"),
+        ("fox/deepseek-flash", "deepseek-v4.1-pro"),
+        ("fox/deepseek-flash", "deepseek-v4.1-pro-1017"),
+        ("fox/deepseek-flash", "deepseek-v4.1-flash-10170"),
+        ("fox/deepseek-flash", "deepseek-1017-v4.1-flash"),
+        ("fox/glm-5.3-flash", "glm-5.3-pro"),
+        ("fox/mimo-v2.6-flash", "mimo-v2.6-pro"),
+        ("fox/qwen3.8-flash", "qwen3.8-flash-pro"),
+    )
+    for name, returned in rejected:
+        model = resolve_model(name)
+        row = _gateway_call(model, returned)
+        assert row["ok"] is False, (name, returned)
+        assert row["failure"] == "provider_error"
+        assert row["model_mismatch"] is True
+        assert "model_alias_normalized" not in row
+        assert row["returned_model"] == returned
+        assert row["upstream_model"] == model.upstream
+        assert row["prompt_tokens"] == 11
+        assert row["completion_tokens"] == 7
+        assert row["total_tokens"] == 18
+        assert row["reasoning_tokens"] == 2
+        assert row["cost"] == 0.4
+        assert row["raw_usage"]["cost"] == 0.4
+        assert _same_model(returned, model.upstream) is False
+
+    assert _same_model("deepseek-v4.1-flash-latest", "deepseek-v4.1-flash-1017") is True
+    assert _same_model("deepseek-v4.1-flash-20251017", "deepseek-v4.1-flash") is True
+    assert _same_model("xiaomi/MiMo-V2.6-Flash", "mimo-v2.6-flash") is True
+    assert _same_model("openai:glm-5.3-flash", "glm-5.3-flash") is True
+    assert _same_model("vendor/org:glm-5.3-flash", "glm-5.3-flash") is True
+    assert _same_model("deepseek-pro", "deepseek-flash") is False
+    assert _same_model("some-other-model", "glm-5.3-flash") is False
+    assert model_match_kind("glm-5.3-flash", "glm-5.3-flash") == "exact"
+    assert model_match_kind("Kimi-K3.1-Pro", "kimi-k3.1-pro") == "normalized"
+
+    aliased = FoxModel(
+        "fox/qwen3.8-flash", "qwen3.8-flash", "fox/qwen3.8-flash", 128_000,
+        accepted_aliases=("gateway-qwen-flash-alias",))
+    alias_row = _gateway_call(aliased, "gateway-qwen-flash-alias")
+    assert alias_row["ok"] is True
+    assert alias_row["finish_reason"] == "stop"
+    assert alias_row["model_alias_normalized"] == {
+        "requested": "qwen3.8-flash", "returned": "gateway-qwen-flash-alias"}
+    foreign_alias = _gateway_call(aliased, "gateway-qwen-flash-alias-pro")
+    assert foreign_alias["ok"] is False and foreign_alias["failure"] == "provider_error"
+    other = resolve_model("fox/qwen3.8-max")
+    leaked = _gateway_call(other, "gateway-qwen-flash-alias")
+    assert leaked["failure"] == "provider_error"
+    with pytest.raises(ValueError, match="invalid_accepted_aliases"):
+        FoxModel(
+            "fox/glm-5.3-flash", "glm-5.3-flash", "fox/glm-5.3-flash", 128_000,
+            accepted_aliases=("",))
+
+
+def test_rejected_call_usage_stays_in_the_ledger_and_failure_log(tmp_path):
+    calls = {"n": 0}
+
+    def sender(url, body, headers, timeout_s):
+        del url, headers, timeout_s
+        calls["n"] += 1
+        assert body["model"] == "deepseek-v4.1-flash-1017"
+        if calls["n"] == 1:
+            usage = {"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14, "cost": 1.25}
+            content = json.dumps({
+                "tool": "edit_file",
+                "arguments": {"path": "bug.py", "old_str": "return 0", "new_str": "return 1"},
+            })
+            return 200, _completion("deepseek-v4.1-flash", content, usage)
+        usage = {"prompt_tokens": 6, "completion_tokens": 3, "total_tokens": 9, "cost": 2.5}
+        return 200, _completion("qwen3.8-max", '{"final":"nope"}', usage)
+
+    run_dir = tmp_path / "fox-mismatch"
+    run_schedule(
+        run_dir, split="dev", models=["fox/deepseek-flash"], limit=1, live=False,
+        sender=sender, turn_cap=4, clock=_clock, sleep=lambda _n: None, seed_images=False)
+    record = json.loads((run_dir / "records.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    assert calls["n"] == 2
+    assert record["failure"] == "provider_error"
+    assert record["upstream_model"] == "deepseek-v4.1-flash-1017"
+    assert record["prompt_tokens"] == 16
+    assert record["completion_tokens"] == 7
+    assert record["raw_cost_sum"] == pytest.approx(3.75)
+    assert record["calls"] == 2
+    call_rows = [json.loads(line) for line in (run_dir / "calls.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert call_rows[0]["ok"] is True
+    assert call_rows[0]["returned_model"] == "deepseek-v4.1-flash"
+    assert call_rows[0]["model_alias_normalized"]["requested"] == "deepseek-v4.1-flash-1017"
+    assert call_rows[0]["prompt_tokens"] == 10 and call_rows[0]["cost"] == 1.25
+    assert call_rows[1]["ok"] is False
+    assert call_rows[1]["failure"] == "provider_error"
+    assert call_rows[1]["model_mismatch"] is True
+    assert "model_alias_normalized" not in call_rows[1]
+    assert call_rows[1]["upstream_model"] == "deepseek-v4.1-flash-1017"
+    assert call_rows[1]["returned_model"] == "qwen3.8-max"
+    assert call_rows[1]["prompt_tokens"] == 6 and call_rows[1]["cost"] == 2.5
+    failures = [json.loads(line) for line in (run_dir / "failures.jsonl").read_text(encoding="utf-8").splitlines()]
+    logged = [
+        row for row in failures
+        if row.get("model_mismatch") is True and row.get("returned_model") == "qwen3.8-max"
+    ]
+    assert len(logged) >= 1
+    assert all(row["upstream_model"] == "deepseek-v4.1-flash-1017" for row in logged)
+    assert all(row["kind"] == "provider_error" for row in logged)
+    summary = write_report(run_dir)
+    group = summary["by_model_split"][0]
+    assert group["prompt_tokens"] == 16
+    assert group["completion_tokens"] == 7
+    assert group["raw_cost_sum"] == pytest.approx(3.75)
+    assert group["failure_taxonomy"]["provider_error"] == 1
+
+    def normalized(url, body, headers, timeout_s):
+        del url, headers, timeout_s
+        usage = {"prompt_tokens": 20, "completion_tokens": 11, "total_tokens": 31, "cost": 0.5}
+        return 200, _completion("deepseek-v4.1-flash", '{"final":"noop"}', usage)
+
+    clean = tmp_path / "fox-alias"
+    run_schedule(
+        clean, split="dev", models=["fox/deepseek-flash"], limit=1, live=False,
+        sender=normalized, turn_cap=2, clock=_clock, sleep=lambda _n: None, seed_images=False)
+    clean_record = json.loads((clean / "records.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    assert clean_record["stop_reason"] is None
+    assert clean_record["failure"] == "empty_patch"
+    assert clean_record["upstream_model"] == "deepseek-v4.1-flash-1017"
+    assert clean_record["prompt_tokens"] == 20
+    assert clean_record["raw_cost_sum"] == pytest.approx(0.5)
+    clean_call = json.loads((clean / "calls.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    assert clean_call["returned_model"] == "deepseek-v4.1-flash"
+    assert clean_call["model_alias_normalized"]["returned"] == "deepseek-v4.1-flash"
+    assert "model_mismatch" not in clean_call
 
 
 def test_cli_estimate_and_run_dir_guard(tmp_path, capsys):
