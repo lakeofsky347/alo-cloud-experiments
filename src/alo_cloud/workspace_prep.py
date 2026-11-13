@@ -69,7 +69,27 @@ def prepare_swe_checkout(dest, repo, base_commit, *, runner=None):
     return {"prepared": True, "repo": repo, "base_commit": base_commit}
 
 
+def docker_argv_deletes_images(argv):
+    """True when a docker argv would remove or prune images.
+
+    ``docker rm`` deletes a container. ``docker rmi``, ``docker image rm``,
+    and any ``prune`` subcommand are refused. Local SWE-bench images stay.
+    """
+    if not isinstance(argv, list) or not argv:
+        return False
+    if argv[0] != "docker":
+        return False
+    tokens = [item for item in argv[1:] if isinstance(item, str) and not item.startswith("-")]
+    if "rmi" in tokens or "prune" in tokens:
+        return True
+    if len(tokens) >= 2 and tokens[0] == "image" and tokens[1] in {"rm", "remove"}:
+        return True
+    return False
+
+
 def _docker(argv):
+    if docker_argv_deletes_images(argv):
+        raise PilotStopped("docker_image_delete_refused")
     completed = subprocess.run(argv, check=False, capture_output=True, text=True)
     if completed.returncode != 0:
         raise PilotStopped("image_seed_failed")
@@ -85,7 +105,14 @@ def seed_image_tree(image, container_path, dest, *, docker=None):
     dest = Path(dest)
     dest.mkdir(parents=True, exist_ok=True)
     name = "alo-seed-" + uuid.uuid4().hex[:16]
-    run = docker or _docker
+    base = docker or _docker
+
+    def run(argv):
+        # Copy a local image out. Never pull, and never delete or prune images.
+        if docker_argv_deletes_images(argv):
+            raise PilotStopped("docker_image_delete_refused")
+        return base(argv)
+
     created = False
     try:
         run(["docker", "create", "--name", name, image])

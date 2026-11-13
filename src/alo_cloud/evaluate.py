@@ -95,7 +95,7 @@ def programbench_env(base=None):
     env["PROGRAMBENCH_HF_REVISION"] = PROGRAMBENCH_TESTS_REVISION
     if not str(env.get("PROGRAMBENCH_DOCKER_CPUS") or "").strip():
         env["PROGRAMBENCH_DOCKER_CPUS"] = str(programbench_docker_cpus(env))
-    for name in ("DEEPSEEK_API_KEY", "MIMO_API_KEY", "ZAI_API_KEY"):
+    for name in ("DEEPSEEK_API_KEY", "MIMO_API_KEY", "ZAI_API_KEY", "FOXROUTER_API_KEY"):
         env.pop(name, None)
     return env
 

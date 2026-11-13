@@ -94,6 +94,17 @@ Cost estimate at the round-1 mean CNY per request and a full unit cap. Expected 
 
 Expected new spend together is 66.980 CNY. The worst-case column is each model's own ceiling. Pro's worst case is above the 48 CNY halt; that halt stops the run between units.
 
+## Foxrouter single-model baseline
+
+`fox-single-v1` is a separate SWE-bench Lite baseline. It does not join r1, r2, or r3, and it does not change the frozen g2 hash. Commands, the `FOXROUTER_API_KEY` rule, smoke, and the report are in [docs/fox_single_v1.md](docs/fox_single_v1.md). A size check does not call the API:
+
+```sh
+python -m alo_cloud.fox_single estimate --all
+python -m alo_cloud.fox_single estimate --split test --all
+```
+
+`--split` defaults to dev. The first run is 6 × 23 = 138 units. Test (6 × 300 = 1800) is deferred and stays selectable. Passing `--all` is required before a full dev run. After that run, `estimate --from-run-dir` and `report` extrapolate a labeled test-300 cost from observed per-instance usage. That figure is an estimate, not a test-split measurement.
+
 ## 继续实现的原则
 
 G1 固定单模型、G2 ALO、G3 原生 GroupChat 的定义保持独立；G2／G3 使用
