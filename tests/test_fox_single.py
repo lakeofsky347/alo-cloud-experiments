@@ -25,11 +25,13 @@ from alo_cloud.fox_single import (
     EXPERIMENT,
     FoxServices,
     FoxStopped,
+    _find_resolved,
     aggregate_report,
     interpret_call,
     main,
     post_with_retries,
     run_schedule,
+    unit_eval_dir,
     write_report,
 )
 from alo_cloud.prices import PRICE_TABLE, UnpricedModel, charge_if_priced, charge_microcny
@@ -440,6 +442,43 @@ def test_dev_is_the_default_split_and_test_300_extrapolation_is_labeled(tmp_path
     missing = next(row for row in estimate["by_model"] if row["model"] == "fox/kimi-k3.1-pro")
     assert missing["observed_instances"] == 0
     assert missing["test_300_estimate"]["raw_cost"]["available"] is False
+
+
+def test_resolved_flag_stays_inside_the_unit_eval_dir(tmp_path):
+    instance = "sqlfluff__sqlfluff-1625"
+    unit_a = f"fox-single-v1.fox-deepseek-flash.{instance}"
+    unit_b = f"fox-single-v1.fox-kimi-k3.1-pro.{instance}"
+    dir_a = unit_eval_dir(tmp_path, unit_a)
+    dir_b = unit_eval_dir(tmp_path, unit_b)
+    (dir_a / "report.json").write_text(
+        json.dumps({instance: {"resolved": True}}), encoding="utf-8")
+    (dir_b / "report.json").write_text(
+        json.dumps({instance: {"resolved": False}}), encoding="utf-8")
+    (tmp_path / "eval" / "aaa-shared.json").write_text(
+        json.dumps({instance: {"resolved": True}}), encoding="utf-8")
+    assert dir_a != dir_b
+    assert _find_resolved(dir_a, instance) is True
+    assert _find_resolved(dir_b, instance) is False
+
+
+def test_resume_keeps_the_recorded_budget(tmp_path):
+    def sender(url, body, headers, timeout_s):
+        del url, headers, timeout_s
+        usage = {"prompt_tokens": 4, "completion_tokens": 2, "total_tokens": 6}
+        return 200, _completion(body["model"], '{"final":"noop"}', usage, cost=1)
+
+    kwargs = dict(
+        split="dev", models=["fox/deepseek-flash"], limit=2, live=False, sender=sender,
+        turn_cap=2, clock=_clock, sleep=lambda _n: None, budget_cap=0.5, seed_images=False,
+    )
+    run_dir = tmp_path / "fox-budget"
+    first = run_schedule(run_dir, **kwargs)
+    assert first["wrote"] == 1
+    second = run_schedule(run_dir, **kwargs)
+    assert second["wrote"] == 0
+    lines = (run_dir / "records.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    assert json.loads(lines[0])["raw_cost_sum"] == 1
 
 
 def test_image_seed_does_not_delete_or_prune_images(tmp_path):

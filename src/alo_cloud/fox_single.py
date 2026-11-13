@@ -22,7 +22,7 @@ import urllib.request
 from .adapters import adapter_for
 from .collect import prediction_row, workspace_patch
 from .errors import PilotStopped, ProtocolError
-from .evaluate import SWEBENCH_PACKAGE, SWEBENCH_REVISION, execute_swebench, harness_cwd, swebench_command
+from .evaluate import SWEBENCH_PACKAGE, SWEBENCH_REVISION, execute_swebench, swebench_command
 from .fox_pool import (
     DEFAULT_MAX_ATTEMPTS,
     DEFAULT_READ_TIMEOUT_S,
@@ -521,7 +521,16 @@ def classify_failure(record):
     return "provider_error"
 
 
+def unit_eval_dir(run_dir, unit_id):
+    """One harness output directory per unit. Models must not share a report tree."""
+    safe = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in str(unit_id))[:200]
+    path = Path(run_dir) / "eval" / (safe or "unit")
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def _find_resolved(root, instance_id):
+    """Read ``resolved`` only from ``root``. Callers pass that unit's eval directory."""
     base = Path(root)
     if not base.is_dir():
         return None
@@ -569,7 +578,7 @@ def score_prediction(run_dir, *, unit_id, instance_id, split, patch, execute, sc
         result["status"] = "swebench_version_mismatch"
         result["observed_version"] = version
         return result
-    cwd = harness_cwd(run_dir)
+    cwd = unit_eval_dir(run_dir, unit_id)
     harness = execute_swebench(command, cwd=cwd)
     result["harness_status"] = harness.get("status")
     result["returncode"] = harness.get("returncode")
@@ -831,6 +840,23 @@ def _write_manifest(run_dir, payload):
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def _cumulative_raw_cost(records):
+    """Sum each unit's own raw cost once. ``spent_cost`` is a running total and is not added again."""
+    latest = {}
+    for row in records:
+        if not isinstance(row, dict):
+            continue
+        unit_id = row.get("unit_id")
+        if isinstance(unit_id, str) and unit_id:
+            latest[unit_id] = row
+    total = 0.0
+    for row in latest.values():
+        amount = numeric_amount(row.get("raw_cost_sum"))
+        if amount is not None:
+            total += amount
+    return total
+
+
 def run_schedule(run_dir, *, split, models="all", limit=None, instance_ids=None, allow_all=False,
                  turn_cap=DEFAULT_TURN_CAP, live=False, sender=None, execute=False, scorer=None,
                  data_dir=None, context_policy="fail", context_caps=None, max_tokens=None,
@@ -882,8 +908,9 @@ def run_schedule(run_dir, *, split, models="all", limit=None, instance_ids=None,
     transport = _transport_for(
         live=live, sender=sender, timeout_s=timeout_s, sleep=sleep, clock=clock,
         max_attempts=max_attempts)
-    done = {row.get("unit_id") for row in _load_jsonl(run_dir / "records.jsonl")}
-    spent = 0.0
+    prior = _load_jsonl(run_dir / "records.jsonl")
+    done = {row.get("unit_id") for row in prior}
+    spent = _cumulative_raw_cost(prior)
     written = []
     secrets = _live_secrets()
     halt = False
