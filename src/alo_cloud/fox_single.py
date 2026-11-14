@@ -266,6 +266,13 @@ class _FoxDeadlineSocket:
         except OSError:
             pass
 
+    def _detach(self):
+        """Hand back the raw socket without closing it."""
+        sock = self._sock
+        self._sock = None
+        self._closed = True
+        return sock
+
     def __getattr__(self, name):
         sock = self._sock
         if sock is None:
@@ -291,6 +298,12 @@ class _FoxDeadlineTransport:
         if sock is not None and not isinstance(sock, _FoxDeadlineSocket):
             self.sock = _FoxDeadlineSocket(sock, self._fox_deadline)
 
+    def _fox_take_raw_socket(self):
+        wrapped = self.sock
+        if isinstance(wrapped, _FoxDeadlineSocket):
+            self.sock = wrapped._detach()
+        return self.sock
+
 
 class _FoxDeadlineHTTPConnection(_FoxDeadlineTransport, http.client.HTTPConnection):
     def __init__(self, *args, deadline, **kwargs):
@@ -309,8 +322,39 @@ class _FoxDeadlineHTTPSConnection(_FoxDeadlineTransport, http.client.HTTPSConnec
         super().__init__(*args, **kwargs)
 
     def connect(self):
+        """Connect, and keep the deadline armed while a proxy tunnel is read.
+
+        ``HTTPSConnection.connect`` reads the proxy ``CONNECT`` response before
+        returning. Those reads used to sit on the raw socket, so a proxy that
+        trickled bytes could outlive ``--read-timeout``. The tunnel is read
+        through the deadline socket. TLS is then negotiated on the raw socket,
+        because OpenSSL uses the file descriptor rather than ``recv``.
+        """
         self._fox_prepare_timeout()
-        super().connect()
+        if not self._tunnel_host:
+            super().connect()
+            self._fox_wrap_socket()
+            return
+        tunnel_host = self._tunnel_host
+        self._tunnel_host = None
+        try:
+            http.client.HTTPConnection.connect(self)
+        finally:
+            self._tunnel_host = tunnel_host
+        self._fox_wrap_socket()
+        self._tunnel()
+        raw = self._fox_take_raw_socket()
+        remaining = self._fox_deadline - time.monotonic()
+        if remaining <= _FOX_DEADLINE_EPSILON_S:
+            raise TimeoutError("fox_read_timeout")
+        try:
+            raw.settimeout(remaining)
+        except OSError as error:
+            raise TimeoutError("fox_read_timeout") from error
+        try:
+            self.sock = self._context.wrap_socket(raw, server_hostname=tunnel_host)
+        except TimeoutError as error:
+            raise TimeoutError("fox_read_timeout") from error
         self._fox_wrap_socket()
 
 
@@ -351,10 +395,11 @@ def _close_quietly(obj):
 def urllib_fox_send(url, body, headers, timeout_s):
     """POST one completion and stop when ``timeout_s`` seconds have elapsed.
 
-    ``timeout_s`` is the wall-clock budget for this attempt (connect, request,
-    headers, and body). It is the value of ``--read-timeout``, which defaults
-    to 600 seconds. A peer that keeps the socket readable does not get another
-    full window per byte. When the budget is spent the socket is aborted and
+    ``timeout_s`` is the wall-clock budget for this attempt (connect, an HTTPS
+    proxy ``CONNECT``, request, headers, and body). It is the value of
+    ``--read-timeout``, which defaults to 600 seconds. A peer that keeps the
+    socket readable does not get another full window per byte. When the budget
+    is spent the socket is aborted and
     ``TimeoutError`` propagates, which the retry loop already records as
     ``timeout``.
     """

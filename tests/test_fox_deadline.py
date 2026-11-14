@@ -43,11 +43,17 @@ def _loopback_only(address):
         raise AssertionError("network access is forbidden in source tests")
 
 
-def _clear_proxies(monkeypatch):
+def _clear_proxies(monkeypatch, *, https_proxy=None):
     for name in _PROXY_NAMES:
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv("NO_PROXY", "*")
-    monkeypatch.setenv("no_proxy", "*")
+    monkeypatch.delenv("NO_PROXY", raising=False)
+    monkeypatch.delenv("no_proxy", raising=False)
+    if https_proxy is None:
+        monkeypatch.setenv("NO_PROXY", "*")
+        monkeypatch.setenv("no_proxy", "*")
+    else:
+        monkeypatch.setenv("https_proxy", https_proxy)
+        monkeypatch.setenv("HTTPS_PROXY", https_proxy)
     # The suite rejects every connect. This test dials 127.0.0.1 only.
     def connect(self, address):
         _loopback_only(address)
@@ -188,17 +194,27 @@ class _LocalGateway:
         try:
             conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             conn.settimeout(2)
-            if self.server_context is not None:
-                conn = self.server_context.wrap_socket(conn, server_side=True)
-            self._read_request(conn)
-            if self.mode == "reset" and index == 1:
-                self._reset(conn)
-            elif self.mode == "trickle" or (self.mode == "trickle_once" and index == 1):
+            if self.mode == "proxy_trickle":
+                self._read_request(conn)
                 sent = self._trickle(conn)
-            elif self.mode == "http_524" and index == 1:
-                self._send_split(conn, 524, b"error code: 524", "Gateway Timeout")
-            else:
+            elif self.mode == "proxy_ok":
+                self._read_request(conn)
+                conn.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                conn = self.server_context.wrap_socket(conn, server_side=True)
+                self._read_request(conn)
                 self._send_split(conn, 200, self.ok_body, "OK")
+            else:
+                if self.server_context is not None:
+                    conn = self.server_context.wrap_socket(conn, server_side=True)
+                self._read_request(conn)
+                if self.mode == "reset" and index == 1:
+                    self._reset(conn)
+                elif self.mode == "trickle" or (self.mode == "trickle_once" and index == 1):
+                    sent = self._trickle(conn)
+                elif self.mode == "http_524" and index == 1:
+                    self._send_split(conn, 524, b"error code: 524", "Gateway Timeout")
+                else:
+                    self._send_split(conn, 200, self.ok_body, "OK")
         except OSError:
             pass
         except Exception as exc:
@@ -259,13 +275,13 @@ class _LocalGateway:
         conn.close()
 
 
-def _post(server, *, timeout_s, max_attempts, sleep):
+def _post(server, *, timeout_s, max_attempts, sleep, url=None):
     spans = []
 
-    def sender(url, body, headers, timeout):
+    def sender(target, body, headers, timeout):
         started = time.monotonic()
         try:
-            return urllib_fox_send(url, body, headers, timeout)
+            return urllib_fox_send(target, body, headers, timeout)
         finally:
             spans.append(time.monotonic() - started)
 
@@ -273,7 +289,7 @@ def _post(server, *, timeout_s, max_attempts, sleep):
     result, retries, _body = post_with_retries(
         model, [{"role": "user", "content": "hi"}], 32,
         key="unit-test-fox-credential", sender=sender, timeout_s=timeout_s,
-        sleep=sleep, clock=_clock, max_attempts=max_attempts, url=server.url)
+        sleep=sleep, clock=_clock, max_attempts=max_attempts, url=url or server.url)
     return model, result, retries, spans
 
 
@@ -418,13 +434,13 @@ def test_prompt_524_is_still_an_http_retry(monkeypatch):
     assert result["status"] == 200
 
 
-def _local_cert(tmp_path):
+def _local_cert(tmp_path, san="IP:127.0.0.1"):
     cert = tmp_path / "cert.pem"
     key = tmp_path / "key.pem"
     subprocess.run(
         ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
          "-keyout", str(key), "-out", str(cert), "-days", "1",
-         "-subj", "/CN=127.0.0.1", "-addext", "subjectAltName=IP:127.0.0.1"],
+         "-subj", "/CN=127.0.0.1", "-addext", f"subjectAltName={san}"],
         check=True, capture_output=True)
     return cert, key
 
@@ -453,6 +469,60 @@ def test_https_trickle_uses_the_same_deadline(monkeypatch, tmp_path):
     assert retries[0]["kind"] == "timeout"
     assert slept == [1.0]
     assert result["status"] == 200
+    assert row["ok"] is True
+    assert "failure" not in row
+    assert row["prompt_tokens"] == 11
+    assert row["cost"] == 0.25
+    assert row["credit"] == 3
+    assert row["quota"] == 9
+
+
+def test_https_proxy_connect_trickle_is_cut_off_at_the_deadline(monkeypatch):
+    server = _LocalGateway("proxy_trickle").start()
+    try:
+        _clear_proxies(monkeypatch, https_proxy=f"http://127.0.0.1:{server.port}")
+        model, result, retries, spans = _post(
+            server, timeout_s=TIMEOUT_S, max_attempts=1, sleep=lambda _n: None,
+            url="https://example.test/v1/chat/completions")
+        server.wait_session(1)
+        row = interpret_call(model, [], 32, result, retries, estimated=11)
+    finally:
+        server.close()
+    _near_deadline(spans[0])
+    assert spans[0] < HOLD_S / 2
+    assert retries[0]["kind"] == "timeout"
+    assert retries[0]["status"] is None
+    assert result["status"] is None
+    assert row["failure"] == "timeout"
+    assert row["raw_usage"] is None
+    assert row["cost"] is None
+    first = next(item for item in server.sessions if item["index"] == 1)
+    assert first["sent"] > len(b"HTTP/1.1 200 OK\r\n")
+    assert first["sent"] < 80
+
+
+def test_https_proxy_tunnel_still_returns_usage(monkeypatch, tmp_path):
+    cert, key = _local_cert(tmp_path, san="DNS:example.test")
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(cert, key)
+    server = _LocalGateway("proxy_ok", server_context=context).start()
+    try:
+        _clear_proxies(monkeypatch, https_proxy=f"http://127.0.0.1:{server.port}")
+
+        def trusted(_http_version):
+            return ssl.create_default_context(cafile=str(cert))
+
+        monkeypatch.setattr(http.client, "_create_https_context", trusted)
+        model, result, retries, spans = _post(
+            server, timeout_s=2, max_attempts=1, sleep=lambda _n: None,
+            url="https://example.test/v1/chat/completions")
+    finally:
+        server.close()
+    assert not server.errors
+    assert retries == []
+    assert spans[0] < 1.5
+    assert result["status"] == 200
+    row = interpret_call(model, [], 32, result, retries, estimated=11)
     assert row["ok"] is True
     assert "failure" not in row
     assert row["prompt_tokens"] == 11
