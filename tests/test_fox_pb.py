@@ -403,7 +403,28 @@ def test_scoring_chain_records_harness_fields_without_docker(tmp_path, monkeypat
     assert plan["eval_command"] == [] or "programbench" in " ".join(plan["eval_command"])
 
 
-def test_public_signal_uses_compile_and_blackbox_probe(tmp_path):
+def test_task_yaml_is_public_and_omits_hidden_tests(tmp_path):
+    task_id = "kisielk__errcheck.dacab89"
+    root = tmp_path / "ProgramBench" / "src" / "programbench" / "data" / "tasks" / task_id
+    root.mkdir(parents=True)
+    (root / "task.yaml").write_text(
+        "repository: kisielk/errcheck\ncommit: dacab891ef4a1c38ecf6c4d94fd66746bb1247d5\n"
+        "language: go\ndifficulty: easy\n"
+        "eval_clean_hashes:\n- abcdef\n",
+        encoding="utf-8")
+    (root / "tests.json").write_text('{"secret":"hidden"}', encoding="utf-8")
+    from alo_cloud.fox_pb import load_pb_public_payload
+    payload = load_pb_public_payload(task_id, repo=tmp_path / "ProgramBench")
+    assert payload["repository"] == "kisielk/errcheck"
+    assert payload["language"] == "go"
+    assert payload["reference_executable"] == "./executable"
+    assert payload["reference_mode"] == "111"
+    assert "eval_clean_hashes" not in payload
+    assert "secret" not in json.dumps(payload)
+    assert "hidden" not in json.dumps(payload)
+
+
+def test_public_signal_runs_compile_and_optional_blackbox_probe(tmp_path):
     services = _services(tmp_path)
     assert services.public_signal() == "unknown"
     root = services.workspace.root
@@ -418,14 +439,19 @@ def test_public_signal_uses_compile_and_blackbox_probe(tmp_path):
             text = "same" if argv[0] == "./executable" else "same"
             return {"returncode": 0, "stdout": text, "stderr": "", "timed_out": False}
 
+    (root / "compile.sh").write_text("#!/bin/sh\n", encoding="utf-8")
     services.sandbox = Sandbox()
-    services.compile_returncode = 0
-    services.differential_enabled = True
+    services.differential_enabled = False
     services.reference_invocations = [("input",)]
     assert services.public_signal() == "pass"
-    assert seen == [["./executable", "input"], ["./build/executable", "input"]]
+    assert [argv[0] for argv in seen] == ["chmod", "./compile.sh"]
+    assert services.differential_enabled is False
+    seen.clear()
+    services.differential_enabled = True
+    assert services.public_signal() == "pass"
+    assert ["./executable", "input"] in seen
+    assert ["./build/executable", "input"] in seen
     assert all(pb_command_violation(argv) is None for argv in seen)
-    services.reference_invocations = [("input",)]
     seen.clear()
 
     class Mismatch:
@@ -472,9 +498,15 @@ def test_live_unit_loads_the_public_payload_and_attaches_a_sandbox(tmp_path, mon
     assert row["reason"] != "public_task_payload_missing"
     assert row["sandbox_image"].startswith("programbench/")
     assert row["sandbox_workdir"] == "/workspace"
+    assert row["sandbox_attached"] is True
+    assert row["sandbox_network"] == "none"
+    assert row["sandbox_network_flag"] is True
+    assert row["reference_executable"] == "./executable"
+    assert row["reference_mode"] == "111"
     assert row["preserve_executable_in_image"] is True
     workspace = next((tmp_path / "live").glob("units/*/state/workspace"))
     assert (workspace / "README.md").read_text(encoding="utf-8") == "task docs"
+    assert "README.md" in row["public_docs"]
     assert not (workspace / "executable").exists()
 
 
@@ -493,23 +525,37 @@ def test_execute_uses_the_official_evaluator(tmp_path, monkeypatch):
     plan = pb_eval_plan(
         "esubaalew__run.0fb9dec", workspace, repo=tmp_path / "ProgramBench",
         unit_id="unit-1", run_dir=tmp_path / "eval-run")
+    assert plan["source_commit"].startswith("895f659")
+    assert plan["network"] == "none"
+    assert plan["build_in_cleanroom"] == "chmod +x ./compile.sh && ./compile.sh"
+    assert plan["image"].startswith("programbench/")
+    assert plan["eval_command"]
     seen = {}
 
     def harness(argv, *, cwd, env):
         seen["argv"] = list(argv)
         seen["env"] = env
         assert "FOXROUTER_API_KEY" not in env
-        return subprocess.CompletedProcess(
-            argv, 0, '{"passed": 1, "total": 4, "compile_success": true}', "")
+        sealed = Path(plan["sealed_dir"]) / plan["task_id"]
+        sealed.mkdir(parents=True, exist_ok=True)
+        (sealed / f"{plan['task_id']}.eval.json").write_text(json.dumps({
+            "test_results": [{"status": "passed", "name": "hidden-name"}, {"status": "failure", "name": "other"}],
+            "error_code": None,
+        }), encoding="utf-8")
+        return subprocess.CompletedProcess(argv, 0, "", "")
 
     scored = run_official_pb_eval(
         plan, harness_run=harness, git_head=lambda repo: PROGRAMBENCH_COMMIT)
-    assert scored["pass_rate"] == 0.25
+    assert scored["pass_rate"] == 0.5
     assert scored["resolved"] is False
     assert scored["compile_success"] is True
     assert scored["status"] == "finished"
     assert "programbench" in seen["argv"]
     assert "eval" in seen["argv"]
+    assert "hidden-name" not in json.dumps(scored)
+    import inspect
+    from alo_cloud.fox_pb import main as pb_main
+    assert "official_pb_scorer" in inspect.getsource(pb_main)
     assert (tmp_path / "eval-run" / "sealed" / "programbench" / "unit-1"
             / "esubaalew__run.0fb9dec" / "submission.tar.gz").is_file()
     report = report_runs([tmp_path / "score"]) if False else None

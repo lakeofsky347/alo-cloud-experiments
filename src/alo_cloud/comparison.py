@@ -97,7 +97,10 @@ def _one_study(rows):
         task = row.get("task_id") or row.get("task")
         if not isinstance(task, str) or not task:
             continue
-        resolved = _resolved(row.get("resolved"))
+        resolved_field = row.get("resolved")
+        if resolved_field is None and "harness_resolved" in row:
+            resolved_field = row.get("harness_resolved")
+        resolved = _resolved(resolved_field)
         cost = row.get("cost_cny")
         tokens = None
         incoming = row.get("input_tokens")
@@ -346,8 +349,11 @@ def pb_paired_report(rows):
     for arm, tasks in by_arm.items():
         for task, item in tasks.items():
             bucket = per_task.setdefault(task, {})
+            resolved_field = item.get("resolved")
+            if resolved_field is None and "harness_resolved" in item:
+                resolved_field = item.get("harness_resolved")
             bucket[arm] = {
-                "resolved": _resolved(item.get("resolved")),
+                "resolved": _resolved(resolved_field),
                 "pass_rate": item.get("pass_rate") if _number(item.get("pass_rate")) else None,
                 "cost": _pb_cost(item),
                 "compile_success": item.get("compile_success") if item.get("compile_success") in {True, False} else None,

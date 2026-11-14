@@ -22,9 +22,11 @@ import shutil
 import tempfile
 import time
 
+import yaml
+
 from .adapters import adapter_for
 from .comparison import pb_paired_report
-from .errors import PilotStopped, ProtocolError
+from .errors import IntegrationNotConfigured, PilotStopped, ProtocolError
 from .collect import _pack_submission
 from .evaluate import (
     PROGRAMBENCH_COMMIT, PROGRAMBENCH_TESTS_REVISION, _container_start_failed, _git_head,
@@ -67,7 +69,7 @@ from .pb_contract import (
     submission_reference_scan,
 )
 from .sandbox import DockerSandbox
-from .workspace_prep import release_unreadable_executable, seed_image_tree
+from .workspace_prep import seed_image_tree
 from .run import load_frozen_transfer, load_public_payload, stage_for
 from .state import TRANSFER_SCHEMA, StateContractError, export_transfer_package
 
@@ -355,7 +357,139 @@ def run_official_pb_eval(plan, *, harness_run=None, git_head=None):
         body.update(parsed)
     elif failed:
         body["status"] = "harness_failed"
+    official = _read_official_eval_json(plan.get("sealed_dir"), plan.get("run_dir"))
+    if official:
+        body.update(official)
+        if body.get("status") == "harness_failed" and official.get("pass_rate") is not None:
+            body["status"] = "finished"
     return body
+
+
+def _score_eval_document(data):
+    """Pass rate from an official ``*.eval.json``. Test names are not kept."""
+    if not isinstance(data, dict):
+        return None
+    results = data.get("test_results")
+    error = data.get("error_code")
+    compile_success = not (isinstance(error, str) and "compile" in error)
+    if not isinstance(results, list) or not results:
+        if error:
+            return {"resolved": False, "pass_rate": 0.0, "compile_success": compile_success}
+        return None
+    passed = sum(1 for item in results if isinstance(item, dict) and item.get("status") == "passed")
+    rate = passed / len(results)
+    return {
+        "pass_rate": rate,
+        "resolved": rate == 1.0 and not error,
+        "compile_success": compile_success,
+    }
+
+
+def _read_official_eval_json(*roots):
+    for root in roots:
+        if not root:
+            continue
+        path = Path(root)
+        if not path.is_dir():
+            continue
+        for candidate in sorted(path.rglob("*.eval.json")):
+            try:
+                data = json.loads(candidate.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            parsed = _score_eval_document(data)
+            if parsed:
+                return parsed
+    return None
+
+
+def official_pb_scorer(plan):
+    """Scorer ``main`` passes for ``--live --execute``. It does not call a model."""
+    return run_official_pb_eval(plan)
+
+
+_TASK_YAML_FIELDS = ("repository", "commit", "language", "difficulty")
+_DOC_SUFFIXES = {".md", ".txt", ".rst", ".pod"}
+
+
+def _task_yaml_candidates(task_id, *, repo, data_dir):
+    found = []
+    if repo:
+        root = Path(repo)
+        found.append(root / "src" / "programbench" / "data" / "tasks" / task_id / "task.yaml")
+    if data_dir:
+        base = Path(data_dir)
+        found.append(base / "ProgramBench" / f"{task_id}.json")
+        found.append(base / task_id / "task.yaml")
+        found.append(base / "tasks" / task_id / "task.yaml")
+        found.append(base / "src" / "programbench" / "data" / "tasks" / task_id / "task.yaml")
+    return found
+
+
+def _public_task_body(task_id, raw):
+    """Public task fields only. tests.json and eval hashes stay out."""
+    body = {
+        "task_id": task_id,
+        "reference_executable": "./executable",
+        "reference_mode": "111",
+        "docs": [],
+    }
+    if not isinstance(raw, dict):
+        return body
+    for key in _TASK_YAML_FIELDS:
+        value = raw.get(key)
+        if isinstance(value, str) and value:
+            body[key] = value
+    statement = raw.get("problem_statement")
+    if isinstance(statement, str) and statement.strip():
+        body["problem_statement"] = statement
+    else:
+        name = body.get("repository") or task_id
+        language = body.get("language")
+        parts = [f"Rebuild {name} from its documentation and the reference program."]
+        if language:
+            parts.append(f"Language: {language}.")
+        parts.append(
+            "The docs are in the workspace. The reference program is ./executable. "
+            "It is execute-only (mode 111).")
+        body["problem_statement"] = " ".join(parts)
+    return body
+
+
+def load_pb_public_payload(task_id, *, repo=None, data_dir=None):
+    """Load task.yaml or a staged public JSON. Hidden tests are not read."""
+    for path in _task_yaml_candidates(task_id, repo=repo, data_dir=data_dir):
+        if not path.is_file():
+            continue
+        text = path.read_text(encoding="utf-8")
+        if path.suffix == ".json":
+            raw = json.loads(text)
+        else:
+            raw = yaml.safe_load(text)
+        if not isinstance(raw, dict):
+            raise PbStopped("public_task_payload_must_be_object")
+        body = _public_task_body(task_id, raw)
+        body["source_path"] = str(path)
+        return body
+    return None
+
+
+def _workspace_doc_paths(root):
+    paths = []
+    root = Path(root)
+    if not root.is_dir():
+        return paths
+    for path in sorted(root.rglob("*")):
+        if not path.is_file() or path.is_symlink():
+            continue
+        relative = path.relative_to(root).as_posix()
+        if relative == "executable" or relative.startswith(".git/") or path.name == "tests.json":
+            continue
+        if path.suffix.lower() in _DOC_SUFFIXES or path.name.upper().startswith("README"):
+            paths.append(relative)
+        if len(paths) >= 40:
+            break
+    return paths
 
 
 def _prepare_pb_workspace(services, unit, *, live, image_seeder):
@@ -370,8 +504,15 @@ def _prepare_pb_workspace(services, unit, *, live, image_seeder):
             seed_image_tree(image, "/workspace", services.workspace.root, docker=image_seeder)
         except PilotStopped as error:
             return str(error)
-        if release_unreadable_executable(services.workspace.root):
-            services.preserve_image_executable = True
+        # The cleanroom binary is execute-only. A host copy would hide it or
+        # make the bytes readable, so the sandbox keeps the image file.
+        reference = services.workspace.root / "executable"
+        if reference.is_symlink() or reference.exists():
+            try:
+                reference.unlink()
+            except OSError:
+                pass
+        services.preserve_image_executable = True
     name = getattr(services, "container_name", None)
     services.sandbox = DockerSandbox(
         services.workspace.root,
@@ -396,17 +537,18 @@ class PbServices(FoxAloServices):
         self.reference_invocations = []
 
     def public_signal(self):
-        """Compile success, plus black-box I/O only when that flag is on.
+        """Run ``compile.sh`` in the sandbox. Differential I/O is opt-in.
 
-        ``signal_override`` is the test hook. A live unit uses the return code
-        of the ``compile.sh`` command the worker actually ran. Unknown stays
-        unknown and is not a stored quality row.
+        The default signal is that compile result alone. ``--differential-signal``
+        also runs ``./executable`` and ``./build/executable`` with the same
+        inputs. A missing script or a sandbox that cannot execute stays
+        unknown and is not written into learning state.
         """
         if self.signal_override in {"pass", "fail", "unknown"}:
             compile_code = {"pass": 0, "fail": 1, "unknown": None}[self.signal_override]
-            differential = "unknown" if self.differential_enabled else None
+            differential = None
         else:
-            compile_code = self.compile_returncode
+            compile_code = self._run_compile()
             differential = self._measure_differential() if self.differential_enabled else None
         result = combine_pb_signal(
             compile_code,
@@ -415,6 +557,29 @@ class PbServices(FoxAloServices):
         )
         self.last_pb_signal = result
         return result["signal"]
+
+    def _run_compile(self):
+        root = self.workspace.root
+        if not (root / "compile.sh").is_file():
+            return None
+        try:
+            self._sandbox_argv(["chmod", "+x", "compile.sh"])
+            result = self._sandbox_argv(["./compile.sh"])
+        except (PilotStopped, ProtocolError, IntegrationNotConfigured, OSError):
+            return None
+        code = result.get("returncode") if isinstance(result, dict) else None
+        if type(code) is not int or isinstance(code, bool):
+            return None
+        self.compile_returncode = code
+        return code
+
+    def _sandbox_argv(self, argv):
+        violation = pb_command_violation(argv)
+        if violation:
+            raise ProtocolError(violation)
+        if self.sandbox is None:
+            raise PilotStopped("sandbox_not_configured")
+        return self.sandbox.command(argv, 60)
 
     def _measure_differential(self):
         """Run the reference and the built program with the same inputs.
@@ -626,8 +791,11 @@ def pb_eval_plan(task_id, submission_dir, *, repo=None, unit_id=None, run_dir=No
         "source_commit": PROGRAMBENCH_COMMIT,
         "tests_revision": PROGRAMBENCH_TESTS_REVISION,
         "reference_mode": "111",
+        "network": "none",
+        "image": programbench_instance_image(task_id),
         "build": ["chmod", "+x", "./compile.sh"],
         "build_exec": ["./compile.sh"],
+        "build_in_cleanroom": "chmod +x ./compile.sh && ./compile.sh",
         "eval_command": programbench_command(repo, sealed) if repo and sealed else [],
         "submission_dir": str(submission_dir),
         "sealed_dir": str(sealed) if sealed else None,
@@ -996,7 +1164,14 @@ def _run_unit(unit, run_dir, *, settings, specs, model_names, transport, limits,
         services, unit, live=live, image_seeder=settings.get("image_seeder"))
     record["sandbox_image"] = getattr(services, "sandbox_image", None)
     record["sandbox_workdir"] = getattr(services.sandbox, "workdir", None) if services.sandbox else None
+    record["sandbox_network"] = "none"
     record["preserve_executable_in_image"] = bool(getattr(services, "preserve_image_executable", False))
+    if services.sandbox is not None:
+        record["sandbox_attached"] = True
+        try:
+            record["sandbox_network_flag"] = "--network=none" in services.sandbox.docker_argv(["true"])
+        except (PilotStopped, ProtocolError, OSError):
+            record["sandbox_network_flag"] = False
     if prepare_note:
         record.update(status="blocked", reason=prepare_note, harness_resolved=None,
                       pass_rate=None, compile_success=None, cost=None, wall_clock_s=0,
@@ -1018,7 +1193,19 @@ def _run_unit(unit, run_dir, *, settings, specs, model_names, transport, limits,
         if hasattr(adapter, "state"):
             adapter.state["observations"] = observations
     started = time.monotonic()
-    payload = load_public_payload(settings.get("data_dir"), "ProgramBench", unit.task_id)
+    payload = load_pb_public_payload(
+        unit.task_id, repo=settings.get("programbench_repo"), data_dir=settings.get("data_dir"))
+    if payload is None:
+        payload = load_public_payload(settings.get("data_dir"), "ProgramBench", unit.task_id)
+    if isinstance(payload, dict):
+        payload = dict(payload)
+        payload["reference_executable"] = payload.get("reference_executable") or "./executable"
+        payload["reference_mode"] = "111"
+        payload["docs"] = _workspace_doc_paths(services.workspace.root)
+        record["reference_executable"] = "./executable"
+        record["reference_mode"] = "111"
+        record["public_repository"] = payload.get("repository")
+        record["public_docs"] = list(payload["docs"])
     try:
         stage = stage_for(unit, payload, dry_run=not live)
     except PilotStopped as error:
@@ -1046,7 +1233,7 @@ def _run_unit(unit, run_dir, *, settings, specs, model_names, transport, limits,
         unit.task_id, services.workspace.root, repo=settings.get("programbench_repo"),
         unit_id=unit.unit_id, run_dir=run_dir)
     if execute and scorer is None:
-        scorer = run_official_pb_eval
+        scorer = official_pb_scorer
     scored = apply_pb_score(
         plan, execute=bool(execute), runner=scorer, public_signal=signal,
         cost=usage["cost"], wall_clock_s=wall, submission_check=submission,
@@ -1176,12 +1363,15 @@ def main(argv=None):
             return 0
         if args.live == args.dry_run:
             parser.error("pass exactly one of --dry-run or --live")
+        kwargs = _kwargs_from_args(args)
+        if args.execute and args.live:
+            kwargs["scorer"] = official_pb_scorer
         if args.command == "g0":
-            result = run_g0(args.root, **_kwargs_from_args(args))
+            result = run_g0(args.root, **kwargs)
         else:
             if not args.g0 and not args.tasks:
                 parser.error("pass --tasks or --g0")
-            result = run_arm(args.run_dir, arm=args.arm, **_kwargs_from_args(args))
+            result = run_arm(args.run_dir, arm=args.arm, **kwargs)
         print(_canonical(result))
         return 0
     except (PbStopped, FoxStopped, PilotStopped) as error:
