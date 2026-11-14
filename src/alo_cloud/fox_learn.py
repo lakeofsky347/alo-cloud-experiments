@@ -899,6 +899,7 @@ def _run_unit(chain, unit, run_dir, *, models, specs, settings, transport, limit
         node_assignments=_node_assignments(adapter),
         roles_by_model=roles,
         decision_records=_compact_decisions(adapter.state.get("decision_records")),
+        role_tool_contracts=list(adapter.state.get("role_tool_contracts") or []),
         harness_resolved=scored.get("resolved") if isinstance(scored, dict) else None,
         harness_status=scored.get("status") if isinstance(scored, dict) else None,
         usage=usage,
