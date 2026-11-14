@@ -50,7 +50,14 @@ def role_tool_contract(role):
     raw = getattr(role, "tools", None)
     if not raw:
         return None
-    return tuple(raw)
+    # Planner-written contracts sometimes name a placeholder such as
+    # ``public_tools`` instead of real tool names. Enforcing that literally
+    # rejects every call. Keep only known public tools; a declaration with no
+    # known tool is treated like an empty one (full public set).
+    known = tuple(name for name in raw if isinstance(name, str) and name in TOOLS)
+    if not known:
+        return None
+    return known
 FIXED_S1_S2_DAG = """subtasks:
   - id: s1
     goal: Write alo_repro.py and run python3 alo_repro.py before any fix so it exits non-zero. Then edit the source. Run python3 alo_repro.py again so it exits 0. Do not weaken the script.
