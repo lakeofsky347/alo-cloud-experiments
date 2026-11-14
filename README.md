@@ -113,6 +113,14 @@ python -m alo_cloud.fox_single estimate --split test --all
 python -m alo_cloud.fox_learn plan --pool fox --n 4 --seed fox-alo-learn-v1 --turn-cap 24 --root /tmp/fox-alo-learn
 ```
 
+## ProgramBench transfer arms
+
+`fox-pb-v1` runs the ProgramBench arms A1-A5 on the fox pool restricted to `deepseek-flash`, `kimi-k3.1-pro`, `mimo-v2.6-flash`, and `glm-5.3-flash`. It does not change `r2_freeze_sha256`. The profile stays frozen unless `--online-update` is passed. The `./executable` differential signal is off unless `--differential-signal` is passed. Commands and the reference-binary guardrails are in [docs/fox_pb.md](docs/fox_pb.md). A G0 dry run does not call the API:
+
+```sh
+python -m alo_cloud.fox_pb g0 --root /tmp/fox-pb-g0 --dry-run
+```
+
 ## 继续实现的原则
 
 G1 固定单模型、G2 ALO、G3 原生 GroupChat 的定义保持独立；G2／G3 使用

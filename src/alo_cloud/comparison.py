@@ -8,6 +8,7 @@ does not call a model.
 from __future__ import annotations
 
 import math
+from statistics import fmean, stdev
 
 
 def _number(value):
@@ -36,7 +37,9 @@ def _condition(row):
 
 def _single_model(condition):
     name = condition.split("/", 1)[0]
-    return name.startswith("g1-") or name in {"g1-main", "g1-strong", "g1-deepseek-flash"}
+    return name.startswith("g1-") or name in {
+        "g1-main", "g1-strong", "g1-deepseek-flash", "A4", "A5",
+    }
 
 
 def _pair_key(left, right):
@@ -94,7 +97,10 @@ def _one_study(rows):
         task = row.get("task_id") or row.get("task")
         if not isinstance(task, str) or not task:
             continue
-        resolved = _resolved(row.get("resolved"))
+        resolved_field = row.get("resolved")
+        if resolved_field is None and "harness_resolved" in row:
+            resolved_field = row.get("harness_resolved")
+        resolved = _resolved(resolved_field)
         cost = row.get("cost_cny")
         tokens = None
         incoming = row.get("input_tokens")
@@ -254,3 +260,173 @@ def comparison_markdown(report):
                 f"{item['only_left']} | {item['only_right']} | {item['neither']} |")
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
+
+
+PB_PAIRS = (("A1", "A2"), ("A1", "A3"), ("A1", "A4"), ("A5", "A4"))
+
+
+def _mean_sd(values):
+    clean = [float(value) for value in values if _number(value)]
+    if not clean:
+        return {"n": 0, "mean": None, "sd": None}
+    if len(clean) == 1:
+        return {"n": 1, "mean": clean[0], "sd": None}
+    return {"n": len(clean), "mean": fmean(clean), "sd": stdev(clean)}
+
+
+def _pb_score(row):
+    rate = row.get("pass_rate")
+    if _number(rate) and rate <= 1:
+        return float(rate)
+    resolved = _resolved(row.get("resolved"))
+    if resolved is True:
+        return 1.0
+    if resolved is False:
+        return 0.0
+    return None
+
+
+def _pb_first_assignment(row):
+    named = row.get("first_assignment")
+    if isinstance(named, str) and named:
+        return named
+    nodes = row.get("node_assignments")
+    if isinstance(nodes, list):
+        for node in nodes:
+            if isinstance(node, dict) and node.get("node_id") in {"p1", "g1"}:
+                model = node.get("model_id")
+                if isinstance(model, str) and model:
+                    return model
+        if nodes and isinstance(nodes[0], dict):
+            model = nodes[0].get("model_id")
+            if isinstance(model, str) and model:
+                return model
+    return None
+
+
+def _pb_cost(row):
+    for key in ("cost", "cost_cny"):
+        value = row.get(key)
+        if _number(value):
+            return float(value)
+    usage = row.get("usage")
+    if isinstance(usage, dict) and _number(usage.get("cost")):
+        return float(usage["cost"])
+    return None
+
+
+def pb_paired_report(rows):
+    """ProgramBench arm table plugged into the shared comparison report.
+
+    Pairs are A1-A2, A1-A3, A1-A4, and A5-A4. Decision-difference is the
+    fraction of tasks whose first A1 assignment differs from A2. Missing
+    scores stay null.
+    """
+    prepared = []
+    by_arm = {}
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        arm = row.get("arm") or row.get("condition")
+        task = row.get("task_id") or row.get("task")
+        if not isinstance(arm, str) or not arm or not isinstance(task, str) or not task:
+            continue
+        item = dict(row)
+        item["condition"] = arm
+        item["arm"] = arm
+        item["task_id"] = task
+        item["study"] = "ProgramBench"
+        # The runner stores the harness outcome as harness_resolved. The shared
+        # comparison tables read resolved.
+        if item.get("resolved") is None and "harness_resolved" in row:
+            item["resolved"] = row.get("harness_resolved")
+        if "cost_cny" not in item and _pb_cost(row) is not None:
+            item["cost_cny"] = _pb_cost(row)
+        prepared.append(item)
+        by_arm.setdefault(arm, {})[task] = item
+    base = comparison_report(prepared)
+    per_task = {}
+    for arm, tasks in by_arm.items():
+        for task, item in tasks.items():
+            bucket = per_task.setdefault(task, {})
+            resolved_field = item.get("resolved")
+            if resolved_field is None and "harness_resolved" in item:
+                resolved_field = item.get("harness_resolved")
+            bucket[arm] = {
+                "resolved": _resolved(resolved_field),
+                "pass_rate": item.get("pass_rate") if _number(item.get("pass_rate")) else None,
+                "cost": _pb_cost(item),
+                "compile_success": item.get("compile_success") if item.get("compile_success") in {True, False} else None,
+                "first_assignment": _pb_first_assignment(item),
+                "wall_clock_s": item.get("wall_clock_s") if _number(item.get("wall_clock_s")) else None,
+            }
+    pairs = {}
+    paired_body = base.get("ProgramBench", {}).get("paired", {})
+    for left, right in PB_PAIRS:
+        key = f"{left}-{right}"
+        shared = sorted(set(by_arm.get(left, {})) & set(by_arm.get(right, {})))
+        rows_for = []
+        for task in shared:
+            a = per_task[task].get(left, {})
+            b = per_task[task].get(right, {})
+            rows_for.append({
+                "task_id": task,
+                "left": a,
+                "right": b,
+            })
+        lookup = paired_body.get(f"{left}__vs__{right}") or paired_body.get(f"{right}__vs__{left}")
+        pairs[key] = {
+            "left": left,
+            "right": right,
+            "tasks": rows_for,
+            "comparison": lookup,
+        }
+    both = sorted(set(by_arm.get("A1", {})) & set(by_arm.get("A2", {})))
+    compared = 0
+    differ = 0
+    for task in both:
+        left = per_task[task]["A1"].get("first_assignment")
+        right = per_task[task]["A2"].get("first_assignment")
+        if not isinstance(left, str) or not isinstance(right, str):
+            continue
+        compared += 1
+        if left != right:
+            differ += 1
+    arms = {}
+    for arm, tasks in sorted(by_arm.items()):
+        costs = []
+        scores = []
+        compile_hits = compile_known = 0
+        cost_known = 0
+        for item in tasks.values():
+            cost = _pb_cost(item)
+            if cost is not None:
+                costs.append(cost)
+                cost_known += 1
+            score = _pb_score(item)
+            if score is not None:
+                scores.append(score)
+            compile = item.get("compile_success")
+            if compile in {True, False}:
+                compile_known += 1
+                if compile is True:
+                    compile_hits += 1
+        arms[arm] = {
+            "units": len(tasks),
+            "cost_per_unit": (sum(costs) / cost_known) if cost_known else None,
+            "compile_rate": (compile_hits / compile_known) if compile_known else None,
+            "compile_known": compile_known,
+            "variance": {
+                "cost": _mean_sd(costs),
+                "score": _mean_sd(scores),
+            },
+        }
+    return {
+        "schema": "fox-pb-paired-v1",
+        "comparison": base.get("ProgramBench", _empty_study()),
+        "pairs": pairs,
+        "per_task": per_task,
+        "decision_difference_rate": (differ / compared) if compared else None,
+        "decision_difference": {"compared": compared, "differ": differ},
+        "arms": arms,
+    }
