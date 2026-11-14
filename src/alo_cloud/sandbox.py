@@ -44,6 +44,9 @@ SWE_TESTBED_PATH = (
 _MEMORY = re.compile(r"\d+[bBkKmMgG]")
 _PIDS = re.compile(r"[1-9]\d{0,6}")
 _TMPFS = re.compile(r"\d+[bBkKmMgG]")
+# Docker container names. Parallel chains pass one so their ``docker run``
+# processes cannot share a name. Unset leaves the historical argv unchanged.
+_CONTAINER_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,62}")
 
 
 class SandboxUnknown(PilotStopped):
@@ -429,7 +432,7 @@ class DockerSandbox:
     def __init__(self, workspace, *, image=None, image_resolver=None, runner=None,
                  permit_execution=False, memory=None, pids_limit=None, tmpfs_size=None,
                  extra_mounts=(), workdir="/workspace", mount_points=None, path=None,
-                 merge_image_workspace=False):
+                 merge_image_workspace=False, container_name=None):
         if image_resolver is None and not _image_ok(image):
             raise PilotStopped("invalid_sandbox_image")
         if image_resolver is not None and not callable(image_resolver):
@@ -451,6 +454,10 @@ class DockerSandbox:
             raise PilotStopped("invalid_sandbox_mount")
         if self.path is not None and (not isinstance(self.path, str) or not self.path or "\n" in self.path):
             raise PilotStopped("invalid_sandbox_path")
+        if container_name is not None and (
+                not isinstance(container_name, str) or not _CONTAINER_NAME.fullmatch(container_name)):
+            raise PilotStopped("invalid_container_name")
+        self.container_name = container_name
         if self.permit_execution and self.runner is not None:
             raise PilotStopped("one_sandbox_runner")
         for mount in (*self.extra_mounts, *self.mount_points):
@@ -469,13 +476,15 @@ class DockerSandbox:
 
     def docker_argv(self, argv):
         image = self.resolved_image()
-        command = [
-            "docker", "run", "--rm",
+        command = ["docker", "run", "--rm"]
+        if self.container_name:
+            command.extend(["--name", self.container_name])
+        command.extend([
             "--network=none",
             "--cap-drop=ALL",
             f"--pids-limit={self.pids_limit}",
             f"--memory={self.memory}",
-        ]
+        ])
         # The in-image /workspace must stay writable when an execute-only binary
         # cannot be copied out. Every other sandbox keeps a read-only root.
         if not self.merge_image_workspace:

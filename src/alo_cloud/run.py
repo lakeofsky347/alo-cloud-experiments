@@ -1264,7 +1264,8 @@ def _parser():
     parser = argparse.ArgumentParser(description="Run the frozen M1 or M2 schedule.")
     parser.add_argument("--study", choices=("m1", "m2"))
     parser.add_argument("--arm", action="append", default=[],
-                        choices=("g1-main", "g1-strong", "g1-deepseek-flash", "g2", "g2-fixed", "g2-random", "g3"))
+                        choices=("g1-main", "g1-strong", "g1-deepseek-flash", "g2", "g2-fixed",
+                                 "g2-random", "g2-learn", "g2-resources", "g3"))
     parser.add_argument("--controls", action="store_true",
                         help="Add the follow-up arms (g1-deepseek-flash, g2-fixed, g2-random). "
                              "They are not part of the frozen r2 schedule.")
@@ -1317,6 +1318,10 @@ def main(argv=None):
     if args.pb_smoke:
         args.study = args.study or "m1"
         args.batch = "r2"
+    if set(args.arm) & {"g2-learn", "g2-resources"}:
+        parser.error(
+            "g2-learn and g2-resources are the SWE-bench Lite learning stream on "
+            "--pool fox: python -m alo_cloud.fox_learn plan --pool fox")
     if args.study not in {"m1", "m2"}:
         parser.error("--study is required")
     if args.live == args.dry_run:

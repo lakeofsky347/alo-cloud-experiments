@@ -105,6 +105,14 @@ python -m alo_cloud.fox_single estimate --split test --all
 
 `--split` defaults to dev. The first run is 6 × 23 = 138 units. Test (6 × 300 = 1800) is deferred and stays selectable. Passing `--all` is required before a full dev run. After that run, `estimate --from-run-dir` and `report` extrapolate a labeled test-300 cost from observed per-instance usage. That figure is an estimate, not a test-split measurement.
 
+## Foxrouter ALO learning stream
+
+`fox-alo-learn-v1` runs the ALO multi-model harness (g2-learn persist, g2-learn reset, g2-resources) on the same six fox models. It does not open the mainland CNY ledger and does not change `r2_freeze_sha256`. Commands are in [docs/fox_alo_learn.md](docs/fox_alo_learn.md). A plan does not call the API:
+
+```sh
+python -m alo_cloud.fox_learn plan --pool fox --n 4 --seed fox-alo-learn-v1 --turn-cap 24 --root /tmp/fox-alo-learn
+```
+
 ## 继续实现的原则
 
 G1 固定单模型、G2 ALO、G3 原生 GroupChat 的定义保持独立；G2／G3 使用

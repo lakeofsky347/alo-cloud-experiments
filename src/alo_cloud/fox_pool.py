@@ -170,6 +170,44 @@ def resolve_models(names):
     return tuple(chosen)
 
 
+def resolve_alo_pool(name, models=None):
+    """Select the ALO model pool.
+
+    ``domestic`` is the mainland pay-as-you-go pool and its CNY ledger. Its
+    membership is the frozen ``MODEL_POOL`` and is not a subset. ``fox`` is
+    the Foxrouter pool. ``models`` may be ``all`` or a list of fox names, so
+    a run can use a subset. Order follows ``FOX_MODELS``. This does not open
+    a socket and does not read a key.
+    """
+    if name in (None, "domestic", "mainland"):
+        if models not in (None, "all", [], (), ["all"], ("all",)):
+            raise ValueError("domestic_pool_is_fixed")
+        return {
+            "kind": "domestic",
+            "models": MODEL_POOL,
+            "specs": (),
+            "budget": "cny",
+            "prices": "list",
+        }
+    if name != "fox":
+        raise ValueError("unknown_pool:" + str(name))
+    chosen = resolve_models("all" if models in (None, "all") else models)
+    order = {row.internal: index for index, row in enumerate(FOX_MODELS)}
+    chosen = tuple(sorted(chosen, key=lambda row: order[row.internal]))
+    return {
+        "kind": "fox",
+        "models": tuple(row.internal for row in chosen),
+        "specs": chosen,
+        "budget": "raw_optional",
+        "prices": "none",
+    }
+
+
+# No list price. The learning stream uses this prior so a missing CNY rate does
+# not reserve 0.1 CNY and trip an optional raw-cost cap before any call.
+FOX_RESOURCE_PRIOR = {"requests": 2.0, "tokens": 8192.0, "seconds": 90.0, "cny": 0.0}
+
+
 def model_settings(model, *, context_caps=None, max_tokens=None):
     """Apply per-model overrides. Mimo still cannot be set to 70k or above."""
     cap = model.context_token_cap
