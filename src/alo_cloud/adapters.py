@@ -40,24 +40,112 @@ FIXED_ROUTE_MODEL = G1_DEEPSEEK_FLASH_MODEL
 EXPORT_MODES = ("full", "resources")
 
 
+# Planner spellings -> public tools (``public_tools.TOOLS``). The planner prompt
+# does not list the tool names, so planner-written role contracts use their own
+# vocabulary. Keys are normalized (lower case, ``-``/space -> ``_``). The names
+# seen in the first fox-alo-learn-v1 units (2026-11-15) are marked "seen".
+# Mappings are deliberately narrow: a name only grants the tools it plainly
+# describes. ``public_tools`` is the planner's placeholder for the whole set.
+ROLE_TOOL_ALIASES = {
+    # placeholder for the whole public set (seen)
+    "public_tools": TOOLS,
+    "all_tools": TOOLS,
+    # read / inspect
+    "view": ("read_file",),
+    "view_file": ("read_file",),
+    "open_file": ("read_file",),
+    "cat": ("read_file",),
+    "file_reader": ("read_file",),
+    "ls": ("list_files",),
+    "list_dir": ("list_files",),
+    "list_directory": ("list_files",),
+    # search
+    "search_code": ("search",),            # seen
+    "code_search": ("search",),
+    "grep": ("search",),
+    "rg": ("search",),
+    "find": ("search",),
+    # edit / write
+    "apply_patch": ("edit_file", "write_file"),             # seen
+    "file_editor": ("read_file", "edit_file", "write_file"),  # seen
+    "str_replace_editor": ("read_file", "edit_file", "write_file"),
+    "editor": ("read_file", "edit_file", "write_file"),
+    "create_file": ("write_file",),
+    # run commands / tests
+    "run_tests": ("command",),             # seen
+    "test_runner": ("command",),           # seen
+    "execute_command": ("command",),       # seen
+    "run_command": ("command",),
+    "shell": ("command",),                 # seen
+    "bash": ("command",),
+    "terminal": ("command",),
+    "pytest": ("command",),
+    # run code
+    "python": ("execute_code",),
+    "run_python": ("execute_code",),
+    "code_interpreter": ("execute_code",),
+}
+
+ROLE_CONTRACT_ENFORCED = "enforced"
+ROLE_CONTRACT_UNRESTRICTED_EMPTY = "unrestricted_empty"
+ROLE_CONTRACT_UNRESTRICTED_UNKNOWN = "unrestricted_unknown"
+
+
+def _normalize_tool_name(name):
+    return name.strip().lower().replace("-", "_").replace(" ", "_")
+
+
+def resolve_role_tool_contract(role):
+    """Map a role's declared tools onto public tools and say how it is applied.
+
+    Returns ``declared`` (as written), ``mapped`` (tuple of public tools, or
+    None for the full set), ``mode``, ``unknown`` (names with no mapping), and
+    ``restricts`` (True when the enforced set is smaller than ``TOOLS``).
+
+    - no declaration: ``unrestricted_empty`` (pre-#34 full set);
+    - every name is a public tool or a ``ROLE_TOOL_ALIASES`` key: ``enforced``
+      with the mapped union, in first-seen order;
+    - any name still unknown: ``unrestricted_unknown``. Enforcing only the
+      recognized part would strip edit or command rights at random.
+    """
+    raw = getattr(role, "tools", None)
+    declared = [name if isinstance(name, str) else repr(name) for name in (raw or ())]
+    if not raw:
+        return {"declared": declared, "mapped": None, "mode": ROLE_CONTRACT_UNRESTRICTED_EMPTY,
+                "unknown": [], "restricts": False}
+    mapped = []
+    unknown = []
+    for name in raw:
+        key = _normalize_tool_name(name) if isinstance(name, str) else None
+        if key in TOOLS:
+            tools = (key,)
+        else:
+            tools = ROLE_TOOL_ALIASES.get(key)
+        if not tools:
+            unknown.append(name if isinstance(name, str) else repr(name))
+            continue
+        for tool in tools:
+            if tool not in mapped:
+                mapped.append(tool)
+    if unknown:
+        return {"declared": declared, "mapped": None, "mode": ROLE_CONTRACT_UNRESTRICTED_UNKNOWN,
+                "unknown": unknown, "restricts": False}
+    return {"declared": declared, "mapped": tuple(mapped), "mode": ROLE_CONTRACT_ENFORCED,
+            "unknown": [], "restricts": set(mapped) != set(TOOLS)}
+
+
 def role_tool_contract(role):
     """Tools dispatch will enforce, or None for the full public set.
 
     An empty declaration is not a restriction. Fallback generalists and any
-    other role with no tool contract keep the pre-#34 tool set. A non-empty
-    list, including a review role limited to ``command``, is enforced.
+    other role with no tool contract keep the pre-#34 tool set. A declaration
+    whose names all map onto public tools (``ROLE_TOOL_ALIASES``), including a
+    review role limited to ``command``, is enforced. A declaration with any
+    unknown name is not enforced. See ``resolve_role_tool_contract``.
     """
-    raw = getattr(role, "tools", None)
-    if not raw:
-        return None
-    # Planner-written contracts sometimes name a placeholder such as
-    # ``public_tools`` instead of real tool names. Enforcing that literally
-    # rejects every call. Keep only known public tools; a declaration with no
-    # known tool is treated like an empty one (full public set).
-    known = tuple(name for name in raw if isinstance(name, str) and name in TOOLS)
-    if not known:
-        return None
-    return known
+    return resolve_role_tool_contract(role)["mapped"]
+
+
 FIXED_S1_S2_DAG = """subtasks:
   - id: s1
     goal: Write alo_repro.py and run python3 alo_repro.py before any fix so it exits non-zero. Then edit the source. Run python3 alo_repro.py again so it exits 0. Do not weaken the script.
@@ -816,7 +904,18 @@ class HeterogeneousALO:
                     services._repro_v1_cache = None
                 except Exception:
                     pass
-                tools = role_tool_contract(subtask.role)
+                contract = resolve_role_tool_contract(subtask.role)
+                tools = contract["mapped"]
+                adapter.state.setdefault("role_tool_contracts", []).append({
+                    "node_id": subtask.id,
+                    "role_id": subtask.role.role_id,
+                    "attempt": attempt,
+                    "declared": list(contract["declared"]),
+                    "mapped": list(tools) if tools is not None else None,
+                    "mode": contract["mode"],
+                    "unknown": list(contract["unknown"]),
+                    "restricts": contract["restricts"],
+                })
                 topics = tuple(getattr(subtask, "topics", ()) or ())
                 last.clear()
                 last.update(started=started, resources_before=before, quality_before=quality_before,
