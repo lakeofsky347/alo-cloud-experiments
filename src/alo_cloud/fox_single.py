@@ -6,15 +6,17 @@ read from ``FOXROUTER_API_KEY`` only when ``--live`` sends, and it is not
 written into the run metadata.
 
 Offline tests inject ``sender``. The default live sender is the only path
-that opens a socket.
+that opens a gateway socket.
 """
 from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
+import http.client
 import json
 import os
 from pathlib import Path
+import socket
 import time
 import urllib.error
 import urllib.request
@@ -146,16 +148,278 @@ def _load_jsonl(path):
     return rows
 
 
+# A blocking read this close to the deadline is the deadline. Starting another
+# socket wait here would run past the attempt budget. ``urllib``'s timeout is
+# only the limit for one recv, so trickle and keepalive bytes would otherwise
+# keep resetting it.
+_FOX_DEADLINE_EPSILON_S = 0.05
+
+
+class _FoxDeadlineSocket:
+    """Socket proxy that bounds the whole attempt, not each blocking call.
+
+    Every send and recv shrinks the underlying timeout to the time still left
+    and raises ``TimeoutError`` once that budget is gone. ``makefile`` keeps
+    its own refcount so ``HTTPConnection`` can mark the socket closed after
+    the headers and the body can still be read through the buffered file.
+    """
+
+    def __init__(self, sock, deadline):
+        self._sock = sock
+        self._deadline = deadline
+        self._io_refs = 0
+        self._closed = False
+
+    def _remaining(self):
+        return self._deadline - time.monotonic()
+
+    def _abort(self):
+        sock = self._sock
+        if sock is None:
+            return
+        for action in (
+            lambda: sock.shutdown(socket.SHUT_RDWR),
+            lambda: sock.close(),
+        ):
+            try:
+                action()
+            except OSError:
+                pass
+
+    def _arm(self):
+        remaining = self._remaining()
+        if remaining <= _FOX_DEADLINE_EPSILON_S:
+            self._abort()
+            raise TimeoutError("fox_read_timeout")
+        try:
+            self._sock.settimeout(remaining)
+        except OSError as error:
+            if self._remaining() <= _FOX_DEADLINE_EPSILON_S:
+                self._abort()
+                raise TimeoutError("fox_read_timeout") from error
+            raise
+
+    def _io(self, method, *args, **kwargs):
+        self._arm()
+        try:
+            return method(*args, **kwargs)
+        except TimeoutError as error:
+            self._abort()
+            raise TimeoutError("fox_read_timeout") from error
+
+    def recv(self, *args, **kwargs):
+        return self._io(self._sock.recv, *args, **kwargs)
+
+    def recv_into(self, *args, **kwargs):
+        return self._io(self._sock.recv_into, *args, **kwargs)
+
+    def send(self, *args, **kwargs):
+        return self._io(self._sock.send, *args, **kwargs)
+
+    def sendall(self, data, flags=0):
+        view = memoryview(data)
+        while len(view):
+            sent = self._io(self._sock.send, view, flags)
+            if not sent:
+                raise TimeoutError("fox_read_timeout")
+            view = view[sent:]
+
+    def settimeout(self, value):
+        remaining = self._remaining()
+        if remaining <= _FOX_DEADLINE_EPSILON_S:
+            self._abort()
+            raise TimeoutError("fox_read_timeout")
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            chosen = remaining
+        else:
+            chosen = min(float(value), remaining)
+        self._sock.settimeout(chosen)
+
+    def gettimeout(self):
+        return self._sock.gettimeout()
+
+    def fileno(self):
+        return self._sock.fileno()
+
+    def makefile(self, mode="r", buffering=None, *, encoding=None, errors=None, newline=None):
+        return socket.socket.makefile(
+            self, mode, buffering, encoding=encoding, errors=errors, newline=newline)
+
+    def close(self):
+        self._closed = True
+        if self._io_refs <= 0:
+            self._real_close()
+
+    def _decref_socketios(self):
+        if self._io_refs > 0:
+            self._io_refs -= 1
+        if self._closed:
+            self.close()
+
+    def _real_close(self):
+        sock = self._sock
+        self._sock = None
+        if sock is None:
+            return
+        try:
+            sock.close()
+        except OSError:
+            pass
+
+    def _detach(self):
+        """Hand back the raw socket without closing it."""
+        sock = self._sock
+        self._sock = None
+        self._closed = True
+        return sock
+
+    def __getattr__(self, name):
+        sock = self._sock
+        if sock is None:
+            raise AttributeError(name)
+        return getattr(sock, name)
+
+
+class _FoxDeadlineTransport:
+    """Shared connect step for the HTTP and HTTPS connection subclasses."""
+
+    def _fox_prepare_timeout(self):
+        remaining = self._fox_deadline - time.monotonic()
+        if remaining <= _FOX_DEADLINE_EPSILON_S:
+            raise TimeoutError("fox_read_timeout")
+        current = self.timeout
+        if isinstance(current, bool) or not isinstance(current, (int, float)):
+            self.timeout = remaining
+        else:
+            self.timeout = min(float(current), remaining)
+
+    def _fox_wrap_socket(self):
+        sock = self.sock
+        if sock is not None and not isinstance(sock, _FoxDeadlineSocket):
+            self.sock = _FoxDeadlineSocket(sock, self._fox_deadline)
+
+    def _fox_take_raw_socket(self):
+        wrapped = self.sock
+        if isinstance(wrapped, _FoxDeadlineSocket):
+            self.sock = wrapped._detach()
+        return self.sock
+
+
+class _FoxDeadlineHTTPConnection(_FoxDeadlineTransport, http.client.HTTPConnection):
+    def __init__(self, *args, deadline, **kwargs):
+        self._fox_deadline = deadline
+        super().__init__(*args, **kwargs)
+
+    def connect(self):
+        self._fox_prepare_timeout()
+        super().connect()
+        self._fox_wrap_socket()
+
+
+class _FoxDeadlineHTTPSConnection(_FoxDeadlineTransport, http.client.HTTPSConnection):
+    def __init__(self, *args, deadline, **kwargs):
+        self._fox_deadline = deadline
+        super().__init__(*args, **kwargs)
+
+    def connect(self):
+        """Connect, and keep the deadline armed while a proxy tunnel is read.
+
+        ``HTTPSConnection.connect`` reads the proxy ``CONNECT`` response before
+        returning. Those reads used to sit on the raw socket, so a proxy that
+        trickled bytes could outlive ``--read-timeout``. The tunnel is read
+        through the deadline socket. TLS is then negotiated on the raw socket,
+        because OpenSSL uses the file descriptor rather than ``recv``.
+        """
+        self._fox_prepare_timeout()
+        if not self._tunnel_host:
+            super().connect()
+            self._fox_wrap_socket()
+            return
+        tunnel_host = self._tunnel_host
+        self._tunnel_host = None
+        try:
+            http.client.HTTPConnection.connect(self)
+        finally:
+            self._tunnel_host = tunnel_host
+        self._fox_wrap_socket()
+        self._tunnel()
+        raw = self._fox_take_raw_socket()
+        remaining = self._fox_deadline - time.monotonic()
+        if remaining <= _FOX_DEADLINE_EPSILON_S:
+            raise TimeoutError("fox_read_timeout")
+        try:
+            raw.settimeout(remaining)
+        except OSError as error:
+            raise TimeoutError("fox_read_timeout") from error
+        try:
+            self.sock = self._context.wrap_socket(raw, server_hostname=tunnel_host)
+        except TimeoutError as error:
+            raise TimeoutError("fox_read_timeout") from error
+        self._fox_wrap_socket()
+
+
+class _FoxDeadlineHTTPHandler(urllib.request.HTTPHandler):
+    def __init__(self, deadline):
+        super().__init__()
+        self._deadline = deadline
+
+    def http_open(self, req):
+        return self.do_open(self._connection, req)
+
+    def _connection(self, host, **kwargs):
+        return _FoxDeadlineHTTPConnection(host, deadline=self._deadline, **kwargs)
+
+
+class _FoxDeadlineHTTPSHandler(urllib.request.HTTPSHandler):
+    def __init__(self, deadline):
+        super().__init__()
+        self._deadline = deadline
+
+    def https_open(self, req):
+        return self.do_open(self._connection, req, context=self._context)
+
+    def _connection(self, host, **kwargs):
+        return _FoxDeadlineHTTPSConnection(host, deadline=self._deadline, **kwargs)
+
+
+def _close_quietly(obj):
+    close = getattr(obj, "close", None)
+    if close is None:
+        return
+    try:
+        close()
+    except Exception:
+        return
+
+
 def urllib_fox_send(url, body, headers, timeout_s):
-    """One HTTPS POST. Tests must inject a sender instead of calling this."""
+    """POST one completion and stop when ``timeout_s`` seconds have elapsed.
+
+    ``timeout_s`` is the wall-clock budget for this attempt (connect, an HTTPS
+    proxy ``CONNECT``, request, headers, and body). It is the value of
+    ``--read-timeout``, which defaults to 600 seconds. A peer that keeps the
+    socket readable does not get another full window per byte. When the budget
+    is spent the socket is aborted and
+    ``TimeoutError`` propagates, which the retry loop already records as
+    ``timeout``.
+    """
     data = json.dumps(body, ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(url, data=data, method="POST", headers=headers)
+    budget = float(timeout_s)
+    deadline = time.monotonic() + budget
+    opener = urllib.request.build_opener(
+        _FoxDeadlineHTTPHandler(deadline),
+        _FoxDeadlineHTTPSHandler(deadline),
+    )
     try:
-        with urllib.request.urlopen(request, timeout=timeout_s) as response:
+        with opener.open(request, timeout=budget) as response:
             return getattr(response, "status", 200), response.read()
     except urllib.error.HTTPError as error:
         try:
             raw = error.read()
+        except TimeoutError:
+            _close_quietly(error)
+            raise
         except Exception:
             raw = b""
         return getattr(error, "code", None), raw
@@ -1404,7 +1668,9 @@ def main(argv=None):
     run.add_argument("--budget-cap", type=float, default=None,
                      help="Optional cap on summed raw cost fields. Default off. Missing cost does not block.")
     run.add_argument("--no-seed-images", action="store_true")
-    run.add_argument("--read-timeout", type=float, default=DEFAULT_READ_TIMEOUT_S)
+    run.add_argument(
+        "--read-timeout", type=float, default=DEFAULT_READ_TIMEOUT_S,
+        help="Wall-clock seconds for one chat-completion attempt. Default 600.")
     run.add_argument("--max-attempts", type=int, default=DEFAULT_MAX_ATTEMPTS)
 
     smoke = sub.add_parser("smoke", help="1 or 2 instances through the full chain. Requires --live to call the gateway.")
@@ -1419,7 +1685,9 @@ def main(argv=None):
     smoke.add_argument("--context-cap", action="append", default=[])
     smoke.add_argument("--budget-cap", type=float, default=None)
     smoke.add_argument("--no-seed-images", action="store_true")
-    smoke.add_argument("--read-timeout", type=float, default=DEFAULT_READ_TIMEOUT_S)
+    smoke.add_argument(
+        "--read-timeout", type=float, default=DEFAULT_READ_TIMEOUT_S,
+        help="Wall-clock seconds for one chat-completion attempt. Default 600.")
     smoke.add_argument("--max-attempts", type=int, default=DEFAULT_MAX_ATTEMPTS)
 
     report = sub.add_parser("report", help="Aggregate records.jsonl into summary.json.")

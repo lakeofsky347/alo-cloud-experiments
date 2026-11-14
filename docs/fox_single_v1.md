@@ -31,7 +31,7 @@ The gateway sometimes returns a cosmetic `model` id. Matching ignores a vendor p
 
 Every call row stores `returned_model` and the requested `upstream_model`. A match that needed this normalization, including an accepted alias, sets `model_alias_normalized` to those two ids. That field is a warning, and the call is not failed for it. A real mismatch stays `provider_error`, sets `model_mismatch`, and writes both ids on the call row and in `failures.jsonl`. Prompt, completion, reasoning, and total tokens, plus raw `cost` / `credit` / `quota`, are copied from the response even when that call is rejected. The unit report still sums them, including calls that succeeded before the rejected one.
 
-HTTP 429, 502, 503, 504, 520–524, timeouts, and connection resets are retried with backoff. Each failed attempt is appended to `failures.jsonl` with status, Cloudflare error code when the body has one, and a UTC timestamp.
+HTTP 429, 502, 503, 504, 520–524, timeouts, and connection resets are retried with backoff. `--read-timeout` (default 600 seconds) is the wall-clock budget for one attempt, covering connect, an HTTPS proxy `CONNECT`, headers, and the body. Keepalive or trickle bytes from the gateway do not extend that attempt: at the deadline the socket is aborted, the attempt is stored as `timeout`, and the same backoff runs. Each failed attempt is appended to `failures.jsonl` with status, Cloudflare error code when the body has one, and a UTC timestamp.
 
 ## Task set
 
