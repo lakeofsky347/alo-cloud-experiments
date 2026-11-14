@@ -70,12 +70,22 @@ def state_hash(value):
     return hashlib.sha256(_canonical(value)).hexdigest()
 
 
+def _model_id_ok(model):
+    """Domestic ids and ``fox/...`` internal names. Not a filesystem path."""
+    if not isinstance(model, str) or not re.fullmatch(r"[A-Za-z0-9_.:/-]{1,128}", model):
+        return False
+    if model.startswith("/") or model.endswith("/") or "//" in model or ".." in model:
+        return False
+    return True
+
+
 def _policy(allowed_models, allowed_topics, allowed_cells):
     models = tuple(sorted(set(allowed_models)))
     topics = tuple(sorted(set(DEFAULT_TOPICS if allowed_topics is None else allowed_topics)))
     cells = tuple(sorted(set(DEFAULT_CELLS if allowed_cells is None else allowed_cells)))
-    if not models or any(not isinstance(m, str) or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", m)
-                         for m in models):
+    # ``/`` is the fox-pool internal prefix (``fox/kimi-k3.1-pro``). Domestic
+    # ids have no slash and still match. The id is a ledger key, not a path.
+    if not models or any(not _model_id_ok(m) for m in models):
         raise StateContractError("invalid_frozen_model_pool")
     if any(not isinstance(t, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", t) for t in topics):
         raise StateContractError("invalid_frozen_topic_allowlist")

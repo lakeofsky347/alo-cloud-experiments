@@ -6,6 +6,8 @@
 
 2026-11-14：fox-single 的 `--read-timeout`（默认 600 秒）是单次尝试的墙钟截止，含 HTTPS 代理的 `CONNECT`。网关或代理在套接字上持续送出少量字节时，这次尝试仍会在截止时刻中止，按已有的 `timeout` 失败种类进入原来的重试、退避和账本（含 usage 字段）。数据集、turn cap、工具、提示、评分、模型 id、记录字段和冻结的 g2／r2 哈希不变。
 
+2026-11-14：`fox-alo-learn-v1` 把 ALO 多模型学习流接到 Foxrouter 池（见 [fox_alo_learn.md](fox_alo_learn.md)）。`--pool fox` 使用 fox-single 的客户端、别名规则、墙钟截止和原样 cost／credit／quota。池成员可由 `--models` 或 `--models-file` 选子集。国内池和 CNY 账本不走这条命令；`python -m alo_cloud.run --arm g2-learn` 会指向它，不进入 `iter_r2_units`，也不改 `r2_freeze_sha256`。六条链是 persist／reset／resources-only × forward／reverse，各用独立 run dir、run id、workdir 和容器名。链内按顺序跑，`--turn-cap` 默认 24。已完成的 `unit_id` 会跳过。persist 链结束后 `export` 对最终 profile 调用 `export_transfer_package`。离线测试不发请求。
+
 本仓库承载 M1／M2 的实验计划和初步代码，**不构成正式就绪包或已完成实验的证据**。研究定义见[实验计划](experiment_plan.md)与[实验协议](protocol.md)。本文件不附模型输出、运行成绩或历史审计材料。
 
 用户指定的[行政输入目录](../study_records/README.md)已提供任务预选、有序候补、历史替换、暴露登记、M2待冻结顺序和私有存储定位／哈希。16份预算证据原件另已补齐到私有Drive并回读验证，代码仓库只记录其定位与校验信息；具体云任务的物化、期初预算绑定、完整正式realization和平台接受仍须分别完成。
