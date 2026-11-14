@@ -47,7 +47,9 @@ These are recorded in `manifest.json` and in that run's `pb_freeze` block. `pb_f
 
 PB is fully frozen unless `--online-update` is set. With the default, A1, A2, and A3 use the initial profile on every task, and an in-task observation does not change the next assignment. Unknown compile or differential results are not written into learning state.
 
-When `--differential-signal` is on, the extra signal is a black-box I/O comparison only: the same inputs through the normal interface, then stdout, stderr, exit code, and filesystem side effects. It does not read the reference bytes.
+The public signal is the return code of the `compile.sh` command the worker actually ran. When `--differential-signal` is on and `./build/executable` exists, the same inputs are run through `./executable` and `./build/executable`. The comparison is stdout, stderr, exit code, and filesystem side effects. It does not read the reference bytes.
+
+`--data-dir` holds staged public tasks at `ProgramBench/<task_id>.json`. `--live` requires that file. `--programbench-repo` is the checkout `--execute` scores with `programbench eval`. A missing checkout is `unavailable`, not a zero. A live unit copies the task image's `/workspace` and attaches a `--network=none` sandbox. A dry run attaches that sandbox with execution off. An execute-only reference stays in the image.
 
 ## Reference binary
 
@@ -76,7 +78,20 @@ python -m alo_cloud.fox_pb run \
   --arm A2 \
   --tasks kisielk__errcheck,raviqqe__muffet,esubaalew__run \
   --run-dir /tmp/fox-pb-g0/A2 \
+  --data-dir "$PB_DATA_DIR" \
   --dry-run
+```
+
+Live scoring also names the ProgramBench checkout:
+
+```sh
+python -m alo_cloud.fox_pb run \
+  --arm A2 \
+  --g0 \
+  --run-dir /tmp/fox-pb-g0/A2 \
+  --data-dir "$PB_DATA_DIR" \
+  --programbench-repo "$PROGRAMBENCH_REPO" \
+  --live --execute
 ```
 
 A later run of the same directory skips a `unit_id` that already has a terminal record. The manifest refuses a different model list, task list, request cap, freeze flag, differential flag, role map, or live/dry mode. Use a new directory for `--live`.

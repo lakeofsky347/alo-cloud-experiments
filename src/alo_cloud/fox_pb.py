@@ -25,7 +25,12 @@ import time
 from .adapters import adapter_for
 from .comparison import pb_paired_report
 from .errors import PilotStopped, ProtocolError
-from .evaluate import PROGRAMBENCH_COMMIT, PROGRAMBENCH_TESTS_REVISION, programbench_command
+from .collect import _pack_submission
+from .evaluate import (
+    PROGRAMBENCH_COMMIT, PROGRAMBENCH_TESTS_REVISION, _container_start_failed, _git_head,
+    _harness_run, harness_cwd, programbench_command, programbench_env,
+)
+from .images import programbench_instance_image
 from .fox_learn import FoxAloServices, dry_gateway, planner_for
 from .fox_pool import (
     DEFAULT_READ_TIMEOUT_S,
@@ -49,6 +54,7 @@ from .fox_single import (
 from .freeze import PlannedUnit
 from .pb_contract import (
     DEFAULT_ROLE_MAP,
+    blackbox_probe_argv,
     combine_pb_signal,
     is_reference_path,
     normalize_probe_owner,
@@ -57,8 +63,11 @@ from .pb_contract import (
     pb_command_violation,
     pb_dag,
     pb_prompt,
+    run_blackbox_differential,
     submission_reference_scan,
 )
+from .sandbox import DockerSandbox
+from .workspace_prep import release_unreadable_executable, seed_image_tree
 from .run import load_frozen_transfer, load_public_payload, stage_for
 from .state import TRANSFER_SCHEMA, StateContractError, export_transfer_package
 
@@ -90,7 +99,7 @@ _TERMINAL = frozenset({"completed", "failed", "blocked", "stopped"})
 _LOCKED = (
     "arm", "models", "task_ids", "unit_ids", "request_cap", "online_update",
     "differential_signal", "role_map", "probe_script_owner", "unit_seconds",
-    "read_timeout_s", "live", "frozen",
+    "read_timeout_s", "live", "frozen", "data_dir", "programbench_repo",
 )
 
 
@@ -241,6 +250,140 @@ def plan_units(arm, tasks, *, request_cap, g0=False):
     return tuple(units)
 
 
+def _is_compile_invocation(argv):
+    if not argv:
+        return False
+    base = Path(argv[0]).name
+    if base == "compile.sh":
+        return True
+    if base in {"sh", "bash", "dash"} and len(argv) >= 3 and argv[1] == "-c":
+        return "compile.sh" in argv[2]
+    return False
+
+
+def _side_effect_digest(root):
+    """Hash readable workspace files. The execute-only reference is skipped."""
+    root = Path(root)
+    digest = hashlib.sha256()
+    if not root.is_dir():
+        return digest.hexdigest()
+    for path in sorted(root.rglob("*")):
+        if not path.is_file() or path.is_symlink():
+            continue
+        relative = path.relative_to(root).as_posix()
+        if relative == "executable" or relative.startswith(".git/"):
+            continue
+        digest.update(relative.encode())
+        digest.update(b"\0")
+        try:
+            digest.update(path.read_bytes())
+        except OSError:
+            digest.update(b"<unreadable>")
+    return digest.hexdigest()
+
+
+def _parse_pb_score_text(text):
+    if not isinstance(text, str) or "{" not in text:
+        return None
+    start, end = text.find("{"), text.rfind("}")
+    if end <= start:
+        return None
+    try:
+        value = json.loads(text[start:end + 1])
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(value, dict):
+        return None
+    parsed = {}
+    rate = value.get("pass_rate")
+    passed, total = value.get("passed"), value.get("total")
+    if rate is None and type(passed) is int and type(total) is int and total > 0:
+        rate = passed / total
+    if not isinstance(rate, bool) and isinstance(rate, (int, float)):
+        parsed["pass_rate"] = float(rate)
+        parsed["resolved"] = float(rate) >= 1.0
+    if value.get("resolved") is True or value.get("resolved") is False:
+        parsed["resolved"] = value["resolved"]
+    if value.get("compile_success") is True or value.get("compile_success") is False:
+        parsed["compile_success"] = value["compile_success"]
+    return parsed or None
+
+
+def run_official_pb_eval(plan, *, harness_run=None, git_head=None):
+    """Pack one submission and run ``programbench eval`` when the checkout matches.
+
+    A missing checkout, the wrong commit, or a missing ``uv`` is ``unavailable``.
+    That is not a score of zero. Tests pass ``harness_run`` and do not start Docker.
+    """
+    repo = plan.get("repo") if isinstance(plan, dict) else None
+    if not repo:
+        return {"status": "unavailable", "reason": "programbench_checkout_required",
+                "resolved": None, "pass_rate": None, "compile_success": None}
+    head = (git_head or _git_head)(repo)
+    if head != PROGRAMBENCH_COMMIT:
+        return {"status": "unavailable", "reason": "programbench_commit_mismatch",
+                "observed_commit": head, "resolved": None, "pass_rate": None,
+                "compile_success": None}
+    sealed = plan.get("sealed_dir")
+    workspace = plan.get("submission_dir")
+    task_id = plan.get("task_id")
+    command = list(plan.get("eval_command") or [])
+    if not sealed or not workspace or not task_id or not command:
+        return {"status": "unavailable", "reason": "programbench_submissions_missing",
+                "resolved": None, "pass_rate": None, "compile_success": None}
+    dest = Path(sealed) / task_id / "submission.tar.gz"
+    _pack_submission(workspace, dest)
+    if harness_run is None and shutil.which("uv") is None:
+        return {"status": "unavailable", "reason": "uv_missing", "resolved": None,
+                "pass_rate": None, "compile_success": None, "command": command}
+    run = harness_run or _harness_run
+    run_dir = plan.get("run_dir") or sealed
+    completed = run(command, cwd=harness_cwd(run_dir), env=programbench_env())
+    parsed = _parse_pb_score_text(getattr(completed, "stdout", "") or "")
+    if parsed is None:
+        parsed = _parse_pb_score_text(getattr(completed, "stderr", "") or "")
+    failed = completed.returncode != 0 or _container_start_failed(completed)
+    body = {
+        "status": "harness_failed" if failed and not parsed else "finished",
+        "returncode": completed.returncode,
+        "resolved": None,
+        "pass_rate": None,
+        "compile_success": None,
+        "command": command,
+    }
+    if parsed:
+        body.update(parsed)
+    elif failed:
+        body["status"] = "harness_failed"
+    return body
+
+
+def _prepare_pb_workspace(services, unit, *, live, image_seeder):
+    """Seed the cleanroom ``/workspace`` and attach a no-network sandbox.
+
+    A dry run attaches the sandbox with execution off, so no daemon is contacted.
+    A live run copies the local image. It does not pull.
+    """
+    image = programbench_instance_image(unit.task_id)
+    if live:
+        try:
+            seed_image_tree(image, "/workspace", services.workspace.root, docker=image_seeder)
+        except PilotStopped as error:
+            return str(error)
+        if release_unreadable_executable(services.workspace.root):
+            services.preserve_image_executable = True
+    name = getattr(services, "container_name", None)
+    services.sandbox = DockerSandbox(
+        services.workspace.root,
+        image_resolver=lambda image=image: image,
+        permit_execution=bool(live),
+        container_name=name,
+        merge_image_workspace=bool(getattr(services, "preserve_image_executable", False)),
+    )
+    services.sandbox_image = image
+    return None
+
+
 class PbServices(FoxAloServices):
     """Fox pool services plus the ProgramBench reference-binary guard."""
 
@@ -249,25 +392,89 @@ class PbServices(FoxAloServices):
         self.differential_enabled = bool(differential_enabled)
         self.signal_override = signal_override
         self.last_pb_signal = None
+        self.compile_returncode = None
+        self.reference_invocations = []
 
     def public_signal(self):
+        """Compile success, plus black-box I/O only when that flag is on.
+
+        ``signal_override`` is the test hook. A live unit uses the return code
+        of the ``compile.sh`` command the worker actually ran. Unknown stays
+        unknown and is not a stored quality row.
+        """
         if self.signal_override in {"pass", "fail", "unknown"}:
             compile_code = {"pass": 0, "fail": 1, "unknown": None}[self.signal_override]
+            differential = "unknown" if self.differential_enabled else None
         else:
-            compile_code = None
+            compile_code = self.compile_returncode
+            differential = self._measure_differential() if self.differential_enabled else None
         result = combine_pb_signal(
             compile_code,
             differential_enabled=self.differential_enabled,
-            differential_signal="unknown",
+            differential_signal=differential,
         )
         self.last_pb_signal = result
         return result["signal"]
+
+    def _measure_differential(self):
+        """Run the reference and the built program with the same inputs.
+
+        No sandbox, no built program, or a probe that cannot be executed is
+        unknown. The argv is the normal interface only.
+        """
+        root = self.workspace.root
+        candidate = root / "build" / "executable"
+        if self.sandbox is None or not candidate.exists():
+            return "unknown"
+        probes = list(self.reference_invocations) or [()]
+        signals = []
+        for args in probes:
+            try:
+                reference_argv = blackbox_probe_argv("./executable", args)
+                candidate_argv = blackbox_probe_argv("./build/executable", args)
+                signal = run_blackbox_differential(
+                    reference_argv, candidate_argv, runner=self._blackbox_io)
+            except (ProtocolError, PilotStopped, OSError):
+                return "unknown"
+            signals.append(signal)
+        if not signals or any(item == "unknown" for item in signals):
+            return "unknown"
+        if any(item == "fail" for item in signals):
+            return "fail"
+        return "pass"
+
+    def _blackbox_io(self, argv):
+        before = _side_effect_digest(self.workspace.root)
+        result = self.sandbox.command(argv, 30)
+        after = _side_effect_digest(self.workspace.root)
+        if not isinstance(result, dict) or type(result.get("returncode")) is not int:
+            return None
+        return {
+            "returncode": result["returncode"],
+            "stdout": result.get("stdout") if isinstance(result.get("stdout"), str) else "",
+            "stderr": result.get("stderr") if isinstance(result.get("stderr"), str) else "",
+            "fs_before": before,
+            "fs_after": after,
+        }
+
+    def _observe_command(self, argv, result):
+        if not isinstance(argv, list) or not isinstance(result, dict):
+            return
+        code = result.get("returncode")
+        if type(code) is not int or isinstance(code, bool):
+            return
+        if _is_compile_invocation(argv):
+            self.compile_returncode = code
+        if argv and is_reference_path(argv[0]):
+            self.reference_invocations.append(tuple(argv[1:]))
 
     def command(self, argv, timeout_s=30):
         violation = pb_command_violation(argv)
         if violation:
             raise ProtocolError(violation)
-        return super().command(argv, timeout_s)
+        result = super().command(argv, timeout_s)
+        self._observe_command(argv, result)
+        return result
 
     def execute_code(self, language, code, timeout_s=30):
         violation = pb_code_violation(code)
@@ -408,8 +615,11 @@ def import_swe_profile(source_path, *, allowed_models, model_map=None, strip_qua
     }
 
 
-def pb_eval_plan(task_id, submission_dir, *, repo=None):
+def pb_eval_plan(task_id, submission_dir, *, repo=None, unit_id=None, run_dir=None):
     """Official cleanroom build plus ``programbench eval``. This does not run it."""
+    sealed = None
+    if run_dir and unit_id:
+        sealed = Path(run_dir) / "sealed" / "programbench" / unit_id
     return {
         "task_id": task_id,
         "image_family": "task_cleanroom_v6",
@@ -418,8 +628,12 @@ def pb_eval_plan(task_id, submission_dir, *, repo=None):
         "reference_mode": "111",
         "build": ["chmod", "+x", "./compile.sh"],
         "build_exec": ["./compile.sh"],
-        "eval_command": programbench_command(repo, submission_dir) if repo else [],
+        "eval_command": programbench_command(repo, sealed) if repo and sealed else [],
         "submission_dir": str(submission_dir),
+        "sealed_dir": str(sealed) if sealed else None,
+        "repo": str(repo) if repo else None,
+        "run_dir": str(run_dir) if run_dir else None,
+        "unit_id": unit_id,
     }
 
 
@@ -441,6 +655,7 @@ def apply_pb_score(plan, *, execute, runner, public_signal, cost, wall_clock_s, 
         "submission_check": submission_check,
         "source_commit": plan.get("source_commit"),
         "image_family": plan.get("image_family"),
+        "reason": None,
     }
     if isinstance(submission_check, dict) and submission_check.get("ok") is False:
         body["status"] = "submission_rejected"
@@ -455,7 +670,10 @@ def apply_pb_score(plan, *, execute, runner, public_signal, cost, wall_clock_s, 
     result = runner(plan)
     if not isinstance(result, dict):
         body["status"] = "unavailable"
+        body["reason"] = "pb_eval_unreadable"
         return body
+    if isinstance(result.get("reason"), str):
+        body["reason"] = result["reason"]
     if result.get("resolved") is True or result.get("resolved") is False:
         body["resolved"] = result["resolved"]
     rate = result.get("pass_rate")
@@ -564,6 +782,8 @@ def _manifest(settings, units):
         "read_timeout_s": settings["read_timeout_s"],
         "live": bool(settings["live"]),
         "g0": bool(settings["g0"]),
+        "data_dir": settings.get("data_dir"),
+        "programbench_repo": settings.get("programbench_repo"),
         "reference_guard": "execute-only-blackbox-v1",
         "reference_mode": "111",
         "source_commit": PROGRAMBENCH_COMMIT,
@@ -640,7 +860,8 @@ def run_arm(run_dir, *, arm, tasks=None, g0=False, models="all", request_cap=DEF
             unit_seconds=DEFAULT_UNIT_SECONDS, read_timeout_s=DEFAULT_READ_TIMEOUT_S,
             online_update=False, differential_signal=False, role_map=None,
             probe_script_owner="p1", swe_profile=None, model_map=None, live=False,
-            sender=None, execute=False, scorer=None, signal_override=None, clock=None):
+            sender=None, execute=False, scorer=None, signal_override=None, clock=None,
+            data_dir=None, programbench_repo=None, image_seeder=None):
     """Run one arm in its own directory. Completed unit ids are skipped."""
     if arm not in ARMS:
         raise PbStopped("unknown_pb_arm")
@@ -675,6 +896,9 @@ def run_arm(run_dir, *, arm, tasks=None, g0=False, models="all", request_cap=DEF
         "g0": bool(g0),
         "swe_profile": swe_profile,
         "model_map": model_map,
+        "data_dir": str(data_dir) if data_dir else None,
+        "programbench_repo": str(programbench_repo) if programbench_repo else None,
+        "image_seeder": image_seeder,
     }
     initial_observations, profile_sha = ({}, None)
     if arm in {"A1", "A3"}:
@@ -688,7 +912,7 @@ def run_arm(run_dir, *, arm, tasks=None, g0=False, models="all", request_cap=DEF
             raise PbStopped("swe_profile_changed")
     transport = _transport_for(
         live=live,
-        sender=None if live else (sender or dry_gateway),
+        sender=sender if sender is not None else (None if live else dry_gateway),
         timeout_s=read_timeout_s,
         sleep=time.sleep,
         clock=clock or (lambda: datetime.now(timezone.utc)),
@@ -768,6 +992,17 @@ def _run_unit(unit, run_dir, *, settings, specs, model_names, transport, limits,
         differential_enabled=settings["differential_signal"],
         signal_override=signal_override,
     )
+    prepare_note = _prepare_pb_workspace(
+        services, unit, live=live, image_seeder=settings.get("image_seeder"))
+    record["sandbox_image"] = getattr(services, "sandbox_image", None)
+    record["sandbox_workdir"] = getattr(services.sandbox, "workdir", None) if services.sandbox else None
+    record["preserve_executable_in_image"] = bool(getattr(services, "preserve_image_executable", False))
+    if prepare_note:
+        record.update(status="blocked", reason=prepare_note, harness_resolved=None,
+                      pass_rate=None, compile_success=None, cost=None, wall_clock_s=0,
+                      first_assignment=None)
+        record["_calls"] = []
+        return record
     group, config = _adapter_config(
         arm, models=model_names, request_cap=settings["request_cap"], seed=unit.seed,
         online_update=settings["online_update"], dag=dag, prompt=prompt,
@@ -783,7 +1018,7 @@ def _run_unit(unit, run_dir, *, settings, specs, model_names, transport, limits,
         if hasattr(adapter, "state"):
             adapter.state["observations"] = observations
     started = time.monotonic()
-    payload = load_public_payload(None, "ProgramBench", unit.task_id)
+    payload = load_public_payload(settings.get("data_dir"), "ProgramBench", unit.task_id)
     try:
         stage = stage_for(unit, payload, dry_run=not live)
     except PilotStopped as error:
@@ -807,7 +1042,11 @@ def _run_unit(unit, run_dir, *, settings, specs, model_names, transport, limits,
         signal = "unknown"
     submission = submission_reference_scan(services.workspace.root)
     usage = _usage_block(services.calls)
-    plan = pb_eval_plan(unit.task_id, state_dir / "workspace")
+    plan = pb_eval_plan(
+        unit.task_id, services.workspace.root, repo=settings.get("programbench_repo"),
+        unit_id=unit.unit_id, run_dir=run_dir)
+    if execute and scorer is None:
+        scorer = run_official_pb_eval
     scored = apply_pb_score(
         plan, execute=bool(execute), runner=scorer, public_signal=signal,
         cost=usage["cost"], wall_clock_s=wall, submission_check=submission,
@@ -826,7 +1065,9 @@ def _run_unit(unit, run_dir, *, settings, specs, model_names, transport, limits,
         first_assignment=_first_assignment(adapter, arm) if hasattr(adapter, "state") or arm == "A4" else BEST_SINGLE if arm == "A4" else None,
         node_assignments=_node_assignments(adapter) if hasattr(adapter, "state") else [],
         harness_resolved=scored["resolved"],
+        resolved=scored["resolved"],
         harness_status=scored["status"],
+        harness_reason=scored.get("reason"),
         pass_rate=scored["pass_rate"],
         compile_success=scored["compile_success"],
         submission_ok=submission.get("ok"),
@@ -889,6 +1130,8 @@ def _add_common(parser, *, arm_required):
     parser.add_argument("--probe-script-owner", default="p1", choices=("p1", "p2"))
     parser.add_argument("--role-map", default="s1=p1,s2=p2")
     parser.add_argument("--swe-profile", default=None)
+    parser.add_argument("--data-dir", default=None)
+    parser.add_argument("--programbench-repo", default=None)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--live", action="store_true")
     parser.add_argument("--execute", action="store_true")
@@ -909,6 +1152,8 @@ def _kwargs_from_args(args):
         "swe_profile": args.swe_profile,
         "live": bool(args.live),
         "execute": bool(args.execute and args.live),
+        "data_dir": args.data_dir,
+        "programbench_repo": args.programbench_repo,
     }
 
 

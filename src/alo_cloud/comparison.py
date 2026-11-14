@@ -333,6 +333,10 @@ def pb_paired_report(rows):
         item["arm"] = arm
         item["task_id"] = task
         item["study"] = "ProgramBench"
+        # The runner stores the harness outcome as harness_resolved. The shared
+        # comparison tables read resolved.
+        if item.get("resolved") is None and "harness_resolved" in row:
+            item["resolved"] = row.get("harness_resolved")
         if "cost_cny" not in item and _pb_cost(row) is not None:
             item["cost_cny"] = _pb_cost(row)
         prepared.append(item)

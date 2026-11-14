@@ -2,12 +2,17 @@
 import hashlib
 import json
 from pathlib import Path
+import subprocess
 
 import pytest
 
 from alo.runtime.decomposer import parse_dag
-from alo_cloud.adapters import role_tool_contract
+from alo_cloud.adapters import (
+    ROLE_CONTRACT_ENFORCED, ROLE_CONTRACT_UNRESTRICTED_UNKNOWN, resolve_role_tool_contract,
+    role_tool_contract,
+)
 from alo_cloud.errors import ProtocolError
+from alo_cloud.evaluate import PROGRAMBENCH_COMMIT
 from alo_cloud.fox_pb import (
     BEST_SINGLE,
     DEFAULT_REQUEST_CAP,
@@ -24,6 +29,7 @@ from alo_cloud.fox_pb import (
     resolve_pb_pool,
     run_arm,
     run_g0,
+    run_official_pb_eval,
 )
 from alo_cloud.fox_pool import FOX_RESOURCE_PRIOR, model_settings
 from alo_cloud.pb_contract import (
@@ -65,17 +71,23 @@ def test_r2_freeze_hash_is_unchanged():
     assert r2_freeze_sha256() == FROZEN_R2_SHA256
 
 
-def test_unknown_tool_names_do_not_become_a_contract():
-    role = type("Role", (), {"tools": ("public_tools",)})()
-    assert role_tool_contract(role) is None
+def test_role_contracts_follow_the_shared_alias_map():
+    """``public_tools`` maps to the public set. Any still-unknown name is unrestricted."""
+    placeholder = resolve_role_tool_contract(type("Role", (), {"tools": ("public_tools",)})())
+    assert placeholder["mode"] == ROLE_CONTRACT_ENFORCED
+    assert placeholder["mapped"] == TOOLS
+    assert placeholder["restricts"] is False
+    aliased = role_tool_contract(type("Role", (), {"tools": ("run_command",)})())
+    assert aliased == ("command",)
+    unknown = resolve_role_tool_contract(type("Role", (), {"tools": ("command", "not_a_public_tool")})())
+    assert unknown["mode"] == ROLE_CONTRACT_UNRESTRICTED_UNKNOWN
+    assert unknown["mapped"] is None
     services = type("S", (), {})()
-    services.role_tools = role_tool_contract(role)
+    services.role_tools = unknown["mapped"]
     services.write_file = lambda **kwargs: {"wrote": kwargs["path"]}
     assert dispatch_action(services, {"tool": "write_file", "arguments": {
         "path": "a.py", "content": "x"}})["wrote"] == "a.py"
-    mixed = type("Role", (), {"tools": ("command", "public_tools")})()
-    assert role_tool_contract(mixed) == ("command",)
-    services.role_tools = role_tool_contract(mixed)
+    services.role_tools = aliased
     with pytest.raises(ProtocolError, match="tool_outside_role_contract"):
         dispatch_action(services, {"tool": "write_file", "arguments": {
             "path": "a.py", "content": "x"}})
@@ -330,6 +342,14 @@ def test_g0_dry_run_writes_six_units_on_the_allowed_pool(tmp_path, monkeypatch):
             if arm == "A4":
                 assert row["models_used"] == [BEST_SINGLE]
                 assert row["first_assignment"] == BEST_SINGLE
+        if arm == "A2":
+            state = json.loads(next((tmp_path / "g0" / "A2" / "checkpoints").glob("*/adapter.json")).read_text())
+            contracts = state["role_tool_contracts"]
+            assert {item["node_id"] for item in contracts} >= {"p1", "p2"}
+            assert {item["mode"] for item in contracts} == {"enforced"}
+            for item in contracts:
+                assert set(item["mapped"]) <= set(TOOLS)
+                assert item["unknown"] == []
         rows.extend(arm_rows)
     assert len(rows) == 6
     again = run_g0(tmp_path / "g0", live=False)
@@ -381,6 +401,140 @@ def test_scoring_chain_records_harness_fields_without_docker(tmp_path, monkeypat
     assert isinstance(row["wall_clock_s"], float)
     plan = pb_eval_plan("raviqqe__muffet.a882908", tmp_path)
     assert plan["eval_command"] == [] or "programbench" in " ".join(plan["eval_command"])
+
+
+def test_public_signal_uses_compile_and_blackbox_probe(tmp_path):
+    services = _services(tmp_path)
+    assert services.public_signal() == "unknown"
+    root = services.workspace.root
+    (root / "build").mkdir()
+    (root / "build" / "executable").write_text("candidate", encoding="utf-8")
+    (root / "executable").write_bytes(b"reference")
+    seen = []
+
+    class Sandbox:
+        def command(self, argv, timeout_s):
+            seen.append(list(argv))
+            text = "same" if argv[0] == "./executable" else "same"
+            return {"returncode": 0, "stdout": text, "stderr": "", "timed_out": False}
+
+    services.sandbox = Sandbox()
+    services.compile_returncode = 0
+    services.differential_enabled = True
+    services.reference_invocations = [("input",)]
+    assert services.public_signal() == "pass"
+    assert seen == [["./executable", "input"], ["./build/executable", "input"]]
+    assert all(pb_command_violation(argv) is None for argv in seen)
+    services.reference_invocations = [("input",)]
+    seen.clear()
+
+    class Mismatch:
+        def command(self, argv, timeout_s):
+            seen.append(list(argv))
+            stdout = "ref" if argv[0] == "./executable" else "candidate"
+            return {"returncode": 0, "stdout": stdout, "stderr": "", "timed_out": False}
+
+    services.sandbox = Mismatch()
+    services.last_pb_signal = None
+    assert services.public_signal() == "fail"
+    assert services.last_pb_signal["differential"] == "fail"
+    assert services.last_pb_signal["compile"] == "pass"
+
+
+def test_live_unit_loads_the_public_payload_and_attaches_a_sandbox(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("network")))
+    data = tmp_path / "public" / "ProgramBench"
+    data.mkdir(parents=True)
+    task_id = "kisielk__errcheck.dacab89"
+    (data / f"{task_id}.json").write_text(json.dumps({
+        "task_id": task_id,
+        "problem_statement": "Rebuild errcheck from the bundled docs.",
+    }), encoding="utf-8")
+
+    def seeder(argv):
+        if argv[:2] == ["docker", "cp"]:
+            dest = Path(argv[-1])
+            dest.mkdir(parents=True, exist_ok=True)
+            (dest / "README.md").write_text("task docs", encoding="utf-8")
+            binary = dest / "executable"
+            binary.write_bytes(b"reference")
+            binary.chmod(0o111)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    from alo_cloud.fox_learn import dry_gateway
+    run_arm(
+        tmp_path / "live", arm="A4", tasks="kisielk__errcheck", live=True,
+        sender=dry_gateway, data_dir=tmp_path / "public", image_seeder=seeder)
+    row = json.loads((tmp_path / "live" / "records.jsonl").read_text(encoding="utf-8"))
+    assert row["status"] != "blocked"
+    assert row["reason"] != "public_task_payload_missing"
+    assert row["sandbox_image"].startswith("programbench/")
+    assert row["sandbox_workdir"] == "/workspace"
+    assert row["preserve_executable_in_image"] is True
+    workspace = next((tmp_path / "live").glob("units/*/state/workspace"))
+    assert (workspace / "README.md").read_text(encoding="utf-8") == "task docs"
+    assert not (workspace / "executable").exists()
+
+
+def test_execute_uses_the_official_evaluator(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("network")))
+    run_arm(tmp_path / "noscore", arm="A4", tasks="esubaalew__run", live=False, execute=True)
+    missing = json.loads((tmp_path / "noscore" / "records.jsonl").read_text(encoding="utf-8"))
+    assert missing["harness_status"] == "unavailable"
+    assert missing["harness_reason"] == "programbench_checkout_required"
+    assert missing["harness_resolved"] is None
+    workspace = tmp_path / "submission"
+    workspace.mkdir()
+    (workspace / "compile.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+    plan = pb_eval_plan(
+        "esubaalew__run.0fb9dec", workspace, repo=tmp_path / "ProgramBench",
+        unit_id="unit-1", run_dir=tmp_path / "eval-run")
+    seen = {}
+
+    def harness(argv, *, cwd, env):
+        seen["argv"] = list(argv)
+        seen["env"] = env
+        assert "FOXROUTER_API_KEY" not in env
+        return subprocess.CompletedProcess(
+            argv, 0, '{"passed": 1, "total": 4, "compile_success": true}', "")
+
+    scored = run_official_pb_eval(
+        plan, harness_run=harness, git_head=lambda repo: PROGRAMBENCH_COMMIT)
+    assert scored["pass_rate"] == 0.25
+    assert scored["resolved"] is False
+    assert scored["compile_success"] is True
+    assert scored["status"] == "finished"
+    assert "programbench" in seen["argv"]
+    assert "eval" in seen["argv"]
+    assert (tmp_path / "eval-run" / "sealed" / "programbench" / "unit-1"
+            / "esubaalew__run.0fb9dec" / "submission.tar.gz").is_file()
+    report = report_runs([tmp_path / "score"]) if False else None
+    del report
+
+
+def test_report_reads_harness_resolved_from_run_records(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("network")))
+
+    def scorer(plan):
+        return {"status": "finished", "resolved": True, "pass_rate": 1.0, "compile_success": True}
+
+    run_arm(
+        tmp_path / "scored", arm="A4", tasks="raviqqe__muffet", live=False,
+        execute=True, scorer=scorer)
+    raw = json.loads((tmp_path / "scored" / "records.jsonl").read_text(encoding="utf-8"))
+    raw.pop("resolved", None)
+    from alo_cloud.comparison import pb_paired_report
+    report = pb_paired_report([raw])
+    assert report["comparison"]["oracle"]["tasks"] == 1
+    assert report["comparison"]["oracle"]["resolved"] == 1
+    task = "raviqqe__muffet.a882908"
+    assert report["per_task"][task]["A4"]["resolved"] is True
 
 
 def test_paired_report_covers_the_pb_contrasts():
