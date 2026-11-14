@@ -48,7 +48,9 @@ Each chain is one process. Give it a distinct `--run-dir`. The run id is `fox-al
 
 `--turn-cap` defaults to 24, the same default as fox-single dev. It is the unit request ceiling. `g2-learn` still gives each worker node `max(1, turn_cap - 4)` turns, leaving the planner request and the verifier reserve from the existing learning config.
 
-A later run of the same chain skips a `unit_id` that already has a terminal record (`completed`, `failed`, `blocked`, `stopped`). Delete that record to retry it. The manifest refuses a different model list, task list, turn cap, or budget cap in the same directory.
+A later run of the same chain skips a `unit_id` that already has a terminal record (`completed`, `failed`, `blocked`, `stopped`). Delete that record to retry it. The manifest refuses a different model list, task list, turn cap, budget cap, or execution mode in the same directory. A `--dry-run` directory cannot be resumed with `--live`: the dry units would be skipped and their fixture profile would be imported into the live chain. Use a new `--run-dir` for the live run.
+
+`--tasks` in a printed command is the original selection order. Reverse is applied when that command runs, so the list is not stored already reversed.
 
 ## Task list
 

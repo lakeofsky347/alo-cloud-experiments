@@ -70,7 +70,7 @@ _ORDERS = ("forward", "reverse")
 _TERMINAL = frozenset({"completed", "failed", "blocked", "stopped"})
 _LOCKED = (
     "pool", "models", "chain_id", "run_id", "arm", "condition", "order",
-    "turn_cap", "budget_cap", "task_ids", "unit_ids",
+    "turn_cap", "budget_cap", "task_ids", "unit_ids", "live",
 )
 
 
@@ -304,8 +304,14 @@ def chain_locations(chain, run_dir):
 
 def launch_command(chain, run_dir, *, models="all", tasks_file=None, n=None,
                    seed=DEFAULT_STREAM_SEED, split="dev", turn_cap=DEFAULT_TURN_CAP,
-                   data_dir="$FOX_DATA_DIR", budget_cap=None, live=True, allow_all=False):
-    """One process command. Parallel chains differ in ``--chain`` and ``--run-dir``."""
+                   data_dir="$FOX_DATA_DIR", budget_cap=None, live=True, allow_all=False,
+                   task_ids=None):
+    """One process command. Parallel chains differ in ``--chain`` and ``--run-dir``.
+
+    ``task_ids`` is the selection order, before forward/reverse. A reverse
+    chain must not write its already reversed units back into ``--tasks``,
+    or the next run flips them a second time.
+    """
     command = [
         "python", "-m", "alo_cloud.fox_learn", "run",
         "--pool", "fox",
@@ -324,8 +330,10 @@ def launch_command(chain, run_dir, *, models="all", tasks_file=None, n=None,
         command.extend(["--n", str(n), "--seed", str(seed)])
     elif allow_all:
         command.append("--all")
+    elif task_ids:
+        command.extend(["--tasks", ",".join(task_ids)])
     else:
-        command.extend(["--tasks", ",".join(unit.task_id for unit in chain.units)])
+        raise LearnStopped("selection_required")
     if budget_cap is not None:
         command.extend(["--budget-cap", str(budget_cap)])
     command.extend(["--data-dir", str(data_dir)])
@@ -1030,7 +1038,8 @@ def _plan_payload(args, built):
                 chain, run_dir, models=model_arg, tasks_file=args.tasks_file, n=args.n,
                 seed=args.seed, split=args.split, turn_cap=args.turn_cap,
                 data_dir=args.data_dir or "$FOX_DATA_DIR", budget_cap=args.budget_cap,
-                live=True, allow_all=args.all),
+                live=True, allow_all=args.all,
+                task_ids=[row[0] for row in built["tasks"]]),
         })
     return {
         "experiment": EXPERIMENT,

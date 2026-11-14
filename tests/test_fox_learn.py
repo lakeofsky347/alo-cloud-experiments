@@ -11,12 +11,14 @@ from alo_cloud.budget import BudgetLedger
 from alo_cloud.contracts import MODEL_POOL
 from alo_cloud.fox_learn import (
     EXPERIMENT,
+    LearnStopped,
     build_stream,
     container_name_for,
     dry_gateway,
     empty_profile_hash,
     export_chain_transfer,
     iter_learning_chains,
+    launch_command,
     main,
     run_chain,
     run_isolated,
@@ -343,6 +345,42 @@ def test_optional_raw_cap_does_not_open_a_cny_ledger(tmp_path):
         total_limit_microcny=200_000_000)
     opened = BudgetLedger(ledger)
     assert set(opened.snapshot()["limits_microcny"]) == set(MODEL_POOL)
+
+
+def test_resume_rejects_a_dry_directory_for_live(tmp_path):
+    built = _stream(tasks=(DEV_A,))
+    chain = _chain(built, "persist-forward")
+    run_dir = tmp_path / "persist-forward"
+    assert _run(chain, run_dir, built["pool"])["wrote"] == 1
+    with pytest.raises(LearnStopped, match="fox_run_settings_mismatch"):
+        run_chain(
+            chain, run_dir, pool=built["pool"], live=True, sender=None,
+            sleep=lambda _seconds: None)
+    assert len(_records(run_dir)) == 1
+    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["live"] is False
+
+
+def test_plan_tasks_keep_the_selection_order(tmp_path, capsys):
+    built = build_stream(split="dev", task_ids=(DEV_A, DEV_B), turn_cap=8)
+    selected = f"{DEV_A},{DEV_B}"
+    reverse = _chain(built, "persist-reverse")
+    command = launch_command(
+        reverse, tmp_path / "persist-reverse", task_ids=(DEV_A, DEV_B), live=True)
+    assert command[command.index("--tasks") + 1] == selected
+    replay = build_stream(split="dev", task_ids=(DEV_A, DEV_B), turn_cap=8)
+    assert [unit.task_id for unit in _chain(replay, "persist-reverse").units] == [DEV_B, DEV_A]
+    assert [unit.task_id for unit in _chain(replay, "persist-forward").units] == [DEV_A, DEV_B]
+    assert main([
+        "plan", "--pool", "fox", "--tasks", selected, "--turn-cap", "8",
+        "--root", str(tmp_path / "plan"),
+    ]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    for chain in payload["chains"]:
+        argv = chain["command"]
+        assert argv[argv.index("--tasks") + 1] == selected
+        assert [row["task_id"] for row in chain["units"]] == (
+            [DEV_B, DEV_A] if chain["order"] == "reverse" else [DEV_A, DEV_B])
 
 
 def test_schedule_orders_are_independent_of_hash_randomization():
