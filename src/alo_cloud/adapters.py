@@ -45,12 +45,18 @@ def role_tool_contract(role):
 
     An empty declaration is not a restriction. Fallback generalists and any
     other role with no tool contract keep the pre-#34 tool set. A non-empty
-    list, including a review role limited to ``command``, is enforced.
+    list of real public tools, including a review role limited to ``command``,
+    is enforced. Names that are not in ``TOOLS`` are dropped. A declaration
+    whose names are all unknown, such as a planner placeholder ``public_tools``,
+    is unrestricted so the placeholder cannot reject every real tool.
     """
     raw = getattr(role, "tools", None)
     if not raw:
         return None
-    return tuple(raw)
+    known = tuple(name for name in raw if name in TOOLS)
+    if not known:
+        return None
+    return known
 FIXED_S1_S2_DAG = """subtasks:
   - id: s1
     goal: Write alo_repro.py and run python3 alo_repro.py before any fix so it exits non-zero. Then edit the source. Run python3 alo_repro.py again so it exits 0. Do not weaken the script.
@@ -400,7 +406,8 @@ class HeterogeneousALO:
                  node_request_caps=None, protocol_id=None, request_accounting=None,
                  planner_requests=None, verifier_requests=None, topology=None,
                  learn_quality=True, filter_resources_by_topics=False,
-                 fixed_model=None, export_mode=None):
+                 fixed_model=None, export_mode=None,
+                 pb_mode=False, pb_dag=None, pb_prompt=None):
         if (type(max_turns) is not int or max_turns < 1
                 or type(max_attempts) is not int or max_attempts < 1):
             raise PilotStopped("invalid_alo_attempt_or_turn_limit")
@@ -462,6 +469,16 @@ class HeterogeneousALO:
             self.config["fixed_model"] = fixed_model
         if export_mode == "resources":
             self.config["export_mode"] = "resources"
+        # ProgramBench fields stay out of the frozen g2 configuration unless
+        # this adapter was built for that track.
+        if pb_mode:
+            if not isinstance(pb_dag, str) or not pb_dag.strip():
+                raise PilotStopped("pb_dag_required")
+            if pb_prompt is not None and not isinstance(pb_prompt, str):
+                raise PilotStopped("invalid_pb_prompt")
+            self.config["pb_mode"] = True
+            self.config["pb_dag"] = pb_dag
+            self.config["pb_prompt"] = pb_prompt or ""
         self.state = {"observations": {}, "worker_transcripts": {}, "planner_messages": []}
 
     def dump_state(self):
@@ -532,7 +549,11 @@ class HeterogeneousALO:
         learn = lambda: (
             self.config["organization_updates"]
             and self.config.get("learn_quality", True)
-            and last.get("local_contract_status") in {"pass", "fail"}
+            and (
+                last.get("public_signal") in {"pass", "fail"}
+                if self.config.get("pb_mode")
+                else last.get("local_contract_status") in {"pass", "fail"}
+            )
         )
         org.belief, org.tms = _BeliefGate(org.belief, learn), _TMSGate(org.tms, learn)
         for role, assignment in self.state.get("assignments", {}).items():
@@ -753,7 +774,11 @@ class HeterogeneousALO:
                 "seconds": time.monotonic() - last["started"],
                 "verifier_seconds": last["pre_verifier_seconds"] + time.monotonic() - verifier_start,
                 "local_contract_status": local_status}
-            if adapter.config["organization_updates"]:
+            record_observation = adapter.config["organization_updates"]
+            # A ProgramBench unknown is not a quality or resource write.
+            if adapter.config.get("pb_mode") and signal not in {"pass", "fail"}:
+                record_observation = False
+            if record_observation:
                 adapter.state["observations"].setdefault(last["model"], []).append(observation)
             services.event("alo_observation", {"model": last["model"], "context": context,
                 "local_evidence": evidence, "learning_update_allowed": learn(),
@@ -785,6 +810,9 @@ class HeterogeneousALO:
             if adapter.config.get("criterion_id") == REPRO_CRITERION_ID:
                 # Unknown is not node success. B/TMS still ignore it via the gate.
                 return functional_pass
+            if adapter.config.get("pb_mode"):
+                # Compile/differential unknown is not node success and is not stored.
+                return signal == "pass"
             if isinstance(pref, dict) and not diff_nonempty:
                 return False
             if signal == "fail" and verifier:
@@ -947,16 +975,20 @@ class HeterogeneousALO:
         planner = Bridge(planner_model, planner=True)
         pool[planner.info.id] = planner
         try:
-            task = json.dumps(stage, ensure_ascii=False) + (
-                "\n" + WORK_ORDER + " "
-                "Use exactly two DAG nodes named s1 and s2. s1 localizes and edits. "
-                "s2 depends on s1 and verifies with public commands. "
-                "Every node must attempt concrete workspace work. Use task_description, "
-                "goal and persistent_workspace scopes, and choose topics from coding, implementation, "
-                "testing, validation. All roles share public tools; do not request credentials.")
-            if self.config.get("criterion_id") == REPRO_CRITERION_ID:
-                task += REPRO_INSTRUCTION
-            fixed_dag = FIXED_S1_S2_DAG if self.config.get("fixed_topology") else None
+            if self.config.get("pb_mode"):
+                task = json.dumps(stage, ensure_ascii=False) + "\n" + (self.config.get("pb_prompt") or "")
+                fixed_dag = self.config.get("pb_dag")
+            else:
+                task = json.dumps(stage, ensure_ascii=False) + (
+                    "\n" + WORK_ORDER + " "
+                    "Use exactly two DAG nodes named s1 and s2. s1 localizes and edits. "
+                    "s2 depends on s1 and verifies with public commands. "
+                    "Every node must attempt concrete workspace work. Use task_description, "
+                    "goal and persistent_workspace scopes, and choose topics from coding, implementation, "
+                    "testing, validation. All roles share public tools; do not request credentials.")
+                if self.config.get("criterion_id") == REPRO_CRITERION_ID:
+                    task += REPRO_INSTRUCTION
+                fixed_dag = FIXED_S1_S2_DAG if self.config.get("fixed_topology") else None
             result = run_task(org, pool, task, planner_id=planner.info.id, rng=rng,
                 max_attempts=self.config["max_attempts"], criteria_fn=criterion, assignment_policy=assignment,
                 remediation=BudgetedRemediation(), execution_scope=scope,
