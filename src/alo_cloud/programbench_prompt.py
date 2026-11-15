@@ -27,11 +27,12 @@ compile.sh should be executable.
 The official scorer runs: chmod +x ./compile.sh && ./compile.sh
 If compile.sh fails to compile on a fresh checkout, the submission has failed.
 A Makefile or cargo project alone is not enough: compile.sh has to produce ./executable.
-Do not ship a prebuilt ./executable. The scorer deletes ./executable before it runs compile.sh.
+Do not ship a prebuilt ./executable. The scorer deletes ./executable before it runs compile.sh, then requires ./executable at the workspace root.
 
-The image's ./executable may be owned by root. Do not try to overwrite it.
-Create ./build/ and make compile.sh write the program there (./build/executable or another file under ./build/).
-./build is the writable target. Use python3 when you invoke Python; the image may not have a python command.
+The image's ./executable is the reference. It may be owned by root and is execute-only. Do not overwrite it by hand and do not read its bytes.
+compile.sh must create ./executable at the workspace root. You may compile under ./build/ and install your own build output onto ./executable, for example: cp build/executable executable
+That install copies your build, not the reference. Copying or wrapping the reference is not allowed.
+Use python3 when you invoke Python; the image may not have a python command.
 """
 
 PROGRAMBENCH_BUDGET_NOTICE = (

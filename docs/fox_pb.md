@@ -47,7 +47,7 @@ These are recorded in `manifest.json` and in that run's `pb_freeze` block. `pb_f
 
 PB is fully frozen unless `--online-update` is set. With the default, A1, A2, and A3 use the initial profile on every task, and an in-task observation does not change the next assignment. Unknown compile or differential results are not written into learning state.
 
-The public signal runs `chmod +x compile.sh` and `./compile.sh` in the sandbox. That return code is the signal. When `--differential-signal` is on and `./build/executable` exists, the same inputs are run through `./executable` and `./build/executable`. The comparison is stdout, stderr, exit code, and filesystem side effects. It does not read the reference bytes. With the flag off, compile success is the only public signal.
+The public signal runs `chmod +x compile.sh` and `./compile.sh` in the sandbox, after moving the image reference off `./executable` without reading it. That matches the official scorer at `895f659`, which deletes `./executable` and then requires `compile.sh` to create `./executable` at the workspace root. The return code is the signal, and a missing `./executable` after a zero exit is a fail. When `--differential-signal` is on, the same inputs are run through the preserved reference and that new `./executable`. The comparison is stdout, stderr, exit code, and filesystem side effects. It does not read the reference bytes. With the flag off, compile success is the only public signal.
 
 `--programbench-repo` is a checkout of `facebookresearch/ProgramBench` at `895f659`. Public task text is `src/programbench/data/tasks/<id>/task.yaml` (repository, commit, language, difficulty). `tests.json` is not loaded. `--data-dir` can hold the same `task.yaml` or `ProgramBench/<id>.json`. The prompt names `./executable` (mode 111) and the doc paths copied out of the image. A live unit seeds `programbench/<id>:task_cleanroom_v6` `/workspace`, drops any host copy of the reference binary, and attaches a `--network=none` sandbox that keeps the image binary. A dry run attaches that sandbox with execution off and does not contact a daemon. `--live --execute` passes `official_pb_scorer`, which packs `submission.tar.gz` and runs `programbench eval` from that checkout. The plan carries the image, the cleanroom `compile.sh` build, the eval command, and commit `895f659`. A missing checkout is `unavailable`, not a zero.
 
@@ -85,7 +85,7 @@ python -m alo_cloud.fox_pb run \
 - copying it into the submission
 - any network client, URL fetch, or package install
 
-A submission scan flags a built tree that copies the reference bytes, embeds its sha256, or invokes `./executable` from the submitted program. `compile.sh` may still install `build/executable` onto `./executable`. That output path is not a wrapper.
+A submission scan flags a built tree that copies the reference bytes, embeds its sha256, reads those bytes, or invokes `./executable` from the submitted program. `compile.sh` may install the agent's own `build/...` output onto `./executable`, including `cp build/executable executable 2>/dev/null || true`. That install is not a wrapper. A behaviour-probe script under `.pb-probe/`, or any probe path outside the submission, may run the reference through its normal interface. It is not part of the submission.
 
 ## G0
 

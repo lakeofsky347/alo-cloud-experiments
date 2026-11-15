@@ -56,6 +56,7 @@ from .fox_single import (
 from .freeze import PlannedUnit
 from .pb_contract import (
     DEFAULT_ROLE_MAP,
+    PB_SIGNAL_CANDIDATE,
     blackbox_probe_argv,
     combine_pb_signal,
     is_reference_path,
@@ -540,28 +541,47 @@ class PbServices(FoxAloServices):
         """Run ``compile.sh`` in the sandbox. Differential I/O is opt-in.
 
         The default signal is that compile result alone. ``--differential-signal``
-        also runs ``./executable`` and ``./build/executable`` with the same
-        inputs. A missing script or a sandbox that cannot execute stays
-        unknown and is not written into learning state.
+        compares the preserved reference with the ``./executable`` that
+        compile.sh produced, the same file the official scorer keeps. A missing
+        script or a sandbox that cannot execute stays unknown and is not
+        written into learning state.
         """
-        if self.signal_override in {"pass", "fail", "unknown"}:
-            compile_code = {"pass": 0, "fail": 1, "unknown": None}[self.signal_override]
-            differential = None
-        else:
-            compile_code = self._run_compile()
-            differential = self._measure_differential() if self.differential_enabled else None
-        result = combine_pb_signal(
-            compile_code,
-            differential_enabled=self.differential_enabled,
-            differential_signal=differential,
-        )
-        self.last_pb_signal = result
-        return result["signal"]
+        try:
+            if self.signal_override in {"pass", "fail", "unknown"}:
+                compile_code = {"pass": 0, "fail": 1, "unknown": None}[self.signal_override]
+                differential = None
+            else:
+                compile_code = self._run_compile()
+                differential = self._measure_differential() if self.differential_enabled else None
+            result = combine_pb_signal(
+                compile_code,
+                differential_enabled=self.differential_enabled,
+                differential_signal=differential,
+            )
+            self.last_pb_signal = result
+            return result["signal"]
+        finally:
+            staged = self.workspace.root / PB_SIGNAL_CANDIDATE
+            if staged.is_file() and not staged.is_symlink():
+                try:
+                    staged.unlink()
+                except OSError:
+                    pass
 
     def _run_compile(self):
         root = self.workspace.root
         if not (root / "compile.sh").is_file():
             return None
+        official = getattr(self.sandbox, "official_compile", None)
+        if callable(official) and getattr(self.sandbox, "merge_image_workspace", False):
+            try:
+                code = official(60)
+            except (PilotStopped, ProtocolError, IntegrationNotConfigured, OSError):
+                return None
+            if type(code) is not int or isinstance(code, bool):
+                return None
+            self.compile_returncode = code
+            return code
         try:
             self._sandbox_argv(["chmod", "+x", "compile.sh"])
             result = self._sandbox_argv(["./compile.sh"])
@@ -588,15 +608,15 @@ class PbServices(FoxAloServices):
         unknown. The argv is the normal interface only.
         """
         root = self.workspace.root
-        candidate = root / "build" / "executable"
-        if self.sandbox is None or not candidate.exists():
+        candidate = root / PB_SIGNAL_CANDIDATE
+        if self.sandbox is None or not candidate.is_file():
             return "unknown"
         probes = list(self.reference_invocations) or [()]
         signals = []
         for args in probes:
             try:
                 reference_argv = blackbox_probe_argv("./executable", args)
-                candidate_argv = blackbox_probe_argv("./build/executable", args)
+                candidate_argv = blackbox_probe_argv("./" + PB_SIGNAL_CANDIDATE, args)
                 signal = run_blackbox_differential(
                     reference_argv, candidate_argv, runner=self._blackbox_io)
             except (ProtocolError, PilotStopped, OSError):
