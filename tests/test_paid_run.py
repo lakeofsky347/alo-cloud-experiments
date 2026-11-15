@@ -433,6 +433,9 @@ def test_execute_only_binary_stays_in_the_image(tmp_path):
     (root / "main.c").write_text("int main(void){return 0;}\n", encoding="utf-8")
     (root / ".git").mkdir()
     (root / ".git" / "config").write_text("x\n", encoding="utf-8")
+    probe = root / ".pb-probe"
+    probe.mkdir()
+    (probe / "run.sh").write_text("#!/bin/sh\n./executable --help\n", encoding="utf-8")
     exe.write_bytes(b"bin")
     _pack_submission(root, archive)
     import tarfile
@@ -441,6 +444,7 @@ def test_execute_only_binary_stays_in_the_image(tmp_path):
     assert "README.md" in names
     assert "executable" not in names
     assert all(".git" not in name for name in names)
+    assert all(".pb-probe" not in name for name in names)
 
 
 def test_resume_applies_the_sealed_patch_onto_a_fresh_seed(tmp_path):

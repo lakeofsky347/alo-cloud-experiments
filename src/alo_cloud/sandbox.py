@@ -13,6 +13,7 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import subprocess
+import uuid
 
 from .errors import IntegrationNotConfigured, PilotStopped, ProtocolError
 
@@ -309,34 +310,149 @@ def known_sandbox_result(result):
     return {"returncode": result["returncode"], "stdout": stdout, "stderr": stderr, "timed_out": False}
 
 
-def _daemon_failure(result):
+def _stderr_text(result):
     stderr = result.get("stderr") if isinstance(result, dict) else ""
-    text = stderr.lower() if isinstance(stderr, str) else ""
+    return stderr.lower() if isinstance(stderr, str) else ""
+
+
+def container_name_in_argv(argv):
+    """The ``--name`` value, when this docker argv sets one."""
+    if not isinstance(argv, list) or "--name" not in argv:
+        return None
+    index = argv.index("--name")
+    if index + 1 >= len(argv):
+        return None
+    name = argv[index + 1]
+    if not isinstance(name, str) or not _CONTAINER_NAME.fullmatch(name):
+        return None
+    return name
+
+
+def container_name_conflict(result):
+    """True when Docker refused the run because the container name is taken.
+
+    That refusal uses exit 125, the same code as a dead daemon. The message
+    names the clash. It is not a daemon outage.
+    """
+    text = _stderr_text(result)
+    if "is already in use" in text or "already in use by container" in text:
+        return True
+    if "conflict" in text and "container name" in text:
+        return True
+    return "you have to remove (or rename) that container" in text
+
+
+def _daemon_failure(result):
+    if container_name_conflict(result):
+        return False
+    text = _stderr_text(result)
     code = result.get("returncode") if isinstance(result, dict) else None
-    return code == 125 or "cannot connect to the docker daemon" in text or "is the docker daemon running" in text
+    if "cannot connect to the docker daemon" in text or "is the docker daemon running" in text:
+        return True
+    if "error during connect" in text:
+        return True
+    # A bare 125 is the historical daemon signal. A name clash is excluded above.
+    return code == 125
 
 
-def subprocess_docker_runner(argv, timeout_s):
-    """Host docker CLI with an allowlisted environment. Not used by offline tests."""
+def _docker_env():
     env = {"LANG": "C.UTF-8"}
     path = os.environ.get("PATH")
     if isinstance(path, str) and path:
         env["PATH"] = path
+    return env
+
+
+def docker_rm_f(name):
+    """Force-remove one container. A missing name is not an error.
+
+    ``docker run --rm`` does not run when the client is killed on timeout, so
+    the named container would otherwise keep the name.
+    """
+    if not isinstance(name, str) or not _CONTAINER_NAME.fullmatch(name):
+        return
+    subprocess.run(
+        ["docker", "rm", "-f", name], capture_output=True, check=False, timeout=30)
+
+
+def run_docker_cli(argv, timeout_s, *, popen, remove):
+    """Run a docker argv. On timeout, kill the client and ``remove`` the name.
+
+    Offline tests pass ``popen`` and ``remove``. They do not start a daemon.
+    """
     try:
-        completed = subprocess.run(argv, capture_output=True, timeout=timeout_s, env=env, check=False)
-    except subprocess.TimeoutExpired as error:
-        return {"returncode": 124, "stdout": _text((error.stdout or b"").decode(errors="replace")),
-                "stderr": _text((error.stderr or b"").decode(errors="replace")), "timed_out": True}
+        proc = popen(
+            argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=_docker_env())
     except OSError:
         raise SandboxUnknown("docker_process_not_started") from None
-    return {"returncode": completed.returncode,
-            "stdout": completed.stdout.decode(errors="replace"),
-            "stderr": completed.stderr.decode(errors="replace"),
-            "timed_out": False}
+    timed_out = False
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        proc.kill()
+        try:
+            stdout, stderr = proc.communicate()
+        except Exception:
+            stdout, stderr = b"", b""
+        name = container_name_in_argv(argv)
+        if name and remove is not None:
+            try:
+                remove(name)
+            except Exception:
+                pass
+    code = 124 if timed_out else proc.returncode
+    if type(code) is not int:
+        code = 124
+    return {
+        "returncode": code,
+        "stdout": stdout.decode(errors="replace") if isinstance(stdout, bytes) else "",
+        "stderr": stderr.decode(errors="replace") if isinstance(stderr, bytes) else "",
+        "timed_out": timed_out,
+    }
 
 
+def subprocess_docker_runner(argv, timeout_s):
+    """Host docker CLI with an allowlisted environment. Not used by offline tests."""
+    return run_docker_cli(argv, timeout_s, popen=subprocess.Popen, remove=docker_rm_f)
+
+
+def _finish_docker_result(result, *, daemon_code):
+    """Return a command result. A name clash is not a daemon failure."""
+    if container_name_conflict(result):
+        cleaned = known_sandbox_result(result)
+        cleaned["failure"] = "container_name_conflict"
+        return cleaned
+    if _daemon_failure(result):
+        raise SandboxUnknown(daemon_code)
+    return known_sandbox_result(result)
+
+
+def per_command_container_name(base):
+    """A Docker name unique to one ``docker run``. The base stays recognizable.
+
+    A timed-out command used to leave the unit's fixed name running. The next
+    command then collided with it. Each command gets its own suffix.
+    """
+    if not isinstance(base, str) or not _CONTAINER_NAME.fullmatch(base):
+        raise PilotStopped("invalid_container_name")
+    suffix = uuid.uuid4().hex[:8]
+    room = 63 - len(suffix) - 1
+    stem = base[:room].rstrip(".-")
+    if not stem or not stem[0].isalnum():
+        stem = "alo"
+    name = f"{stem}-{suffix}"
+    if not _CONTAINER_NAME.fullmatch(name):
+        raise PilotStopped("invalid_container_name")
+    return name
+
+
+# Image files are often mode 0444 and owned by root. Restoring the snapshot
+# with tar then fails with "Permission denied" unless the tree is made
+# writable first. The execute-only reference stays mode 111 and is not read.
 _REVIEW_MERGE_SCRIPT = r"""
 if [ -n "$(ls -A /agent 2>/dev/null)" ]; then
+  find /workspace -path /workspace/executable -prune -o -exec chmod u+rwX {} +
   tar -C /agent --exclude=.git --exclude=executable -cf - . | tar -C /workspace -xf - || exit 2
 fi
 python3 -c 'import ctypes,os,sys
@@ -352,6 +468,44 @@ if libc.mount(path, path, None, MS_BIND|MS_REC|MS_REMOUNT|MS_RDONLY, None)!=0:
 ' || { echo review_merge_tree_not_readonly >&2; exit 2; }
 exec setpriv --clear-groups --inh-caps -all --ambient-caps -all --bounding-set -all --reuid=__UID__ --regid=__GID__ -- "$@"
 """
+
+# Official ProgramBench eval (commit 895f659) deletes ./executable, runs
+# compile.sh, and then requires ./executable at the workspace root. The image
+# reference occupies that path during the agent session. This script moves the
+# reference aside without reading it, runs compile.sh as the host user, and
+# copies the produced ./executable to a synced path for the black-box compare.
+OFFICIAL_COMPILE_SCRIPT = r"""
+set +e
+if [ -n "$(ls -A /agent 2>/dev/null)" ]; then
+  find /workspace -path /workspace/executable -prune -o -exec chmod u+rwX {} +
+  tar -C /agent --exclude=.git --exclude=executable -cf - . | tar -C /workspace -xf -
+fi
+mkdir -p /opt/programbench-reference
+if [ -e /workspace/executable ] && [ ! -L /workspace/executable ]; then
+  mv /workspace/executable /opt/programbench-reference/executable || exit 1
+  chmod 111 /opt/programbench-reference/executable
+fi
+setpriv --clear-groups --inh-caps -all --ambient-caps -all --bounding-set -all --reuid=__UID__ --regid=__GID__ -- sh -c 'cd /workspace && chmod +x ./compile.sh && ./compile.sh'
+status=$?
+if [ "$status" -eq 0 ] && [ -e /workspace/executable ] && [ ! -L /workspace/executable ] && [ -x /workspace/executable ]; then
+  mkdir -p /workspace/build
+  cp -f /workspace/executable /workspace/build/.alo-pb-candidate
+  chown __UID__:__GID__ /workspace/build /workspace/build/.alo-pb-candidate 2>/dev/null || true
+else
+  if [ "$status" -eq 0 ]; then
+    status=1
+  fi
+  rm -f /workspace/build/.alo-pb-candidate
+fi
+# Copy back as the host user so the workspace does not become root-owned.
+setpriv --clear-groups --inh-caps -all --ambient-caps -all --bounding-set -all --reuid=__UID__ --regid=__GID__ -- sh -c 'tar -C /workspace --exclude=executable --exclude=.git -cf - . | tar -C /agent -xf -'
+exit $status
+"""
+
+_OFFICIAL_CAPS = (
+    "--cap-add=CHOWN", "--cap-add=DAC_OVERRIDE", "--cap-add=DAC_READ_SEARCH",
+    "--cap-add=FOWNER", "--cap-add=SETGID", "--cap-add=SETUID", "--cap-add=SETPCAP",
+)
 
 
 def _readonly_merge_command(command):
@@ -369,8 +523,10 @@ def _readonly_merge_command(command):
         raise ProtocolError("review_merge_workspace_not_readonly")
     drop = command.index("--cap-drop=ALL")
     # SETPCAP is required to drop the bounding set. SETGID is required for
-    # --clear-groups. Both are dropped again by setpriv before the review command.
-    for cap in ("--cap-add=CHOWN", "--cap-add=SETGID", "--cap-add=SETUID",
+    # --clear-groups. DAC_OVERRIDE lets the restore rewrite mode-0444 image
+    # files. All of these are dropped again by setpriv before the review command.
+    for cap in ("--cap-add=CHOWN", "--cap-add=DAC_OVERRIDE", "--cap-add=DAC_READ_SEARCH",
+                "--cap-add=FOWNER", "--cap-add=SETGID", "--cap-add=SETUID",
                 "--cap-add=SETPCAP", "--cap-add=SYS_ADMIN"):
         if cap not in command:
             command.insert(drop + 1, cap)
@@ -381,7 +537,9 @@ def _readonly_merge_command(command):
         if not isinstance(spec, str) or ":" not in spec:
             raise ProtocolError("review_merge_workspace_not_readonly")
         uid, gid = spec.split(":", 1)
-        del command[index:index + 2]
+        # Setup must be root. The image USER is not root, and a dropped
+        # capability set cannot rewrite root-owned files as that user.
+        command[index + 1] = "0:0"
     shell = command.index("sh")
     if command[shell + 1] != "-c" or "tar -C /agent" not in command[shell + 2]:
         raise ProtocolError("review_merge_workspace_not_readonly")
@@ -478,7 +636,7 @@ class DockerSandbox:
         image = self.resolved_image()
         command = ["docker", "run", "--rm"]
         if self.container_name:
-            command.extend(["--name", self.container_name])
+            command.extend(["--name", per_command_container_name(self.container_name)])
         command.extend([
             "--network=none",
             "--cap-drop=ALL",
@@ -575,9 +733,7 @@ class DockerSandbox:
             result = subprocess_docker_runner(command, timeout_s)
         else:
             raise PilotStopped("sandbox_not_configured")
-        if _daemon_failure(result):
-            raise SandboxUnknown("tool_sandbox_unknown")
-        return known_sandbox_result(result)
+        return _finish_docker_result(result, daemon_code="tool_sandbox_unknown")
 
     def command(self, argv, timeout_s):
         if isinstance(argv, list) and argv and argv[0] in {"python", "py"}:
@@ -599,6 +755,56 @@ class DockerSandbox:
             raise
         except Exception:
             raise SandboxUnknown("sandbox_outcome_unknown") from None
-        if _daemon_failure(result):
-            raise SandboxUnknown("docker_daemon_unavailable")
-        return known_sandbox_result(result)
+        return _finish_docker_result(result, daemon_code="docker_daemon_unavailable")
+
+    def official_compile_argv(self):
+        """Docker argv that matches the official compile layout.
+
+        Setup runs as root so it can move the execute-only reference. compile.sh
+        itself runs as the host user. The produced ``./executable`` is copied to
+        ``build/.alo-pb-candidate`` for a later black-box compare.
+        """
+        if not self.merge_image_workspace:
+            raise PilotStopped("official_compile_requires_merge")
+        command = self.docker_argv(["true"])
+        if "--user" not in command or "--cap-drop=ALL" not in command or "sh" not in command:
+            raise PilotStopped("official_compile_requires_merge")
+        index = command.index("--user")
+        spec = command[index + 1]
+        if not isinstance(spec, str) or ":" not in spec:
+            raise PilotStopped("official_compile_requires_merge")
+        uid, gid = spec.split(":", 1)
+        if not uid.isdigit() or not gid.isdigit():
+            raise PilotStopped("official_compile_requires_merge")
+        command[index + 1] = "0:0"
+        drop = command.index("--cap-drop=ALL")
+        for cap in _OFFICIAL_CAPS:
+            if cap not in command:
+                command.insert(drop + 1, cap)
+        shell = command.index("sh")
+        script = OFFICIAL_COMPILE_SCRIPT.replace("__UID__", uid).replace("__GID__", gid)
+        command[shell:] = ["sh", "-c", script]
+        return command
+
+    def official_compile(self, timeout_s):
+        """Run compile.sh the way ProgramBench eval does. Returns the status."""
+        command = self.official_compile_argv()
+        if self.runner is not None:
+            runner = self.runner
+        elif self.permit_execution:
+            runner = subprocess_docker_runner
+        else:
+            raise IntegrationNotConfigured("docker_execution_not_permitted")
+        try:
+            result = runner(command, timeout_s)
+        except (SandboxUnknown, ProtocolError, PilotStopped):
+            raise
+        except Exception:
+            raise SandboxUnknown("sandbox_outcome_unknown") from None
+        parsed = _finish_docker_result(result, daemon_code="docker_daemon_unavailable")
+        if parsed.get("timed_out") or parsed.get("failure") == "container_name_conflict":
+            return None
+        code = parsed.get("returncode")
+        if type(code) is not int or isinstance(code, bool):
+            return None
+        return code

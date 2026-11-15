@@ -10,7 +10,7 @@ filesystem side effects only.
 from __future__ import annotations
 
 import hashlib
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import shlex
 
@@ -27,6 +27,12 @@ SWE_ROLE_TOPICS = {
     "s2": ("testing", "validation"),
 }
 PROBE_SCRIPT_SENTENCE = "Write a behaviour-probe script"
+# Kept out of the submission. A script here may run the reference through its
+# normal interface. The submitted program may not.
+PROBE_DIR = ".pb-probe"
+# compile.sh's ./executable, copied aside so the black-box compare can run it
+# without replacing the image reference. Not a submitted artifact.
+PB_SIGNAL_CANDIDATE = "build/.alo-pb-candidate"
 REFERENCE_BASENAME = "executable"
 REFERENCE_MODE = 0o111
 # Candidate builds live under build/. They are not the reference binary.
@@ -156,6 +162,9 @@ def pb_prompt(*, role_map=None, probe_script_owner="p1"):
         "Do not run objdump, strings, hexdump, xxd, ghidra, readelf, "
         "strace, ltrace, gdb, or similar instrumentation on it. "
         "Do not use the network. "
+        "compile.sh must produce ./executable at the workspace root. "
+        f"A behaviour-probe script under {PROBE_DIR}/ is not part of the submission "
+        "and may run the reference through its normal interface. "
         "The submission must not wrap, copy, embed, or call the reference binary. "
         "Use only these public tools: "
         + ", ".join(TOOLS)
@@ -170,7 +179,8 @@ def pb_dag(*, role_map=None, probe_script_owner="p1"):
     inverse = {pb: swe for swe, pb in mapping.items()}
     implement = (
         "Reconstruct the program from the docs and from black-box runs of the "
-        "reference ./executable. Write ./compile.sh so it builds under ./build/. "
+        "reference ./executable. Write ./compile.sh so it produces ./executable "
+        "at the workspace root. "
         "The reference binary is execute-only. Do not read, decompile, or "
         "instrument it. Forbidden on the reference include objdump, strings, hexdump, "
         "ghidra, strace, and ltrace. Do not use the network. Do not wrap, copy, "
@@ -189,7 +199,12 @@ def pb_dag(*, role_map=None, probe_script_owner="p1"):
         topics = SWE_ROLE_TOPICS[swe]
         goal = implement if swe == "s1" else validate
         if node_id == owner:
-            goal = goal + " " + PROBE_SCRIPT_SENTENCE + " that drives the rebuilt program."
+            goal = (
+                goal + " " + PROBE_SCRIPT_SENTENCE
+                + f" under {PROBE_DIR}/ and keep it out of the submission. "
+                "That script may run the reference ./executable only through its "
+                "normal interface. It must not be part of the submitted program."
+            )
         if swe == "s1" or node_id == owner:
             tools = _IMPLEMENT_TOOLS
         else:
@@ -297,6 +312,119 @@ def _copies_reference(argv):
         return False
     sources = operands[:-1]
     return any(_token_mentions_reference(token) for token in sources)
+
+
+def _path_parts(token):
+    text = token.strip().strip("\"'").replace("\\", "/")
+    return [part for part in text.split("/") if part not in {"", "."}]
+
+
+def _is_own_build_output(token):
+    """A path under ``build/``, the agent's compile output, not the reference."""
+    if not isinstance(token, str) or not token:
+        return False
+    parts = _path_parts(token)
+    return len(parts) >= 2 and "build" in parts[:-1]
+
+
+def _installs_own_build(argv):
+    """True when a copy installs the agent's build output onto ``./executable``.
+
+    ``cp build/executable executable`` is the legal install. Copying the
+    reference itself is not.
+    """
+    if not argv or _basename(argv[0]) not in _COPY_TOOLS:
+        return False
+    operands = [token for token in argv[1:] if isinstance(token, str) and not token.startswith("-")]
+    if len(operands) != 2:
+        return False
+    source, dest = operands
+    return _is_own_build_output(source) and is_reference_path(dest)
+
+
+_REDIRECT_TOKEN = re.compile(r"^(?:\d*>>?|\d*>&)\S*$")
+_SHELL_SPLIT = frozenset({"||", "&&", ";", "|"})
+
+
+def _strip_redirects(tokens):
+    cleaned = []
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token in {">", ">>", "<", ">&", "&>"}:
+            index += 2 if index + 1 < len(tokens) else 1
+            continue
+        if isinstance(token, str) and _REDIRECT_TOKEN.fullmatch(token):
+            index += 1
+            continue
+        cleaned.append(token)
+        index += 1
+    return cleaned
+
+
+def _simple_commands(line):
+    """Split one shell line into argv lists, dropping redirects and ``|| true``."""
+    if not isinstance(line, str) or not line.strip():
+        return []
+    try:
+        tokens = shlex.split(line, comments=True, posix=True)
+    except ValueError:
+        return []
+    groups = []
+    current = []
+    for token in tokens:
+        if token in _SHELL_SPLIT:
+            if current:
+                groups.append(_strip_redirects(current))
+            current = []
+        else:
+            current.append(token)
+    if current:
+        groups.append(_strip_redirects(current))
+    return [group for group in groups if group]
+
+
+def _reads_reference_bytes(argv):
+    if not argv or is_reference_path(argv[0]) or not _targets_reference(argv):
+        return False
+    base = _basename(argv[0])
+    return base in _READERS or base in _INSPECT
+
+
+def is_excluded_probe(relative):
+    """True for a behaviour-probe path that is not part of the submission."""
+    if not isinstance(relative, str) or not relative:
+        return False
+    return PROBE_DIR in PurePosixPath(relative).parts
+
+
+def _text_submission_violations(text, *, allow_reference_execution):
+    """Violation kinds in one text file.
+
+    Running the reference through its normal interface is allowed only for a
+    probe that is outside the submission or excluded from it. Copying,
+    wrapping, or reading the reference is never allowed.
+    """
+    if not isinstance(text, str) or not text:
+        return []
+    found = []
+    if re.search(r"open\s*\([^)]*executable[^)]*['\"]rb['\"]", text, re.IGNORECASE | re.DOTALL):
+        found.append("reads_reference_bytes")
+    if re.search(r"executable.{0,80}read_bytes\s*\(|read_bytes\s*\([^)]*executable", text, re.IGNORECASE | re.DOTALL):
+        found.append("reads_reference_bytes")
+    if not allow_reference_execution and (_INVOKE.search(text) or _DIRECT_CALL.search(text)):
+        found.append("invokes_reference")
+    for line in text.splitlines():
+        for argv in _simple_commands(line):
+            if _installs_own_build(argv):
+                continue
+            if _reads_reference_bytes(argv):
+                found.append("reads_reference_bytes")
+                break
+            if _copies_reference(argv):
+                found.append("copies_reference")
+                break
+    return found
 
 
 def _inspect_violation(argv):
@@ -523,12 +651,14 @@ def _looks_text(path):
     return False
 
 
-def submission_reference_scan(root, *, reference_sha256=None):
-    """Flag a submission that copies, embeds, or calls the reference binary.
+def submission_reference_scan(root, *, reference_sha256=None, probe_paths=()):
+    """Flag a submission that copies, embeds, wraps, or reads the reference.
 
     ``./executable`` itself is the reference and is not a submitted file.
-    A ``compile.sh`` that installs ``build/executable`` onto ``./executable``
-    is the legal output path, not a wrapper.
+    A ``compile.sh`` that installs the agent's own ``build/...`` output onto
+    ``./executable`` is the legal output path, not a wrapper. A behaviour-probe
+    script under ``.pb-probe/`` or passed in ``probe_paths`` (outside the
+    submission) may run the reference through its normal interface.
     """
     root = Path(root)
     digest = reference_sha256 if isinstance(reference_sha256, str) and reference_sha256 else reference_digest(root)
@@ -569,17 +699,43 @@ def submission_reference_scan(root, *, reference_sha256=None):
         if digest and digest in text:
             violations.append({"kind": "embedded_reference_hash", "path": relative})
             continue
-        if _INVOKE.search(text) or _DIRECT_CALL.search(text):
-            violations.append({"kind": "invokes_reference", "path": relative})
+        allow_execution = is_excluded_probe(relative)
+        for kind in _text_submission_violations(text, allow_reference_execution=allow_execution):
+            violations.append({"kind": kind, "path": relative})
+            break
+    for probe in probe_paths or ():
+        path = Path(probe)
+        try:
+            resolved = path.resolve()
+        except OSError:
+            violations.append({"kind": "submission_unreadable", "path": str(probe)})
             continue
-        for line in text.splitlines():
+        if root.is_dir():
             try:
-                tokens = shlex.split(line, comments=True, posix=True)
-            except ValueError:
-                tokens = []
-            if _copies_reference(tokens):
-                violations.append({"kind": "copies_reference", "path": relative})
-                break
+                if resolved.is_relative_to(root.resolve()):
+                    continue
+            except OSError:
+                pass
+        if not path.is_file() or path.is_symlink():
+            continue
+        try:
+            raw = path.read_bytes()
+        except OSError:
+            violations.append({"kind": "submission_unreadable", "path": path.name})
+            continue
+        if digest and hashlib.sha256(raw).hexdigest() == digest:
+            violations.append({"kind": "embedded_reference_bytes", "path": path.name})
+            continue
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeError:
+            continue
+        if digest and digest in text:
+            violations.append({"kind": "embedded_reference_hash", "path": path.name})
+            continue
+        for kind in _text_submission_violations(text, allow_reference_execution=True):
+            violations.append({"kind": kind, "path": path.name})
+            break
     return {
         "ok": not violations,
         "violations": violations,

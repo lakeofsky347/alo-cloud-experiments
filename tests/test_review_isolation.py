@@ -107,7 +107,13 @@ def test_merge_review_locks_the_populated_tree_and_does_not_copy_back(tmp_path):
     assert "MS_RDONLY" in rendered
     assert "tar -C /agent" in rendered
     assert "tar -C /workspace -xf" in rendered
+    assert "chmod u+rwX" in rendered
+    assert "-path /workspace/executable -prune" in rendered
     assert "tar -C /workspace --exclude" not in rendered
+    assert "--user" in argv
+    assert argv[argv.index("--user") + 1] == "0:0"
+    assert "--cap-add=DAC_OVERRIDE" in argv
+    assert "--cap-add=FOWNER" in argv
     assert "--cap-add=SYS_ADMIN" in argv
     assert "--cap-drop=ALL" in argv
     assert "--clear-groups" in rendered

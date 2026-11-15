@@ -199,7 +199,12 @@ def test_container_name_is_opt_in(tmp_path):
     named = DockerSandbox(
         tmp_path, image="example.invalid/alo:test", container_name="alo-fox-persist-forward-abc123")
     argv = named.docker_argv(["python3", "-c", "print(1)"])
-    assert argv[argv.index("--name") + 1] == "alo-fox-persist-forward-abc123"
+    again = named.docker_argv(["python3", "-c", "print(1)"])
+    first = argv[argv.index("--name") + 1]
+    second = again[again.index("--name") + 1]
+    assert first.startswith("alo-fox-persist-forward-abc123-")
+    assert second.startswith("alo-fox-persist-forward-abc123-")
+    assert first != second
     with pytest.raises(Exception):
         DockerSandbox(tmp_path, image="example.invalid/alo:test", container_name="has/slash")
 

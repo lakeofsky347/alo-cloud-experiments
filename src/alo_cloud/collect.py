@@ -26,6 +26,17 @@ def _git(argv):
 # ProgramBench's submission is the agent's codebase. The reference binary and
 # the clean-room git metadata stay out of the tarball (protocol at 895f659).
 SUBMISSION_EXCLUDE = frozenset({".git", "executable"})
+# Not part of the frozen r2 exclude list. Behaviour probes may run the
+# reference and must not ship. The signal stages the built ./executable here
+# and removes it before packing; the name is skipped if a copy remains.
+_PACK_SKIP_DIRS = frozenset({".pb-probe"})
+_PACK_SKIP_NAMES = frozenset({".alo-pb-candidate"})
+
+
+def _submission_skipped(relative):
+    if any(part in SUBMISSION_EXCLUDE or part in _PACK_SKIP_DIRS for part in relative.parts):
+        return True
+    return relative.name in _PACK_SKIP_NAMES
 
 
 def workspace_patch(workspace, diff_base, *, git=_git):
@@ -90,7 +101,7 @@ def _pack_submission(workspace, dest_tar):
             if not path.is_file() or path.is_symlink():
                 continue
             relative = path.relative_to(workspace)
-            if any(part in SUBMISSION_EXCLUDE for part in relative.parts):
+            if _submission_skipped(relative):
                 continue
             files.append(path)
     with tarfile.open(dest_tar, "w:gz") as archive:

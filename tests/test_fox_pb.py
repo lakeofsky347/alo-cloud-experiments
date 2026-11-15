@@ -256,6 +256,29 @@ def test_submission_scan_flags_wrap_copy_and_hash(tmp_path):
     (root / "steal.sh").write_text("cp ./executable ./build/wrapped\n", encoding="utf-8")
     assert any(item["kind"] == "copies_reference" for item in submission_reference_scan(
         root, reference_sha256=digest)["violations"])
+    (root / "steal.sh").unlink()
+    (root / "compile.sh").write_text(
+        "#!/bin/sh\ncp build/executable executable 2>/dev/null || true\n",
+        encoding="utf-8")
+    installed = submission_reference_scan(root, reference_sha256=digest)
+    assert installed["ok"] is True
+    assert installed["violations"] == []
+    probe_dir = root / ".pb-probe"
+    probe_dir.mkdir()
+    (probe_dir / "run.sh").write_text("#!/bin/sh\n./executable --help\n", encoding="utf-8")
+    excluded = submission_reference_scan(root, reference_sha256=digest)
+    assert excluded["ok"] is True
+    outside = tmp_path / "behaviour_probe.sh"
+    outside.write_text("#!/bin/sh\n./executable --version\n", encoding="utf-8")
+    external = submission_reference_scan(root, reference_sha256=digest, probe_paths=[outside])
+    assert external["ok"] is True
+    (probe_dir / "run.sh").write_text("#!/bin/sh\ncat ./executable\n", encoding="utf-8")
+    read_probe = submission_reference_scan(root, reference_sha256=digest)
+    assert any(item["kind"] == "reads_reference_bytes" for item in read_probe["violations"])
+    (probe_dir / "run.sh").unlink()
+    (root / "wrap.py").write_text('open("executable", "rb").read()\n', encoding="utf-8")
+    assert any(item["kind"] == "reads_reference_bytes" for item in submission_reference_scan(
+        root, reference_sha256=digest)["violations"])
     reference.chmod(0o755)
     assert submission_reference_scan(root, reference_sha256=digest)["reference_execute_only"] is False
 
@@ -429,7 +452,6 @@ def test_public_signal_runs_compile_and_optional_blackbox_probe(tmp_path):
     assert services.public_signal() == "unknown"
     root = services.workspace.root
     (root / "build").mkdir()
-    (root / "build" / "executable").write_text("candidate", encoding="utf-8")
     (root / "executable").write_bytes(b"reference")
     seen = []
 
@@ -448,9 +470,12 @@ def test_public_signal_runs_compile_and_optional_blackbox_probe(tmp_path):
     assert services.differential_enabled is False
     seen.clear()
     services.differential_enabled = True
+    (root / "build").mkdir(exist_ok=True)
+    (root / "build" / ".alo-pb-candidate").write_bytes(b"candidate")
     assert services.public_signal() == "pass"
     assert ["./executable", "input"] in seen
-    assert ["./build/executable", "input"] in seen
+    assert ["./build/.alo-pb-candidate", "input"] in seen
+    assert not (root / "build" / ".alo-pb-candidate").exists()
     assert all(pb_command_violation(argv) is None for argv in seen)
     seen.clear()
 
@@ -462,6 +487,7 @@ def test_public_signal_runs_compile_and_optional_blackbox_probe(tmp_path):
 
     services.sandbox = Mismatch()
     services.last_pb_signal = None
+    (root / "build" / ".alo-pb-candidate").write_bytes(b"candidate")
     assert services.public_signal() == "fail"
     assert services.last_pb_signal["differential"] == "fail"
     assert services.last_pb_signal["compile"] == "pass"
@@ -629,3 +655,106 @@ def test_cli_dry_run_g0_and_rejects_a_changed_cap(tmp_path, monkeypatch, capsys)
     ]) == 2
     assert "fox_run_settings_mismatch" in capsys.readouterr().out
     assert FOX_RESOURCE_PRIOR["cny"] == 0.0
+
+
+def test_contract_matches_the_official_root_executable():
+    from alo_cloud.programbench_prompt import PROGRAMBENCH_SUBMISSION_CONTRACT
+    assert "produces an executable ./executable in the workspace root" in PROGRAMBENCH_SUBMISSION_CONTRACT
+    assert "compile.sh must create ./executable at the workspace root" in PROGRAMBENCH_SUBMISSION_CONTRACT
+    assert "cp build/executable executable" in PROGRAMBENCH_SUBMISSION_CONTRACT
+    assert "./build is the writable target" not in PROGRAMBENCH_SUBMISSION_CONTRACT
+    assert "write the program there" not in PROGRAMBENCH_SUBMISSION_CONTRACT
+    dag = pb_dag()
+    assert "produces ./executable" in dag
+    assert "builds under ./build/" not in dag
+    assert ".pb-probe/" in dag
+
+
+def test_name_conflict_is_not_a_daemon_outage(tmp_path):
+    import subprocess
+    from alo_cloud.sandbox import (
+        DockerSandbox, SandboxUnknown, container_name_conflict, run_docker_cli,
+    )
+    clash = (
+        'docker: Error response from daemon: Conflict. The container name "/alo" '
+        "is already in use by container \"abc\". You have to remove (or rename) "
+        "that container to be able to reuse that name.\n"
+    )
+
+    def conflict(argv, timeout_s):
+        del argv, timeout_s
+        return {"returncode": 125, "stdout": "", "stderr": clash, "timed_out": False}
+
+    box = DockerSandbox(
+        tmp_path, image="example.invalid/alo:test", runner=conflict,
+        container_name="alo-fox-pb-a2-abc123")
+    result = box.command(["true"], 5)
+    assert container_name_conflict(result) or result["failure"] == "container_name_conflict"
+    assert result["returncode"] == 125
+    assert result["failure"] == "container_name_conflict"
+
+    def daemon(argv, timeout_s):
+        del argv, timeout_s
+        return {"returncode": 125, "stdout": "", "stderr": "Cannot connect to the Docker daemon",
+                "timed_out": False}
+
+    box.runner = daemon
+    with pytest.raises(SandboxUnknown, match="docker_daemon_unavailable"):
+        box.command(["true"], 5)
+
+    removed = []
+
+    class Proc:
+        def __init__(self, argv, **kwargs):
+            del kwargs
+            self.argv = argv
+            self.expired = False
+
+        def communicate(self, timeout=None):
+            del timeout
+            if not self.expired:
+                self.expired = True
+                raise subprocess.TimeoutExpired(self.argv, 1)
+            return b"", b"killed"
+
+        def kill(self):
+            self.killed = True
+
+    argv = box.docker_argv(["sleep", "30"])
+    name = argv[argv.index("--name") + 1]
+    outcome = run_docker_cli(argv, 1, popen=lambda *args, **kwargs: Proc(*args, **kwargs),
+                             remove=removed.append)
+    assert outcome["timed_out"] is True
+    assert outcome["returncode"] == 124
+    assert removed == [name]
+
+
+def test_official_compile_moves_the_reference_then_builds_root_executable(tmp_path):
+    from alo_cloud.sandbox import OFFICIAL_COMPILE_SCRIPT, DockerSandbox
+    script = OFFICIAL_COMPILE_SCRIPT
+    assert script.index("mv /workspace/executable") < script.index("./compile.sh")
+    assert "chmod 111 /opt/programbench-reference/executable" in script
+    assert "cp -f /workspace/executable /workspace/build/.alo-pb-candidate" in script
+    assert "cat /workspace/executable" not in script
+    assert "objdump" not in script
+    seen = {}
+
+    def runner(argv, timeout_s):
+        del timeout_s
+        seen["argv"] = argv
+        build = tmp_path / "build"
+        build.mkdir(exist_ok=True)
+        (build / ".alo-pb-candidate").write_bytes(b"built")
+        return {"returncode": 0, "stdout": "", "stderr": "", "timed_out": False}
+
+    box = DockerSandbox(
+        tmp_path, image="example.invalid/alo:test", runner=runner, merge_image_workspace=True)
+    assert box.official_compile(30) == 0
+    rendered = "\n".join(seen["argv"])
+    assert "--network=none" in seen["argv"]
+    assert "--read-only" not in seen["argv"]
+    assert seen["argv"][seen["argv"].index("--user") + 1] == "0:0"
+    assert "mv /workspace/executable /opt/programbench-reference/executable" in rendered
+    assert "./compile.sh" in rendered
+    assert ".alo-pb-candidate" in rendered
+    assert (tmp_path / "build" / ".alo-pb-candidate").read_bytes() == b"built"
