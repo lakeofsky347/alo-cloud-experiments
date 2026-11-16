@@ -1243,7 +1243,9 @@ def test_glm_flashx_substitution_is_opt_in_and_changes_only_the_pool():
     assert {key for key in before_body if before_body[key] != after_body[key]} == {"pool"}
     assert after_body["pool"] == list(swapped)
     assert after_body["pool_substitution"] == {
-        "name": "glm-flashx", "from": "fox/glm-5.3-flash", "to": "fox/glm-5.3-flashx"}
+        "name": "glm-flashx", "from": "fox/glm-5.3-flash", "to": "fox/glm-5.3-flashx",
+        "upstream": "glm-5.3-flashx", "api_base": "https://open.bigmodel.cn/api/paas/v4",
+        "key_env": "GLM_API_KEY"}
     assert after != before
     assert r2_freeze_sha256() == FROZEN_R2_SHA256
 
@@ -1278,3 +1280,38 @@ def test_flashx_dry_run_records_the_substitution(tmp_path):
     with pytest.raises(PbStopped, match="fox_run_settings_mismatch"):
         run_arm(tmp_path / "A2", arm="A2", g0=True, request_cap=40, node_request_cap=20,
                 differential_signal=True, live=False)
+
+
+def test_flashx_slot_uses_the_zhipu_endpoint_and_its_own_key(monkeypatch):
+    from alo_cloud.fox_pb import GLM_FLASHX
+    from alo_cloud.fox_pool import FOX_API_BASE, FOX_BY_INTERNAL, FOX_KEY_ENV
+    from alo_cloud.fox_single import _live_secrets, _transport_for
+    from alo_cloud.sandbox import CREDENTIAL_ENV_NAMES
+    assert GLM_FLASHX.chat_url == "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+    assert GLM_FLASHX.key_env == "GLM_API_KEY"
+    for row in FOX_BY_INTERNAL.values():
+        assert row.api_base == FOX_API_BASE and row.key_env == FOX_KEY_ENV
+    assert "GLM_API_KEY" in CREDENTIAL_ENV_NAMES
+    monkeypatch.setenv("FOXROUTER_API_KEY", "fox-test-key")
+    monkeypatch.setenv("GLM_API_KEY", "glm-test-key")
+    assert set(_live_secrets()) == {"fox-test-key", "glm-test-key"}
+    seen = []
+
+    def sender(url, body, headers, timeout_s):
+        seen.append((url, headers.get("Authorization"), body["model"]))
+        return 200, json.dumps({"model": body["model"], "choices": [{"message": {"content": "ok"}}]})
+
+    transport = _transport_for(live=True, sender=sender, timeout_s=5, sleep=lambda s: None,
+                               clock=lambda: __import__("datetime").datetime(2026, 11, 16), max_attempts=1)
+    transport(GLM_FLASHX, [{"role": "user", "content": "hi"}], 8)
+    transport(FOX_BY_INTERNAL["fox/deepseek-flash"], [{"role": "user", "content": "hi"}], 8)
+    assert seen[0] == ("https://open.bigmodel.cn/api/paas/v4/chat/completions", "Bearer glm-test-key", "glm-5.3-flashx")
+    assert seen[1] == ("https://foxrouter.org/v1/chat/completions", "Bearer fox-test-key", "deepseek-v4.1-flash-1017")
+
+
+def test_live_flashx_run_stops_without_the_glm_key(tmp_path, monkeypatch):
+    monkeypatch.setenv("FOXROUTER_API_KEY", "fox-test-key")
+    monkeypatch.delenv("GLM_API_KEY", raising=False)
+    with pytest.raises(PbStopped, match="credential_missing:GLM_API_KEY"):
+        run_arm(tmp_path / "A2", arm="A2", g0=True, request_cap=40, node_request_cap=20,
+                differential_signal=True, pool_substitute="glm-flashx", live=True)
