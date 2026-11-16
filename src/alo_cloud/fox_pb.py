@@ -72,6 +72,7 @@ from .pb_contract import (
     run_blackbox_differential,
     SubmissionScanDeadline,
     submission_reference_scan,
+    submission_reference_scan_bounded,
 )
 from .sandbox import DockerSandbox
 from .workspace_prep import seed_image_tree
@@ -643,11 +644,21 @@ def _call_journal_sink(run_dir, unit_id, attempt_id, secrets):
     return sink
 
 
-def _scan_submission(root, *, started, unit_seconds, clock=time.monotonic):
-    """End-of-unit scan under the unit deadline. Returns (submission, failure reason)."""
+def _scan_submission(root, *, started, unit_seconds, clock=time.monotonic, scan=None):
+    """End-of-unit scan under the unit deadline. Returns (submission, failure reason).
+
+    The deadline is the unit deadline, but at least ``SCAN_MIN_SECONDS`` from
+    now, so a unit that used its whole budget is still scanned in full. The scan
+    runs in a child process that is killed at the deadline (see
+    ``submission_reference_scan_bounded``).
+    """
     deadline = max(started + float(unit_seconds), clock() + SCAN_MIN_SECONDS)
+    remaining = deadline - clock()
+    if remaining <= 0:
+        return None, "submission_scan_deadline"
+    scan = scan or submission_reference_scan_bounded
     try:
-        return submission_reference_scan(root, deadline=deadline, clock=clock), None
+        return scan(root, remaining), None
     except SubmissionScanDeadline:
         return None, "submission_scan_deadline"
     except Exception:

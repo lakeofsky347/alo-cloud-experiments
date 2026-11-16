@@ -1429,3 +1429,56 @@ def submission_reference_scan(root, *, reference_sha256=None, probe_paths=(), de
         "reference_sha256": digest,
         "reference_execute_only": mode_ok,
     }
+
+
+# Grace after the deadline for the child to report before it is killed.
+SCAN_KILL_GRACE_SECONDS = 2.0
+
+
+def _bounded_scan_child(conn, root, seconds, kwargs):
+    try:
+        clock = time.monotonic
+        result = submission_reference_scan(root, deadline=clock() + seconds, clock=clock, **kwargs)
+        conn.send(("ok", result))
+    except SubmissionScanDeadline:
+        conn.send(("deadline", None))
+    except BaseException as error:  # reported to the parent as a scan error
+        conn.send(("error", type(error).__name__))
+    finally:
+        conn.close()
+
+
+def submission_reference_scan_bounded(root, seconds, **kwargs):
+    """``submission_reference_scan`` in a spawned child that is killed at the deadline.
+
+    The child runs the same function on the same tree, so a scan that finishes
+    returns the same result. The in-process deadline checks stop most overruns
+    cleanly. The kill is the hard boundary for work they cannot interrupt, such
+    as one slow regex over a whole file. Raises ``SubmissionScanDeadline`` on an
+    overrun and ``RuntimeError`` if the child fails.
+    """
+    import multiprocessing
+
+    seconds = max(float(seconds), 0.0)
+    context = multiprocessing.get_context("spawn")
+    receiver, sender = context.Pipe(duplex=False)
+    child = context.Process(target=_bounded_scan_child, args=(sender, str(root), seconds, kwargs), daemon=True)
+    child.start()
+    sender.close()
+    try:
+        if not receiver.poll(seconds + SCAN_KILL_GRACE_SECONDS):
+            raise SubmissionScanDeadline("submission_scan_deadline")
+        try:
+            kind, value = receiver.recv()
+        except EOFError:
+            raise RuntimeError("submission_scan_child_exited") from None
+    finally:
+        receiver.close()
+        if child.is_alive():
+            child.kill()
+        child.join(10)
+    if kind == "deadline":
+        raise SubmissionScanDeadline("submission_scan_deadline")
+    if kind != "ok":
+        raise RuntimeError(f"submission_scan_child_error:{value}")
+    return value

@@ -210,16 +210,37 @@ def test_scan_deadline_is_checked_per_file_and_line(tmp_path):
 
 def test_unit_scan_gets_a_floor_after_the_unit_budget_is_spent(tmp_path):
     root = _fixture_workspace(tmp_path)
-    # The agent loop used the whole budget long ago; the ordinary scan still runs.
+    # The agent loop used the whole budget long ago; the ordinary scan still runs,
+    # in the child process, with the same result as the in-process scan.
     submission, failure = _scan_submission(root, started=0.0, unit_seconds=1.0)
     assert failure is None and submission == pc.submission_reference_scan(root)
-    now = [1000.0]
+    ticks = iter([1000.0, 1000.0 + SCAN_MIN_SECONDS + 1])
+    submission, failure = _scan_submission(root, started=0.0, unit_seconds=1.0, clock=lambda: next(ticks))
+    assert submission is None and failure == "submission_scan_deadline"
+    granted = []
+    submission, failure = _scan_submission(
+        root, started=0.0, unit_seconds=1.0, scan=lambda r, seconds: granted.append(seconds) or {"ok": True})
+    assert failure is None and SCAN_MIN_SECONDS - 5 < granted[0] <= SCAN_MIN_SECONDS
 
-    def clock():
-        now[0] += SCAN_MIN_SECONDS / 2
-        return now[0]
 
-    submission, failure = _scan_submission(root, started=0.0, unit_seconds=1.0, clock=clock)
+def test_bounded_scan_matches_in_process_scan(tmp_path):
+    roots = [_fixture_workspace(tmp_path), REPO / "src", REPO / "tests"]
+    for root in roots:
+        assert pc.submission_reference_scan_bounded(root, 300, reference_sha256="0" * 64) == \
+            pc.submission_reference_scan(root, reference_sha256="0" * 64)
+
+
+def test_bounded_scan_kills_work_the_deadline_checks_cannot_reach(tmp_path):
+    # One quadratic regex over a whole file runs before any per-line check.
+    root = tmp_path / "ws"
+    root.mkdir()
+    (root / "notes.sh").write_text("open(" * 200_000, encoding="utf-8")
+    started = time.monotonic()
+    with pytest.raises(pc.SubmissionScanDeadline):
+        pc.submission_reference_scan_bounded(root, 1.0, reference_sha256="0" * 64)
+    assert time.monotonic() - started < 20.0
+    submission, failure = _scan_submission(root, started=time.monotonic(), unit_seconds=0.0,
+                                           scan=lambda r, seconds: pc.submission_reference_scan_bounded(r, 1.0))
     assert submission is None and failure == "submission_scan_deadline"
 
 
