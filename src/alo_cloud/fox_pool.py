@@ -57,8 +57,11 @@ class FoxModel:
     when separator and snapshot normalization would not. Alias comparison still
     strips a vendor prefix, so one unprefixed entry also accepts ``fw/<id>``.
     ``p`` is not a separator. ``fox/kimi-k3.1-pro`` lists ``kimi-k3p1-pro``
-    because the gateway returns that spelling of ``3.1``. The other scheduled
-    models leave the tuple empty.
+    because the gateway returns that spelling of ``3.1``. It also lists
+    ``kimi-k3.1-pro-ta``, the id Foxrouter has returned for requested
+    ``kimi-k3.1-pro`` since 2026-11-16 14:36 SGT (``-ta`` is not a snapshot
+    tag, so normalization alone rejects it). The other scheduled models leave
+    the tuple empty.
     """
 
     internal: str
@@ -90,7 +93,7 @@ class FoxModel:
 FOX_MODELS = (
     FoxModel("fox/deepseek-flash", "deepseek-v4.1-flash-1017", "deepseek-flash", 128_000),
     FoxModel("fox/kimi-k3.1-pro", "kimi-k3.1-pro", "fox/kimi-k3.1-pro", 128_000,
-             accepted_aliases=("kimi-k3p1-pro",)),
+             accepted_aliases=("kimi-k3p1-pro", "kimi-k3.1-pro-ta")),
     FoxModel("fox/qwen3.8-max", "qwen3.8-max", "fox/qwen3.8-max", 128_000),
     FoxModel("fox/qwen3.8-flash", "qwen3.8-flash", "fox/qwen3.8-flash", 128_000),
     FoxModel("fox/glm-5.3-flash", "glm-5.3-flash", "fox/glm-5.3-flash", 128_000),
