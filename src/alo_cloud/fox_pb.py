@@ -37,6 +37,7 @@ from .fox_learn import FoxAloServices, dry_gateway, planner_for
 from .fox_pool import (
     DEFAULT_READ_TIMEOUT_S,
     FOX_BY_INTERNAL,
+    FoxModel,
     FOX_KEY_ENV,
     FOX_RESOURCE_PRIOR,
     model_settings,
@@ -85,6 +86,30 @@ PB_POOL = (
     "fox/glm-5.3-flash",
 )
 PB_POOL_SET = frozenset(PB_POOL)
+# Opt-in slot substitution for one PB run. Unset leaves PB_POOL, the default
+# decision freeze, and every other track unchanged. ``glm-flashx`` replaces the
+# glm slot with Foxrouter's ``glm-5.3-flashx`` (2026-11-16: ``glm-5.3-flash``
+# answered HTTP 503 ``upstream_unavailable`` on every probe). The substitute
+# row lives here, not in ``FOX_MODELS``, so SWE / learn pools do not gain it.
+GLM_FLASHX = FoxModel("fox/glm-5.3-flashx", "glm-5.3-flashx", "fox/glm-5.3-flashx", 128_000)
+PB_SUBSTITUTE_MODELS = {GLM_FLASHX.internal: GLM_FLASHX}
+PB_POOL_SUBSTITUTIONS = {
+    "glm-flashx": {"from": "fox/glm-5.3-flash", "to": GLM_FLASHX.internal},
+}
+
+
+def pb_pool_for(substitute=None):
+    """PB_POOL, or PB_POOL with one slot replaced by a named substitution."""
+    if substitute is None:
+        return PB_POOL
+    rule = PB_POOL_SUBSTITUTIONS.get(substitute)
+    if rule is None:
+        raise PbStopped("unknown_pool_substitute")
+    return tuple(rule["to"] if name == rule["from"] else name for name in PB_POOL)
+
+
+def _pb_spec(internal):
+    return PB_SUBSTITUTE_MODELS.get(internal) or FOX_BY_INTERNAL[internal]
 BEST_SINGLE = "fox/deepseek-flash"
 BEST_SINGLE_REPORT = "deepseek-flash"
 ARMS = ("A1", "A2", "A3", "A4", "A5")
@@ -104,7 +129,7 @@ G0_TASKS = (
 )
 _TERMINAL = frozenset({"completed", "failed", "blocked", "stopped"})
 _LOCKED = (
-    "arm", "models", "task_ids", "unit_ids", "request_cap", "node_request_cap",
+    "arm", "models", "task_ids", "unit_ids", "request_cap", "node_request_cap", "pool_substitution",
     "online_update", "differential_signal", "role_map", "probe_script_owner",
     "unit_seconds", "read_timeout_s", "live", "frozen", "data_dir",
     "programbench_repo",
@@ -139,13 +164,17 @@ def decision_freeze(settings):
         "frozen": not bool(settings["online_update"]),
         "unit_seconds": settings["unit_seconds"],
         "read_timeout_s": settings["read_timeout_s"],
-        "pool": list(PB_POOL),
+        "pool": list(pb_pool_for(settings.get("pool_substitute"))),
         "best_single": BEST_SINGLE,
         "reference_mode": "111",
         "source_commit": PROGRAMBENCH_COMMIT,
         "tests_revision": PROGRAMBENCH_TESTS_REVISION,
     }
     # Present only when the run sets it. The default document stays byte-identical.
+    substitute = settings.get("pool_substitute")
+    if substitute is not None:
+        rule = PB_POOL_SUBSTITUTIONS[substitute]
+        body["pool_substitution"] = {"name": substitute, "from": rule["from"], "to": rule["to"]}
     node_cap = settings.get("node_request_cap")
     if node_cap is not None:
         body["node_request_cap"] = node_cap
@@ -153,10 +182,12 @@ def decision_freeze(settings):
     return body, digest
 
 
-def resolve_pb_pool(models=None):
+def resolve_pb_pool(models=None, substitute=None):
     """The fox pool without qwen, and with every ``*omni*`` alias rejected."""
+    pool = pb_pool_for(substitute)
+    pool_set = frozenset(pool)
     if models in (None, "all"):
-        names = list(PB_POOL)
+        names = list(pool)
     elif isinstance(models, str):
         names = [part.strip() for part in models.split(",") if part.strip()]
     else:
@@ -171,21 +202,27 @@ def resolve_pb_pool(models=None):
             raise PbStopped("omni_model_rejected")
         if "qwen" in name.lower():
             raise PbStopped("pb_pool_excludes_qwen")
-        try:
-            row = resolve_model(name)
-        except ValueError as error:
-            raise PbStopped(str(error)) from error
-        if row.internal not in PB_POOL_SET:
+        row = PB_SUBSTITUTE_MODELS.get(name)
+        if row is None:
+            try:
+                row = resolve_model(name)
+            except ValueError as error:
+                raise PbStopped(str(error)) from error
+        if row.internal not in pool_set:
             raise PbStopped("pb_pool_excludes:" + row.internal)
         if row.internal not in chosen:
             chosen.append(row.internal)
-    order = {name: index for index, name in enumerate(PB_POOL)}
+    order = {name: index for index, name in enumerate(pool)}
     chosen.sort(key=lambda name: order[name])
-    return tuple(FOX_BY_INTERNAL[name] for name in chosen)
+    return tuple(_pb_spec(name) for name in chosen)
 
 
-def default_pb_model_map():
-    """Report names and bare ids map onto the PB fox internal ids."""
+def default_pb_model_map(substitute=None):
+    """Report names and bare ids map onto the PB fox internal ids.
+
+    With a substitution, the replaced model's names map onto the substitute,
+    so a frozen profile's rows for that slot carry over. The file is not edited.
+    """
     mapping = {}
     for internal in PB_POOL:
         spec = FOX_BY_INTERNAL[internal]
@@ -193,6 +230,15 @@ def default_pb_model_map():
         mapping[spec.report_name] = internal
         bare = internal.split("/", 1)[1]
         mapping[bare] = internal
+    if substitute is not None:
+        rule = PB_POOL_SUBSTITUTIONS.get(substitute)
+        if rule is None:
+            raise PbStopped("unknown_pool_substitute")
+        source = FOX_BY_INTERNAL[rule["from"]]
+        for key in (rule["from"], source.report_name, rule["from"].split("/", 1)[1]):
+            mapping[key] = rule["to"]
+        mapping[rule["to"]] = rule["to"]
+        mapping[rule["to"].split("/", 1)[1]] = rule["to"]
     return mapping
 
 
@@ -749,7 +795,8 @@ def _remap_profiles(profiles, model_map, allowed_models):
 
 
 @contextmanager
-def open_pb_transfer(source_path, *, allowed_models, model_map=None, strip_quality=False):
+def open_pb_transfer(source_path, *, allowed_models, model_map=None, strip_quality=False,
+                     substitute=None):
     """Read-only import of a frozen SWE profile into the probe temporary store.
 
     The source bytes are hashed before and after. ``write_back`` on the
@@ -764,7 +811,7 @@ def open_pb_transfer(source_path, *, allowed_models, model_map=None, strip_quali
         document = json.loads(source_bytes.decode("utf-8"))
     except (UnicodeError, json.JSONDecodeError) as error:
         raise PbStopped("frozen_transfer_source_unreadable") from error
-    mapping = default_pb_model_map()
+    mapping = default_pb_model_map(substitute)
     if model_map:
         if not isinstance(model_map, dict):
             raise PbStopped("invalid_model_map")
@@ -804,11 +851,12 @@ def open_pb_transfer(source_path, *, allowed_models, model_map=None, strip_quali
         temporary_path.unlink(missing_ok=True)
 
 
-def import_swe_profile(source_path, *, allowed_models, model_map=None, strip_quality=False):
+def import_swe_profile(source_path, *, allowed_models, model_map=None, strip_quality=False,
+                       substitute=None):
     """Copy the imported observations out of the probe store. The source stays put."""
     with open_pb_transfer(
             source_path, allowed_models=allowed_models, model_map=model_map,
-            strip_quality=strip_quality) as library:
+            strip_quality=strip_quality, substitute=substitute) as library:
         observations = copy.deepcopy(library.observations)
         digest = library.pb_source_sha256
         dropped = library.pb_dropped_models
@@ -1097,6 +1145,7 @@ def _manifest(settings, units):
         "unit_ids": [unit.unit_id for unit in units],
         "request_cap": settings["request_cap"],
         "node_request_cap": settings.get("node_request_cap"),
+        "pool_substitution": decision_freeze(settings)[0].get("pool_substitution"),
         "request_cap_candidates": list(REQUEST_CAPS),
         "online_update": bool(settings["online_update"]),
         "frozen": not bool(settings["online_update"]),
@@ -1158,6 +1207,7 @@ def _initial_observations(settings):
         allowed_models=tuple(settings["models"]),
         model_map=settings.get("model_map"),
         strip_quality=settings["arm"] == "A3",
+        substitute=settings.get("pool_substitute"),
     )
     return imported["observations"], imported["source_sha256"]
 
@@ -1188,13 +1238,13 @@ def run_arm(run_dir, *, arm, tasks=None, g0=False, models="all", request_cap=DEF
             online_update=False, differential_signal=False, role_map=None,
             probe_script_owner="p1", swe_profile=None, model_map=None, live=False,
             sender=None, execute=False, scorer=None, signal_override=None, clock=None,
-            data_dir=None, programbench_repo=None, image_seeder=None):
+            data_dir=None, programbench_repo=None, image_seeder=None, pool_substitute=None):
     """Run one arm in its own directory. Completed unit ids are skipped."""
     if arm not in ARMS:
         raise PbStopped("unknown_pb_arm")
     if arm in {"A1", "A3"} and not swe_profile:
         raise PbStopped("swe_profile_required")
-    specs = resolve_pb_pool(models)
+    specs = resolve_pb_pool(models, pool_substitute)
     model_names = tuple(row.internal for row in specs)
     request_cap = _check_request_cap(request_cap)
     node_request_cap = _check_node_request_cap(node_request_cap, request_cap)
@@ -1225,6 +1275,7 @@ def run_arm(run_dir, *, arm, tasks=None, g0=False, models="all", request_cap=DEF
         "g0": bool(g0),
         "swe_profile": swe_profile,
         "model_map": model_map,
+        "pool_substitute": pool_substitute,
         "data_dir": str(data_dir) if data_dir else None,
         "programbench_repo": str(programbench_repo) if programbench_repo else None,
         "image_seeder": image_seeder,
@@ -1519,6 +1570,7 @@ def _add_common(parser, *, arm_required):
     parser.add_argument("--models", default="all")
     parser.add_argument("--request-cap", type=int, default=DEFAULT_REQUEST_CAP)
     parser.add_argument("--node-request-cap", type=int, default=None)
+    parser.add_argument("--pool-substitute", default=None, choices=tuple(PB_POOL_SUBSTITUTIONS))
     parser.add_argument("--read-timeout", type=float, default=DEFAULT_READ_TIMEOUT_S)
     parser.add_argument("--unit-seconds", type=float, default=DEFAULT_UNIT_SECONDS)
     parser.add_argument("--online-update", action="store_true")
@@ -1540,6 +1592,7 @@ def _kwargs_from_args(args):
         "models": args.models,
         "request_cap": args.request_cap,
         "node_request_cap": args.node_request_cap,
+        "pool_substitute": args.pool_substitute,
         "unit_seconds": args.unit_seconds,
         "read_timeout_s": args.read_timeout,
         "online_update": bool(args.online_update),

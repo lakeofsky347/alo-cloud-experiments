@@ -1204,3 +1204,77 @@ def test_evaluator_exception_leaves_the_score_unknown(tmp_path, monkeypatch):
     assert row["harness_reason"] == "evaluator_error"
     assert row["status"] != "submission_rejected"
     assert "submission_rejection_reason" not in row
+
+
+def test_glm_flashx_substitution_is_opt_in_and_changes_only_the_pool():
+    from alo_cloud.fox_pb import GLM_FLASHX, default_pb_model_map, pb_pool_for
+    from alo_cloud.fox_pool import FOX_MODELS
+    from alo_cloud.providers import model_match_kind
+    assert pb_pool_for() == PB_POOL
+    assert "fox/glm-5.3-flashx" not in {row.internal for row in FOX_MODELS}
+    assert tuple(row.internal for row in resolve_pb_pool("all")) == PB_POOL
+    swapped = tuple(row.internal for row in resolve_pb_pool("all", "glm-flashx"))
+    assert swapped == (
+        "fox/deepseek-flash", "fox/kimi-k3.1-pro", "fox/mimo-v2.6-flash", "fox/glm-5.3-flashx")
+    spec = resolve_pb_pool("all", "glm-flashx")[-1]
+    assert spec is GLM_FLASHX and spec.upstream == "glm-5.3-flashx"
+    assert spec.accepted_aliases == ()
+    assert model_settings(spec)["context_token_cap"] == 128_000
+    assert model_match_kind("glm-5.3-flashx", spec.upstream) == "exact"
+    assert model_match_kind("glm-5.3-flash", spec.upstream) == "mismatch"
+    with pytest.raises(PbStopped, match="pb_pool_excludes"):
+        resolve_pb_pool(["fox/glm-5.3-flashx"])
+    with pytest.raises(PbStopped, match="pb_pool_excludes"):
+        resolve_pb_pool(["fox/glm-5.3-flash"], "glm-flashx")
+    with pytest.raises(PbStopped, match="unknown_pool_substitute"):
+        pb_pool_for("glm-other")
+    mapping = default_pb_model_map("glm-flashx")
+    for key in ("fox/glm-5.3-flash", "glm-5.3-flash", "fox/glm-5.3-flashx"):
+        assert mapping[key] == "fox/glm-5.3-flashx"
+    assert default_pb_model_map()["fox/glm-5.3-flash"] == "fox/glm-5.3-flash"
+
+    default_body, default_digest = decision_freeze(_decision_settings())
+    assert default_digest == DEFAULT_PB_DECISION_SHA256
+    m18 = _decision_settings(differential_signal=True, node_request_cap=20)
+    before_body, before = decision_freeze(m18)
+    assert before == G0_M18_DECISION_SHA256
+    after_body, after = decision_freeze(dict(m18, pool_substitute="glm-flashx"))
+    assert set(after_body) - set(before_body) == {"pool_substitution"}
+    assert {key for key in before_body if before_body[key] != after_body[key]} == {"pool"}
+    assert after_body["pool"] == list(swapped)
+    assert after_body["pool_substitution"] == {
+        "name": "glm-flashx", "from": "fox/glm-5.3-flash", "to": "fox/glm-5.3-flashx"}
+    assert after != before
+    assert r2_freeze_sha256() == FROZEN_R2_SHA256
+
+
+def test_glm_rows_of_a_frozen_profile_carry_over_to_the_flashx_slot(tmp_path):
+    source = tmp_path / "transfer_package.json"
+    source.write_text(json.dumps(_profile({
+        "fox/deepseek-flash": [_quality_row(["coding", "implementation"])],
+        "fox/glm-5.3-flash": [_quality_row(["testing", "validation"])],
+    })), encoding="utf-8")
+    before = source.read_bytes()
+    pool = tuple(row.internal for row in resolve_pb_pool("all", "glm-flashx"))
+    imported = import_swe_profile(source, allowed_models=pool, substitute="glm-flashx")
+    observations = imported["observations"]
+    assert imported["dropped_models"] == []
+    assert observations["fox/glm-5.3-flashx"]
+    assert "fox/glm-5.3-flash" not in observations
+    assert source.read_bytes() == before
+    plain = import_swe_profile(source, allowed_models=PB_POOL)
+    assert plain["observations"]["fox/glm-5.3-flash"]
+    assert "fox/glm-5.3-flashx" not in plain["observations"]
+
+
+def test_flashx_dry_run_records_the_substitution(tmp_path):
+    result = run_arm(
+        tmp_path / "A2", arm="A2", g0=True, request_cap=40, node_request_cap=20,
+        differential_signal=True, pool_substitute="glm-flashx", live=False)
+    assert result["models"][-1] == "fox/glm-5.3-flashx"
+    manifest = json.loads((tmp_path / "A2" / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["pool_substitution"]["to"] == "fox/glm-5.3-flashx"
+    assert manifest["pb_freeze"]["pool"][-1] == "fox/glm-5.3-flashx"
+    with pytest.raises(PbStopped, match="fox_run_settings_mismatch"):
+        run_arm(tmp_path / "A2", arm="A2", g0=True, request_cap=40, node_request_cap=20,
+                differential_signal=True, live=False)
