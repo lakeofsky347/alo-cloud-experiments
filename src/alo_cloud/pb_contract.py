@@ -360,7 +360,9 @@ def _strip_redirects(tokens):
     index = 0
     while index < len(tokens):
         token = tokens[index]
-        if token in {">", ">>", "<", ">&", "&>"}:
+        bare_redirect = token in {">", ">>", "<", ">&", "&>"} or (
+            isinstance(token, str) and re.fullmatch(r"\d*(?:>>?|&>)", token))
+        if bare_redirect:
             index += 2 if index + 1 < len(tokens) else 1
             continue
         if isinstance(token, str) and _REDIRECT_TOKEN.fullmatch(token):
@@ -882,13 +884,212 @@ def _build_tool(argv):
     return None
 
 
+_SHELL_FLOW = frozenset({
+    "if", "then", "else", "elif", "fi", "while", "until", "for", "do", "done",
+    "case", "esac", "select", "time", "coproc",
+})
+
+
+def _shell_tokens(text):
+    """Split a shell script. ``None`` means the quotes do not close."""
+    tokens = []
+    index = 0
+    length = len(text)
+    while index < length:
+        char = text[index]
+        if char in " \t\r":
+            index += 1
+            continue
+        if char == "\n":
+            if not tokens or tokens[-1] != "\n":
+                tokens.append("\n")
+            index += 1
+            continue
+        if char == "#":
+            while index < length and text[index] != "\n":
+                index += 1
+            continue
+        if char in "\"'":
+            quote = char
+            index += 1
+            buffer = []
+            while index < length and text[index] != quote:
+                if quote == "\"" and text[index] == "\\" and index + 1 < length:
+                    buffer.append(text[index + 1])
+                    index += 2
+                    continue
+                buffer.append(text[index])
+                index += 1
+            if index >= length:
+                return None
+            index += 1
+            tokens.append("".join(buffer))
+            continue
+        if text.startswith("&&", index) or text.startswith("||", index):
+            tokens.append(text[index:index + 2])
+            index += 2
+            continue
+        if char in "();|&{}":
+            tokens.append(char)
+            index += 1
+            continue
+        if char in "<>":
+            end = index + 1
+            while end < length and text[end] in "<>&":
+                end += 1
+            tokens.append(text[index:end])
+            index = end
+            continue
+        end = index + 1
+        while end < length and text[end] not in " \t\r\n#\"'();|&{}<>":
+            if text.startswith("&&", end) or text.startswith("||", end):
+                break
+            end += 1
+        tokens.append(text[index:end])
+        index = end
+    return tokens
+
+
+def _resolve_shell_dir(root, cwd, token):
+    """A directory inside the submission, or None when the token is not one."""
+    if not isinstance(token, str):
+        return None
+    text = token.strip().strip("\"'")
+    if (not text or text == "-" or text.startswith(("-", "/"))
+            or _token_is_unresolved_reference(text) or _token_is_glob(text)):
+        return None
+    candidate = cwd / text
+    try:
+        resolved = candidate.resolve()
+        root_resolved = root.resolve()
+        if (not resolved.is_dir() or resolved.is_symlink()
+                or not resolved.is_relative_to(root_resolved)):
+            return None
+    except OSError:
+        return None
+    return resolved
+
+
+class _BuildShell:
+    """Working directory while reading one shell script for build inputs.
+
+    ``cd``, ``pushd``, and ``popd`` move ``cwd``. A ``(...)`` subshell gets
+    its own directory and stack, then the parent is restored. A change or a
+    construct this walker cannot follow sets ``complete`` false.
+    """
+
+    def __init__(self, root, cwd):
+        self.root = root
+        self.cwd = cwd
+        self.stack = []
+        self.files = []
+        self.complete = True
+
+    def consume(self, tokens):
+        index = 0
+        while index < len(tokens):
+            token = tokens[index]
+            if token in _SHELL_SPLIT or token in {"&", "\n", "{", "}"}:
+                index += 1
+                continue
+            if token == "(":
+                end = _matching_paren(tokens, index)
+                if end is None:
+                    self.complete = False
+                    index += 1
+                    continue
+                child = _BuildShell(self.root, self.cwd)
+                child.stack = list(self.stack)
+                child.consume(tokens[index + 1:end])
+                self.files.extend(child.files)
+                self.complete = self.complete and child.complete
+                index = end + 1
+                continue
+            if token == ")":
+                self.complete = False
+                index += 1
+                continue
+            if token in _SHELL_FLOW:
+                self.complete = False
+                index += 1
+                continue
+            argv = []
+            while index < len(tokens) and tokens[index] not in _SHELL_SPLIT | {"&", "\n", "(", ")", "{", "}"}:
+                argv.append(tokens[index])
+                index += 1
+            self._command(_strip_redirects(argv))
+
+    def _command(self, argv):
+        if not argv:
+            return
+        base = _basename(argv[0])
+        if base == "cd":
+            self._move(argv, push=False)
+            return
+        if base == "pushd":
+            self._move(argv, push=True)
+            return
+        if base == "popd":
+            if len(argv) != 1 or not self.stack:
+                self.complete = False
+                return
+            self.cwd = self.stack.pop()
+            return
+        tool = _build_tool(argv)
+        if tool:
+            for found in _project_files(self.root, tool):
+                if not is_excluded_probe(found):
+                    self.files.append(found)
+        for token in argv:
+            found, token_ok = _expand_build_token(self.root, token, self.cwd)
+            if not token_ok:
+                self.complete = False
+            self.files.extend(found)
+
+    def _move(self, argv, *, push):
+        operands = [token for token in argv[1:] if isinstance(token, str) and not token.startswith("-")]
+        if len(operands) != 1:
+            self.complete = False
+            return
+        resolved = _resolve_shell_dir(self.root, self.cwd, operands[0])
+        if resolved is None:
+            self.complete = False
+            return
+        if push:
+            self.stack.append(self.cwd)
+        self.cwd = resolved
+
+
+def _matching_paren(tokens, open_index):
+    depth = 0
+    for index in range(open_index, len(tokens)):
+        if tokens[index] == "(":
+            depth += 1
+        elif tokens[index] == ")":
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
+
+
+def _shell_build_inputs(text, root, start):
+    tokens = _shell_tokens(text)
+    if tokens is None:
+        return [], False
+    walker = _BuildShell(root, start)
+    walker.consume(tokens)
+    return walker.files, walker.complete
+
+
 def submission_build_graph(root):
     """Files reachable from ``compile.sh``, and whether that list is complete.
 
     A behaviour probe that ``compile.sh`` never names, and that no file in
-    that graph names, is not part of the submitted program. A glob or shell
-    variable that does not resolve makes the graph incomplete: callers must
-    not treat every other file as unused.
+    that graph names, is not part of the submitted program. ``cd``,
+    ``pushd``, ``popd``, and ``(...)`` subshells move the directory used for
+    relative paths. A glob, variable, or directory change that does not
+    resolve makes the graph incomplete: callers must not treat every other
+    file as unused.
     """
     root = Path(root)
     entry = root / "compile.sh"
@@ -925,40 +1126,12 @@ def submission_build_graph(root):
                 found = _resolve_existing(root, package, candidate)
                 if found and found not in seen:
                     pending.append(found)
-        lines = text.splitlines()
-        commands = []
-        for line in lines:
-            try:
-                shlex.split(line, comments=True, posix=True)
-            except ValueError:
-                if any(char in line for char in "*?$`"):
-                    complete = False
-            commands.extend(_simple_commands(line))
-        if not commands:
-            try:
-                tokens = shlex.split(text, comments=True, posix=True)
-            except ValueError:
-                tokens = []
-                complete = False
-            if tokens:
-                commands = [tokens]
-        for argv in commands:
-            tool = _build_tool(argv)
-            if tool:
-                for found in _project_files(root, tool):
-                    # ``go build`` / ``cargo`` globs are an over-approximation.
-                    # The probe directory is not part of that guess; a path
-                    # compile.sh names still enters through the token walk.
-                    if is_excluded_probe(found) or found in seen:
-                        continue
-                    pending.append(found)
-            for token in argv:
-                found, token_ok = _expand_build_token(root, token, base_dir)
-                if not token_ok:
-                    complete = False
-                for item in found:
-                    if item not in seen:
-                        pending.append(item)
+        found, shell_complete = _shell_build_inputs(text, root, base_dir)
+        if not shell_complete:
+            complete = False
+        for item in found:
+            if item not in seen:
+                pending.append(item)
     return seen, complete
 
 

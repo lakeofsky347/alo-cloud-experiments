@@ -1084,6 +1084,56 @@ def test_compile_glob_keeps_a_wrapped_source_in_the_build_and_the_archive(tmp_pa
     assert "probe.py" not in uncertain["unused_probes"]
 
 
+def test_compile_cd_keeps_the_source_it_builds(tmp_path):
+    root = tmp_path / "workspace"
+    (root / "src").mkdir(parents=True)
+    (root / "compile.sh").write_text(
+        "#!/bin/sh\ncd src\ngcc main.c -o ../executable\n", encoding="utf-8")
+    (root / "src" / "main.c").write_text(
+        '#include <stdlib.h>\nint main(void){return system("./executable");}\n',
+        encoding="utf-8")
+    (root / "probe.py").write_text(
+        "import subprocess\nsubprocess.run(['./executable'])\n", encoding="utf-8")
+    scanned = submission_reference_scan(root)
+    assert scanned["ok"] is False
+    assert any(item["kind"] == "invokes_reference" and item["path"] == "src/main.c"
+               for item in scanned["violations"])
+    assert "src/main.c" not in scanned["unused_probes"]
+    assert "probe.py" in scanned["unused_probes"]
+    from alo_cloud.collect import _pack_submission
+    import tarfile
+    archive = tmp_path / "submission.tar.gz"
+    _pack_submission(root, archive)
+    names = tarfile.open(archive, "r:gz").getnames()
+    assert "compile.sh" in names
+    assert "src/main.c" in names
+    assert "probe.py" not in names
+    (root / "compile.sh").write_text(
+        "#!/bin/sh\npushd src >/dev/null\ngcc main.c -o ../executable\npopd\n",
+        encoding="utf-8")
+    pushed = submission_reference_scan(root)
+    assert pushed["ok"] is False
+    assert any(item["path"] == "src/main.c" for item in pushed["violations"])
+    assert "probe.py" in pushed["unused_probes"]
+    (root / "compile.sh").write_text(
+        "#!/bin/sh\n(cd src && gcc main.c -o ../executable)\n", encoding="utf-8")
+    nested = submission_reference_scan(root)
+    assert nested["ok"] is False
+    assert any(item["path"] == "src/main.c" for item in nested["violations"])
+    assert "probe.py" in nested["unused_probes"]
+    (root / "compile.sh").write_text(
+        "#!/bin/sh\ncd \"$SRC\"\ngcc main.c -o ../executable\n", encoding="utf-8")
+    uncertain = submission_reference_scan(root)
+    assert uncertain["ok"] is False
+    assert any(item["path"] == "src/main.c" for item in uncertain["violations"])
+    assert "src/main.c" not in uncertain["unused_probes"]
+    assert "probe.py" not in uncertain["unused_probes"]
+    _pack_submission(root, archive)
+    kept = tarfile.open(archive, "r:gz").getnames()
+    assert "src/main.c" in kept
+    assert "probe.py" in kept
+
+
 def test_evaluator_exception_leaves_the_score_unknown(tmp_path, monkeypatch):
     _no_network(monkeypatch)
 
