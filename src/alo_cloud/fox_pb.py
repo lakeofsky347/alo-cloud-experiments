@@ -21,6 +21,7 @@ from pathlib import Path
 import shutil
 import tempfile
 import time
+import uuid
 
 import yaml
 
@@ -69,7 +70,9 @@ from .pb_contract import (
     pb_dag,
     pb_prompt,
     run_blackbox_differential,
+    SubmissionScanDeadline,
     submission_reference_scan,
+    submission_reference_scan_bounded,
 )
 from .sandbox import DockerSandbox
 from .workspace_prep import seed_image_tree
@@ -125,6 +128,14 @@ G0_ARMS = ("A2", "A4")
 REQUEST_CAPS = (40, 64, 80)
 DEFAULT_REQUEST_CAP = 40
 DEFAULT_UNIT_SECONDS = 2400
+# The end-of-unit submission scan is bounded by the unit deadline, but never to
+# less than this many seconds after it starts. A unit whose agent loop used the
+# whole budget still gets its (normally sub-second) scan, so ordinary results
+# do not change; only a scan that would run for minutes is cut off.
+SCAN_MIN_SECONDS = 300
+# Every model call is appended here as it returns (``calls.jsonl`` is still
+# written once per finished unit). A killed or hung unit keeps its spend.
+CALL_JOURNAL = "call_journal.jsonl"
 # G0 / M18: p1 and p2 each get this many model requests. The unit request
 # cap stays the upper bound. Unset on every other run, so the default
 # decision freeze does not gain a field.
@@ -600,6 +611,58 @@ def _prepare_pb_workspace(services, unit, *, live, image_seeder):
     )
     services.sandbox_image = image
     return None
+
+
+class _JournaledCalls(list):
+    """``services.calls`` that also hands each appended row to ``sink``."""
+
+    def __init__(self, sink):
+        super().__init__()
+        self._sink = sink
+
+    def append(self, row):
+        super().append(row)
+        try:
+            self._sink(row)
+        except Exception:
+            # The journal is a safety copy. A failed write never stops a unit.
+            pass
+
+
+def _call_journal_sink(run_dir, unit_id, attempt_id, secrets):
+    path = Path(run_dir) / CALL_JOURNAL
+    counter = {"seq": 0}
+
+    def sink(row):
+        counter["seq"] += 1
+        call = redact_secrets(dict(row), secrets)
+        call.pop("text", None)
+        call["unit_id"] = unit_id
+        call["attempt_id"] = attempt_id
+        call["journal_seq"] = counter["seq"]
+        _append_jsonl(path, call)
+    return sink
+
+
+def _scan_submission(root, *, started, unit_seconds, clock=time.monotonic, scan=None):
+    """End-of-unit scan under the unit deadline. Returns (submission, failure reason).
+
+    The deadline is the unit deadline, but at least ``SCAN_MIN_SECONDS`` from
+    now, so a unit that used its whole budget is still scanned in full. The scan
+    runs in a child process that is killed at the deadline (see
+    ``submission_reference_scan_bounded``).
+    """
+    deadline = max(started + float(unit_seconds), clock() + SCAN_MIN_SECONDS)
+    remaining = deadline - clock()
+    if remaining <= 0:
+        return None, "submission_scan_deadline"
+    scan = scan or submission_reference_scan_bounded
+    try:
+        return scan(root, remaining), None
+    except SubmissionScanDeadline:
+        return None, "submission_scan_deadline"
+    except Exception:
+        return None, "submission_scan_error"
 
 
 class PbServices(FoxAloServices):
@@ -1391,6 +1454,10 @@ def _run_unit(unit, run_dir, *, settings, specs, model_names, transport, limits,
         differential_enabled=settings["differential_signal"],
         signal_override=signal_override,
     )
+    attempt_id = uuid.uuid4().hex[:12]
+    record["attempt_id"] = attempt_id
+    services.calls = _JournaledCalls(
+        _call_journal_sink(run_dir, unit.unit_id, attempt_id, _live_secrets()))
     prepare_note = _prepare_pb_workspace(
         services, unit, live=live, image_seeder=settings.get("image_seeder"))
     record["sandbox_image"] = getattr(services, "sandbox_image", None)
@@ -1459,11 +1526,10 @@ def _run_unit(unit, run_dir, *, settings, specs, model_names, transport, limits,
         signal = services.public_signal()
     except Exception:
         signal = "unknown"
-    scan_failed = False
-    try:
-        submission = submission_reference_scan(services.workspace.root)
-    except Exception:
-        scan_failed = True
+    submission, scan_failure = _scan_submission(
+        services.workspace.root, started=started, unit_seconds=limits["seconds"])
+    scan_failed = scan_failure is not None
+    if scan_failed:
         submission = {"ok": None, "violations": [], "warnings": [], "unused_probes": []}
     usage = _usage_block(services.calls)
     plan = pb_eval_plan(
@@ -1472,10 +1538,10 @@ def _run_unit(unit, run_dir, *, settings, specs, model_names, transport, limits,
     if execute and scorer is None:
         scorer = official_pb_scorer
     if scan_failed:
-        # A scan crash is not a reference-rule rejection. The score stays null.
+        # A scan crash or overrun is not a reference-rule rejection. The score stays null.
         scored = {
             "resolved": None, "pass_rate": None, "score": None, "compile_success": None,
-            "status": "unavailable", "reason": "submission_scan_error",
+            "status": "unavailable", "reason": scan_failure,
             "official_score_annotation": None,
         }
     else:

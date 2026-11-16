@@ -13,6 +13,7 @@ import hashlib
 from pathlib import Path, PurePosixPath
 import re
 import shlex
+import time
 
 from .errors import ProtocolError
 from .public_tools import TOOLS
@@ -373,12 +374,150 @@ def _strip_redirects(tokens):
     return cleaned
 
 
-def _simple_commands(line):
+# Characters that make posix ``shlex.split(comments=True)`` do more than return
+# the line as one word: its whitespace, quotes, escape, and comment start. ``\s``
+# is wider than shlex's whitespace, so such a line just takes the slow path.
+_SHLEX_ACTIVE = re.compile(r"[\s'\"\\#]")
+# Lines up to this length keep the stdlib tokenizer itself. Longer ones use
+# ``_posix_shlex_split``, the same state machine in linear time.
+_SHLEX_DIRECT_MAX = 4096
+_SHLEX_WS = " \t\r\n"
+_WORD_RUN = re.compile(r"[^ \t\r\n'\"\\#]+")
+_WS_RUN = re.compile(r"[ \t\r\n]+")
+_DQ_RUN = re.compile(r'[^"\\]+')
+_CHECK_EVERY = 4096
+
+
+def _posix_shlex_split(text, check=None):
+    """``shlex.split(text, comments=True, posix=True)`` in linear time.
+
+    This follows ``shlex.read_token`` for posix mode with ``whitespace_split``,
+    the default whitespace, quotes ``'"``, escape ``\\``, escaped quotes ``"``
+    and commenter ``#``. Tokens are built from slices instead of one character
+    at a time. The same ``ValueError`` messages are raised. ``check`` is called
+    every few thousand steps so a deadline can stop a very long line.
+    """
+    tokens = []
+    parts = []
+    quoted = False
+    state = " "
+    escaped_state = None
+    index = 0
+    size = len(text)
+    steps = 0
+    while True:
+        steps += 1
+        if check is not None and steps % _CHECK_EVERY == 0:
+            check()
+        if state == " ":
+            if index >= size:
+                return tokens
+            char = text[index]
+            if char in _SHLEX_WS:
+                index = _WS_RUN.match(text, index).end()
+            elif char == "#":
+                newline = text.find("\n", index)
+                index = size if newline < 0 else newline + 1
+            elif char == "\\":
+                escaped_state, state = "a", "\\"
+                index += 1
+            elif char in "'\"":
+                state = char
+                index += 1
+            else:
+                state = "a"
+        elif state == "a":
+            if index >= size:
+                tokens.append("".join(parts))
+                return tokens
+            char = text[index]
+            if char in _SHLEX_WS or char == "#":
+                if char == "#":
+                    newline = text.find("\n", index)
+                    index = size if newline < 0 else newline + 1
+                else:
+                    index += 1
+                tokens.append("".join(parts))
+                parts, quoted, state = [], False, " "
+            elif char in "'\"":
+                state = char
+                index += 1
+            elif char == "\\":
+                escaped_state, state = "a", "\\"
+                index += 1
+            else:
+                end = _WORD_RUN.match(text, index).end()
+                parts.append(text[index:end])
+                index = end
+        elif state == "'":
+            quoted = True
+            close = text.find("'", index)
+            if close < 0:
+                raise ValueError("No closing quotation")
+            parts.append(text[index:close])
+            index, state = close + 1, "a"
+        elif state == '"':
+            quoted = True
+            if index >= size:
+                raise ValueError("No closing quotation")
+            char = text[index]
+            if char == '"':
+                index, state = index + 1, "a"
+            elif char == "\\":
+                escaped_state, state = '"', "\\"
+                index += 1
+            else:
+                end = _DQ_RUN.match(text, index).end()
+                parts.append(text[index:end])
+                index = end
+        else:  # escape
+            if index >= size:
+                raise ValueError("No escaped character")
+            char = text[index]
+            if escaped_state == '"' and char != "\\" and char != '"':
+                parts.append("\\")
+            parts.append(char)
+            index += 1
+            state = escaped_state
+
+
+def _shlex_words(line, check=None):
+    """``shlex.split(line, comments=True, posix=True)``, same result, linear time.
+
+    shlex grows each token one character at a time, which is quadratic in the
+    token length: one 5 MB word took hours. A line with none of the characters
+    above is a single word, which is exactly what shlex returns for it
+    (an empty line still goes to shlex, which returns ``[]``). Other short
+    lines use shlex itself; long ones use ``_posix_shlex_split``.
+    """
+    if line and _SHLEX_ACTIVE.search(line) is None:
+        return [line]
+    if len(line) <= _SHLEX_DIRECT_MAX:
+        return shlex.split(line, comments=True, posix=True)
+    return _posix_shlex_split(line, check)
+
+
+class SubmissionScanDeadline(Exception):
+    """The end-of-unit submission scan ran past its deadline."""
+
+
+def _deadline_check(deadline, clock):
+    if deadline is None:
+        return None
+    clock = clock or time.monotonic
+
+    def check():
+        if clock() > deadline:
+            raise SubmissionScanDeadline("submission_scan_deadline")
+    return check
+
+
+def _simple_commands(line, check=None):
     """Split one shell line into argv lists, dropping redirects and ``|| true``."""
     if not isinstance(line, str) or not line.strip():
         return []
     try:
-        tokens = shlex.split(line, comments=True, posix=True)
+        tokens = _shlex_words(line, check)
     except ValueError:
         return []
     groups = []
@@ -409,7 +548,7 @@ def is_excluded_probe(relative):
     return PROBE_DIR in PurePosixPath(relative).parts
 
 
-def _text_submission_violations(text, *, allow_reference_execution):
+def _text_submission_violations(text, *, allow_reference_execution, check=None):
     """Violation kinds in one text file.
 
     Running the reference through its normal interface is ``invokes_reference``
@@ -428,7 +567,9 @@ def _text_submission_violations(text, *, allow_reference_execution):
     if not allow_reference_execution and (_INVOKE.search(text) or _DIRECT_CALL.search(text)):
         found.append("invokes_reference")
     for line in text.splitlines():
-        for argv in _simple_commands(line):
+        if check is not None:
+            check()
+        for argv in _simple_commands(line, check):
             if _installs_own_build(argv):
                 continue
             if _reads_reference_bytes(argv):
@@ -1156,20 +1297,21 @@ def submission_build_graph(root):
     return seen, complete
 
 
-def _hard_reference_kinds(text):
+def _hard_reference_kinds(text, check=None):
     """Copy, read, inspect, or instrument. A normal-interface run is not here."""
     kinds = []
-    for kind in _text_submission_violations(text, allow_reference_execution=True):
+    for kind in _text_submission_violations(text, allow_reference_execution=True, check=check):
         if kind != "invokes_reference" and kind not in kinds:
             kinds.append(kind)
     return kinds
 
 
-def _invokes_reference(text):
-    return "invokes_reference" in _text_submission_violations(text, allow_reference_execution=False)
+def _invokes_reference(text, check=None):
+    return "invokes_reference" in _text_submission_violations(
+        text, allow_reference_execution=False, check=check)
 
 
-def submission_reference_scan(root, *, reference_sha256=None, probe_paths=()):
+def submission_reference_scan(root, *, reference_sha256=None, probe_paths=(), deadline=None, clock=None):
     """Flag a submission that copies, embeds, wraps, or reads the reference.
 
     ``./executable`` itself is the reference and is not a submitted file.
@@ -1180,7 +1322,12 @@ def submission_reference_scan(root, *, reference_sha256=None, probe_paths=()):
     is a warning, not a rejection. A build input that embeds, copies, wraps,
     execs, reads, or runs ``objdump`` / ``strings`` / ``strace`` / ``ltrace``
     on the reference is rejected.
+
+    ``deadline`` (a ``clock()`` value, default ``time.monotonic``) is checked
+    before each file and each scanned line; past it the scan raises
+    ``SubmissionScanDeadline``. ``None`` keeps the scan unbounded.
     """
+    check = _deadline_check(deadline, clock)
     root = Path(root)
     digest = reference_sha256 if isinstance(reference_sha256, str) and reference_sha256 else reference_digest(root)
     mode_ok = None
@@ -1203,6 +1350,8 @@ def submission_reference_scan(root, *, reference_sha256=None, probe_paths=()):
         }
     build_graph, graph_complete = submission_build_graph(root)
     for path in sorted(root.rglob("*")):
+        if check is not None:
+            check()
         if not path.is_file() or path.is_symlink():
             continue
         relative = path.relative_to(root).as_posix()
@@ -1225,11 +1374,11 @@ def submission_reference_scan(root, *, reference_sha256=None, probe_paths=()):
         if digest and digest in text:
             violations.append({"kind": "embedded_reference_hash", "path": relative})
             continue
-        hard = _hard_reference_kinds(text)
+        hard = _hard_reference_kinds(text, check)
         if hard:
             violations.append({"kind": hard[0], "path": relative})
             continue
-        if _invokes_reference(text):
+        if _invokes_reference(text, check):
             # An unresolved glob or variable means the file might still be a
             # build input. Do not warn it away or drop it from the archive.
             if relative in build_graph or not graph_complete:
@@ -1238,6 +1387,8 @@ def submission_reference_scan(root, *, reference_sha256=None, probe_paths=()):
                 warnings.append({"kind": "unused_probe_invokes_reference", "path": relative})
                 unused_probes.append(relative)
     for probe in probe_paths or ():
+        if check is not None:
+            check()
         path = Path(probe)
         try:
             resolved = path.resolve()
@@ -1267,7 +1418,7 @@ def submission_reference_scan(root, *, reference_sha256=None, probe_paths=()):
         if digest and digest in text:
             violations.append({"kind": "embedded_reference_hash", "path": path.name})
             continue
-        for kind in _text_submission_violations(text, allow_reference_execution=True):
+        for kind in _text_submission_violations(text, allow_reference_execution=True, check=check):
             violations.append({"kind": kind, "path": path.name})
             break
     return {
@@ -1278,3 +1429,56 @@ def submission_reference_scan(root, *, reference_sha256=None, probe_paths=()):
         "reference_sha256": digest,
         "reference_execute_only": mode_ok,
     }
+
+
+# Grace after the deadline for the child to report before it is killed.
+SCAN_KILL_GRACE_SECONDS = 2.0
+
+
+def _bounded_scan_child(conn, root, seconds, kwargs):
+    try:
+        clock = time.monotonic
+        result = submission_reference_scan(root, deadline=clock() + seconds, clock=clock, **kwargs)
+        conn.send(("ok", result))
+    except SubmissionScanDeadline:
+        conn.send(("deadline", None))
+    except BaseException as error:  # reported to the parent as a scan error
+        conn.send(("error", type(error).__name__))
+    finally:
+        conn.close()
+
+
+def submission_reference_scan_bounded(root, seconds, **kwargs):
+    """``submission_reference_scan`` in a spawned child that is killed at the deadline.
+
+    The child runs the same function on the same tree, so a scan that finishes
+    returns the same result. The in-process deadline checks stop most overruns
+    cleanly. The kill is the hard boundary for work they cannot interrupt, such
+    as one slow regex over a whole file. Raises ``SubmissionScanDeadline`` on an
+    overrun and ``RuntimeError`` if the child fails.
+    """
+    import multiprocessing
+
+    seconds = max(float(seconds), 0.0)
+    context = multiprocessing.get_context("spawn")
+    receiver, sender = context.Pipe(duplex=False)
+    child = context.Process(target=_bounded_scan_child, args=(sender, str(root), seconds, kwargs), daemon=True)
+    child.start()
+    sender.close()
+    try:
+        if not receiver.poll(seconds + SCAN_KILL_GRACE_SECONDS):
+            raise SubmissionScanDeadline("submission_scan_deadline")
+        try:
+            kind, value = receiver.recv()
+        except EOFError:
+            raise RuntimeError("submission_scan_child_exited") from None
+    finally:
+        receiver.close()
+        if child.is_alive():
+            child.kill()
+        child.join(10)
+    if kind == "deadline":
+        raise SubmissionScanDeadline("submission_scan_deadline")
+    if kind != "ok":
+        raise RuntimeError(f"submission_scan_child_error:{value}")
+    return value
