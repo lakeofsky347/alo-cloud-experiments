@@ -709,8 +709,9 @@ def _resolve_existing(root, token, base_dir):
     text = token.strip().strip("\"'")
     if not text or text.startswith(("-", "$")) or "://" in text or _token_is_glob(text):
         return None
-    if text.startswith("/") or ".." in PurePosixPath(text).parts:
+    if text.startswith("/"):
         return None
+    # ``../helper.h`` is a build input when it still lands inside the submission.
     candidate = (base_dir / text)
     try:
         resolved = candidate.resolve()
@@ -1072,6 +1073,21 @@ def _matching_paren(tokens, open_index):
     return None
 
 
+_SHELL_SUFFIXES = frozenset({".sh", ".bash", ".ksh", ".zsh"})
+
+
+def _is_shell_script(path, text):
+    """Shell completeness applies only to shell scripts, not to C or Python."""
+    if path.suffix.lower() in _SHELL_SUFFIXES or path.name.lower() in {"compile.sh", "configure"}:
+        return True
+    first = ""
+    if isinstance(text, str) and text.lstrip():
+        first = text.lstrip().splitlines()[0]
+    if first.startswith("#!") and re.search(r"\b(?:sh|bash|dash|ksh|zsh)\b", first):
+        return True
+    return False
+
+
 def _shell_build_inputs(text, root, start):
     tokens = _shell_tokens(text)
     if tokens is None:
@@ -1115,6 +1131,10 @@ def submission_build_graph(root):
             found = _resolve_existing(root, include, base_dir)
             if found and found not in seen:
                 pending.append(found)
+            elif found is None and ".." in PurePosixPath(include).parts:
+                # A parent-relative include that escapes the tree, or does not
+                # exist, is not proof that every other file is unused.
+                complete = False
         for module in _python_modules(text):
             parts = module.split(".")
             for candidate in (base_dir, root):
@@ -1126,12 +1146,13 @@ def submission_build_graph(root):
                 found = _resolve_existing(root, package, candidate)
                 if found and found not in seen:
                     pending.append(found)
-        found, shell_complete = _shell_build_inputs(text, root, base_dir)
-        if not shell_complete:
-            complete = False
-        for item in found:
-            if item not in seen:
-                pending.append(item)
+        if _is_shell_script(path, text):
+            found, shell_complete = _shell_build_inputs(text, root, base_dir)
+            if not shell_complete:
+                complete = False
+            for item in found:
+                if item not in seen:
+                    pending.append(item)
     return seen, complete
 
 

@@ -1134,6 +1134,45 @@ def test_compile_cd_keeps_the_source_it_builds(tmp_path):
     assert "probe.py" in kept
 
 
+def test_c_if_does_not_reject_a_legal_probe(tmp_path):
+    root = tmp_path / "workspace"
+    (root / ".pb-probe").mkdir(parents=True)
+    (root / "compile.sh").write_text("#!/bin/sh\ngcc main.c -o executable\n", encoding="utf-8")
+    (root / "main.c").write_text(
+        "int main(int argc, char **argv){if (argc > 1) return 1; return 0;}\n",
+        encoding="utf-8")
+    (root / ".pb-probe" / "probe.py").write_text(
+        "import subprocess\nsubprocess.run(['./executable'])\n", encoding="utf-8")
+    scanned = submission_reference_scan(root)
+    assert scanned["ok"] is True
+    assert scanned["violations"] == []
+    assert any(item["path"] == ".pb-probe/probe.py" for item in scanned["warnings"])
+
+
+def test_parent_include_is_part_of_the_build(tmp_path):
+    root = tmp_path / "workspace"
+    (root / "src").mkdir(parents=True)
+    (root / "compile.sh").write_text("#!/bin/sh\ngcc -o executable src/main.c\n", encoding="utf-8")
+    (root / "src" / "main.c").write_text('#include "../helper.h"\nint main(void){return helper();}\n',
+                                        encoding="utf-8")
+    (root / "helper.h").write_text(
+        '#include <stdlib.h>\nint helper(void){return system("./executable");}\n',
+        encoding="utf-8")
+    scanned = submission_reference_scan(root)
+    assert scanned["ok"] is False
+    assert any(item["kind"] == "invokes_reference" and item["path"] == "helper.h"
+               for item in scanned["violations"])
+    assert "helper.h" not in scanned["unused_probes"]
+    from alo_cloud.collect import _pack_submission
+    import tarfile
+    archive = tmp_path / "submission.tar.gz"
+    _pack_submission(root, archive)
+    names = tarfile.open(archive, "r:gz").getnames()
+    assert "compile.sh" in names
+    assert "src/main.c" in names
+    assert "helper.h" in names
+
+
 def test_evaluator_exception_leaves_the_score_unknown(tmp_path, monkeypatch):
     _no_network(monkeypatch)
 
