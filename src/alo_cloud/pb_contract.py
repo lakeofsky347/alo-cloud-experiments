@@ -70,9 +70,18 @@ _BINARY_READ = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 _INVOKE = re.compile(
-    r"(?:\bexec\b|\bos\.system\b|\bsubprocess\b|\bPopen\b|\bos\.exec[a-z_]*\b)"
-    r".{0,160}(?<![\w.])(?<!build/)(?:\./|/workspace/)executable\b",
+    r"(?:\bexec(?:l|v|le|lp|vpe)?\b|\bos\.system\b|\bsystem\s*\(|\bpopen\s*\(|"
+    r"\bsubprocess\b|\bPopen\b|\bos\.exec[a-z_]*\b)"
+    r".{0,200}(?<![\w.])(?<!build/)(?:\./|/workspace/)executable\b",
     re.IGNORECASE | re.DOTALL,
+)
+# objdump/strings/strace/ltrace (and the same family) aimed at the reference
+# from Python or C, where the line is not a shell command.
+_FORBIDDEN_TOOL_CALL = re.compile(
+    r"(?is)(?:subprocess|\bos\.system\b|\bsystem\s*\(|\bpopen\s*\(|\bexecl|\bexecv|\bPopen\b)"
+    r".{0,240}\b(objdump|llvm-objdump|strings|hexdump|xxd|readelf|eu-readelf|ghidra|"
+    r"strace|ltrace|gdb|lldb|nm)\b"
+    r".{0,160}(?<![\w.])(?<!build/)(?:\./|/workspace/)?executable\b"
 )
 _DIRECT_CALL = re.compile(
     r"(?m)^[ \t]*(?:(?:sudo|command|exec)[ \t]+)*(?:\./|/workspace/)executable(?:[ \t]|$)",
@@ -401,9 +410,11 @@ def is_excluded_probe(relative):
 def _text_submission_violations(text, *, allow_reference_execution):
     """Violation kinds in one text file.
 
-    Running the reference through its normal interface is allowed only for a
-    probe that is outside the submission or excluded from it. Copying,
-    wrapping, or reading the reference is never allowed.
+    Running the reference through its normal interface is ``invokes_reference``
+    unless ``allow_reference_execution`` is set. The scan turns that into a
+    warning when the file is outside the build graph, and a rejection when
+    the build uses the file. Copying, reading, inspecting, or instrumenting
+    the reference is never allowed.
     """
     if not isinstance(text, str) or not text:
         return []
@@ -421,9 +432,17 @@ def _text_submission_violations(text, *, allow_reference_execution):
             if _reads_reference_bytes(argv):
                 found.append("reads_reference_bytes")
                 break
+            if (argv and not is_reference_path(argv[0]) and _targets_reference(argv)
+                    and _basename(argv[0]) in _INSTRUMENT):
+                found.append("instruments_reference")
+                break
             if _copies_reference(argv):
                 found.append("copies_reference")
                 break
+    forbidden = _FORBIDDEN_TOOL_CALL.search(text)
+    if forbidden:
+        tool = forbidden.group(1).lower()
+        found.append("instruments_reference" if tool in _INSTRUMENT else "inspects_reference")
     return found
 
 
@@ -651,14 +670,201 @@ def _looks_text(path):
     return False
 
 
+_BUILD_SUFFIXES = frozenset({
+    ".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".hh", ".rs", ".go", ".py",
+    ".sh", ".bash", ".s", ".java", ".js", ".ts", ".mak", ".cmake", ".toml",
+    ".mod", ".sum", ".f", ".f90", ".rb", ".pl", ".m", ".mm", ".swift", ".kt",
+    ".cs", ".php", ".lua", ".r", ".asm", ".inc", ".in", ".pyi", ".pyx", ".pxd",
+    ".zig", ".d", ".ml", ".mli", ".hs", ".lhs", ".cabal", ".gradle", ".kts",
+    ".xml", ".nim",
+})
+_BUILD_NAMES = frozenset({
+    "makefile", "gnumakefile", "cargo.toml", "cargo.lock", "go.mod", "go.sum",
+    "cmakelists.txt", "meson.build", "build.gradle", "pom.xml", "package.json",
+    "requirements.txt", "setup.py", "pyproject.toml", "compile.sh",
+})
+_PROJECT_GLOBS = {
+    "cargo": ("Cargo.toml", "Cargo.lock", "build.rs", "src/**/*.rs"),
+    "go": ("go.mod", "go.sum", "**/*.go"),
+    "make": ("Makefile", "makefile", "GNUmakefile", "**/*.mk"),
+    "cmake": ("CMakeLists.txt", "**/*.cmake", "meson.build"),
+}
+
+
+def _build_input_name(relative):
+    """True for a source, script, or project file the build can name."""
+    path = PurePosixPath(relative)
+    if path.name == REFERENCE_BASENAME and "build" not in path.parts[:-1]:
+        return False
+    if path.suffix.lower() in _BUILD_SUFFIXES:
+        return True
+    return path.name.lower() in _BUILD_NAMES
+
+
+def _resolve_existing(root, token, base_dir):
+    if not isinstance(token, str):
+        return None
+    text = token.strip().strip("\"'")
+    if not text or text.startswith(("-", "$")) or "://" in text or any(ch in text for ch in "*?[]{}"):
+        return None
+    if text.startswith("/"):
+        return None
+    candidate = (base_dir / text)
+    try:
+        resolved = candidate.resolve()
+        root_resolved = root.resolve()
+        if not resolved.is_file() or resolved.is_symlink() or not resolved.is_relative_to(root_resolved):
+            return None
+    except OSError:
+        return None
+    relative = resolved.relative_to(root_resolved).as_posix()
+    if not _build_input_name(relative):
+        return None
+    return relative
+
+
+def _include_paths(text):
+    if not isinstance(text, str):
+        return []
+    return re.findall(r'#\s*include\s+"([^"]+)"', text)
+
+
+def _python_modules(text):
+    if not isinstance(text, str):
+        return []
+    names = []
+    for match in re.finditer(r"(?m)^\s*(?:from\s+([A-Za-z_][\w.]*)\s+import|import\s+([A-Za-z_][\w.]*))", text):
+        name = match.group(1) or match.group(2)
+        names.append(name.split(",")[0].strip().split(" as ")[0].strip())
+    return names
+
+
+def _project_files(root, tool):
+    patterns = _PROJECT_GLOBS.get(tool) or ()
+    found = []
+    for pattern in patterns:
+        for path in root.glob(pattern):
+            if not path.is_file() or path.is_symlink():
+                continue
+            try:
+                relative = path.resolve().relative_to(root.resolve()).as_posix()
+            except OSError:
+                continue
+            if _build_input_name(relative) or path.name.lower() in _BUILD_NAMES:
+                found.append(relative)
+    return found
+
+
+def _build_tool(argv):
+    if not argv:
+        return None
+    base = _basename(argv[0])
+    if base in {"cargo", "rustc"}:
+        return "cargo"
+    if base == "go" and any(token in {"build", "install", "test"} for token in argv[1:]):
+        return "go"
+    if base == "make":
+        return "make"
+    if base in {"cmake", "meson", "ninja"}:
+        return "cmake"
+    return None
+
+
+def submission_build_graph(root):
+    """Files reachable from ``compile.sh``.
+
+    A behaviour probe that ``compile.sh`` never names, and that no file in
+    that graph names, is not part of the submitted program.
+    """
+    root = Path(root)
+    entry = root / "compile.sh"
+    if not entry.is_file() or entry.is_symlink():
+        return set()
+    pending = ["compile.sh"]
+    seen = set()
+    while pending:
+        relative = pending.pop()
+        if relative in seen:
+            continue
+        seen.add(relative)
+        path = root / relative
+        if not path.is_file() or path.is_symlink():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            continue
+        base_dir = path.parent
+        for include in _include_paths(text):
+            found = _resolve_existing(root, include, base_dir)
+            if found and found not in seen:
+                pending.append(found)
+        for module in _python_modules(text):
+            parts = module.split(".")
+            for candidate in (base_dir, root):
+                file_name = "/".join(parts) + ".py"
+                found = _resolve_existing(root, file_name, candidate)
+                if found and found not in seen:
+                    pending.append(found)
+                package = "/".join(parts) + "/__init__.py"
+                found = _resolve_existing(root, package, candidate)
+                if found and found not in seen:
+                    pending.append(found)
+        lines = text.splitlines()
+        commands = []
+        for line in lines:
+            commands.extend(_simple_commands(line))
+        if not commands:
+            try:
+                tokens = shlex.split(text, comments=True, posix=True)
+            except ValueError:
+                tokens = []
+            if tokens:
+                commands = [tokens]
+        for argv in commands:
+            tool = _build_tool(argv)
+            if tool:
+                for found in _project_files(root, tool):
+                    # ``go build`` / ``cargo`` globs are an over-approximation.
+                    # The probe directory is not part of that guess; a path
+                    # compile.sh names still enters through the token walk.
+                    if is_excluded_probe(found) or found in seen:
+                        continue
+                    pending.append(found)
+            for token in argv:
+                found = _resolve_existing(root, token, base_dir)
+                if found and found not in seen:
+                    pending.append(found)
+                found = _resolve_existing(root, token, root)
+                if found and found not in seen:
+                    pending.append(found)
+    return seen
+
+
+def _hard_reference_kinds(text):
+    """Copy, read, inspect, or instrument. A normal-interface run is not here."""
+    kinds = []
+    for kind in _text_submission_violations(text, allow_reference_execution=True):
+        if kind != "invokes_reference" and kind not in kinds:
+            kinds.append(kind)
+    return kinds
+
+
+def _invokes_reference(text):
+    return "invokes_reference" in _text_submission_violations(text, allow_reference_execution=False)
+
+
 def submission_reference_scan(root, *, reference_sha256=None, probe_paths=()):
     """Flag a submission that copies, embeds, wraps, or reads the reference.
 
     ``./executable`` itself is the reference and is not a submitted file.
     A ``compile.sh`` that installs the agent's own ``build/...`` output onto
-    ``./executable`` is the legal output path, not a wrapper. A behaviour-probe
-    script under ``.pb-probe/`` or passed in ``probe_paths`` (outside the
-    submission) may run the reference through its normal interface.
+    ``./executable`` is the legal output path, not a wrapper. A file the
+    build graph does not use, including a root ``probe.py`` or a script under
+    ``.pb-probe/``, may run the reference through its normal interface. That
+    is a warning, not a rejection. A build input that embeds, copies, wraps,
+    execs, reads, or runs ``objdump`` / ``strings`` / ``strace`` / ``ltrace``
+    on the reference is rejected.
     """
     root = Path(root)
     digest = reference_sha256 if isinstance(reference_sha256, str) and reference_sha256 else reference_digest(root)
@@ -667,15 +873,20 @@ def submission_reference_scan(root, *, reference_sha256=None, probe_paths=()):
     if reference.is_file() and not reference.is_symlink():
         mode_ok = reference_is_execute_only(reference.stat().st_mode)
     violations = []
+    warnings = []
+    unused_probes = []
     if mode_ok is False:
         violations.append({"kind": "reference_not_execute_only", "path": REFERENCE_BASENAME})
     if not root.is_dir():
         return {
             "ok": not violations,
             "violations": violations,
+            "warnings": warnings,
+            "unused_probes": unused_probes,
             "reference_sha256": digest,
             "reference_execute_only": mode_ok,
         }
+    build_graph = submission_build_graph(root)
     for path in sorted(root.rglob("*")):
         if not path.is_file() or path.is_symlink():
             continue
@@ -699,10 +910,16 @@ def submission_reference_scan(root, *, reference_sha256=None, probe_paths=()):
         if digest and digest in text:
             violations.append({"kind": "embedded_reference_hash", "path": relative})
             continue
-        allow_execution = is_excluded_probe(relative)
-        for kind in _text_submission_violations(text, allow_reference_execution=allow_execution):
-            violations.append({"kind": kind, "path": relative})
-            break
+        hard = _hard_reference_kinds(text)
+        if hard:
+            violations.append({"kind": hard[0], "path": relative})
+            continue
+        if _invokes_reference(text):
+            if relative in build_graph:
+                violations.append({"kind": "invokes_reference", "path": relative})
+            else:
+                warnings.append({"kind": "unused_probe_invokes_reference", "path": relative})
+                unused_probes.append(relative)
     for probe in probe_paths or ():
         path = Path(probe)
         try:
@@ -739,6 +956,8 @@ def submission_reference_scan(root, *, reference_sha256=None, probe_paths=()):
     return {
         "ok": not violations,
         "violations": violations,
+        "warnings": warnings,
+        "unused_probes": unused_probes,
         "reference_sha256": digest,
         "reference_execute_only": mode_ok,
     }

@@ -93,6 +93,10 @@ G0_ARMS = ("A2", "A4")
 REQUEST_CAPS = (40, 64, 80)
 DEFAULT_REQUEST_CAP = 40
 DEFAULT_UNIT_SECONDS = 2400
+# G0 / M18: p1 and p2 each get this many model requests. The unit request
+# cap stays the upper bound. Unset on every other run, so the default
+# decision freeze does not gain a field.
+M18_NODE_REQUEST_CAP = 20
 G0_TASKS = (
     ("kisielk__errcheck.dacab89", "easy"),
     ("raviqqe__muffet.a882908", "medium"),
@@ -100,9 +104,10 @@ G0_TASKS = (
 )
 _TERMINAL = frozenset({"completed", "failed", "blocked", "stopped"})
 _LOCKED = (
-    "arm", "models", "task_ids", "unit_ids", "request_cap", "online_update",
-    "differential_signal", "role_map", "probe_script_owner", "unit_seconds",
-    "read_timeout_s", "live", "frozen", "data_dir", "programbench_repo",
+    "arm", "models", "task_ids", "unit_ids", "request_cap", "node_request_cap",
+    "online_update", "differential_signal", "role_map", "probe_script_owner",
+    "unit_seconds", "read_timeout_s", "live", "frozen", "data_dir",
+    "programbench_repo",
 )
 
 
@@ -140,6 +145,10 @@ def decision_freeze(settings):
         "source_commit": PROGRAMBENCH_COMMIT,
         "tests_revision": PROGRAMBENCH_TESTS_REVISION,
     }
+    # Present only when the run sets it. The default document stays byte-identical.
+    node_cap = settings.get("node_request_cap")
+    if node_cap is not None:
+        body["node_request_cap"] = node_cap
     digest = hashlib.sha256(_canonical(body).encode("utf-8")).hexdigest()
     return body, digest
 
@@ -214,6 +223,17 @@ def resolve_tasks(tasks, *, g0=False):
 def _check_request_cap(value):
     if type(value) is not int or value not in REQUEST_CAPS:
         raise PbStopped("invalid_pb_request_cap")
+    return value
+
+
+def _check_node_request_cap(value, request_cap):
+    """Per-node cap. ``None`` leaves the shared unit cap as the only limit."""
+    if value is None:
+        return None
+    if type(value) is not int or isinstance(value, bool) or value < 1:
+        raise PbStopped("invalid_node_request_cap")
+    if value > request_cap:
+        raise PbStopped("node_request_cap_above_total")
     return value
 
 
@@ -825,8 +845,61 @@ def pb_eval_plan(task_id, submission_dir, *, repo=None, unit_id=None, run_dir=No
     }
 
 
+def _submission_rejection_reason(submission_check):
+    violations = submission_check.get("violations") if isinstance(submission_check, dict) else None
+    parts = []
+    for item in violations or ():
+        if not isinstance(item, dict):
+            continue
+        kind = item.get("kind") if isinstance(item.get("kind"), str) else "rejected"
+        path = item.get("path") if isinstance(item.get("path"), str) else ""
+        parts.append(f"{kind}:{path}" if path else kind)
+    if not parts:
+        return "submission_rejected"
+    return "submission_rejected:" + ",".join(parts)
+
+
+def _annotated_official_score(result, reason):
+    """The harness score, stored beside the unit score of 0.
+
+    A rejected submission's unit score stays 0. This field is the score the
+    official runner would have reported, and it is not that unit score.
+    """
+    if not isinstance(result, dict):
+        return {
+            "annotation": "offline_official_score_not_the_unit_score",
+            "reason": reason,
+            "unit_score": 0,
+            "pass_rate": None,
+            "resolved": None,
+            "compile_success": None,
+            "status": None,
+        }
+    rate = result.get("pass_rate")
+    if isinstance(rate, bool) or not isinstance(rate, (int, float)):
+        rate = None
+    resolved = result.get("resolved") if result.get("resolved") is True or result.get("resolved") is False else None
+    compile_success = result.get("compile_success")
+    if compile_success is not True and compile_success is not False:
+        compile_success = None
+    return {
+        "annotation": "offline_official_score_not_the_unit_score",
+        "reason": reason,
+        "unit_score": 0,
+        "pass_rate": None if rate is None else float(rate),
+        "resolved": resolved,
+        "compile_success": compile_success,
+        "status": result.get("status") if isinstance(result.get("status"), str) else None,
+    }
+
+
 def apply_pb_score(plan, *, execute, runner, public_signal, cost, wall_clock_s, submission_check):
-    """Record the harness fields. Unknown stays null, not zero."""
+    """Record the harness fields. Unknown stays null, not zero.
+
+    A scan rejection records score 0 and the reason. When a runner is
+    available it still runs, and its score is stored as a separate
+    annotation. The unit row is the caller's to write; this does not drop it.
+    """
     if public_signal == "pass":
         compile_success = True
     elif public_signal == "fail":
@@ -836,6 +909,7 @@ def apply_pb_score(plan, *, execute, runner, public_signal, cost, wall_clock_s, 
     body = {
         "resolved": None,
         "pass_rate": None,
+        "score": None,
         "compile_success": compile_success,
         "cost": cost,
         "wall_clock_s": wall_clock_s,
@@ -844,10 +918,22 @@ def apply_pb_score(plan, *, execute, runner, public_signal, cost, wall_clock_s, 
         "source_commit": plan.get("source_commit"),
         "image_family": plan.get("image_family"),
         "reason": None,
+        "official_score_annotation": None,
     }
-    if isinstance(submission_check, dict) and submission_check.get("ok") is False:
+    rejected = isinstance(submission_check, dict) and submission_check.get("ok") is False
+    if rejected:
+        reason = _submission_rejection_reason(submission_check)
         body["status"] = "submission_rejected"
         body["resolved"] = False
+        body["pass_rate"] = 0.0
+        body["score"] = 0
+        body["reason"] = reason
+        if execute and runner is not None:
+            try:
+                result = runner(plan)
+            except Exception:
+                result = None
+            body["official_score_annotation"] = _annotated_official_score(result, reason)
         return body
     if not execute:
         return body
@@ -870,13 +956,17 @@ def apply_pb_score(plan, *, execute, runner, public_signal, cost, wall_clock_s, 
     if result.get("compile_success") is True or result.get("compile_success") is False:
         body["compile_success"] = result["compile_success"]
     body["status"] = result.get("status") or "finished"
+    if body["pass_rate"] is not None:
+        body["score"] = body["pass_rate"]
     return body
 
 
-def _adapter_config(arm, *, models, request_cap, seed, online_update, dag, prompt):
+def _adapter_config(arm, *, models, request_cap, seed, online_update, dag, prompt,
+                    node_request_cap=None):
     if arm == "A4":
         if BEST_SINGLE not in models:
             raise PbStopped("best_single_not_in_pool")
+        # One tool-loop node. It keeps the unit cap. p1/p2 caps do not apply.
         return "G1", {"fixed_model": BEST_SINGLE, "max_turns": request_cap}
     if arm == "A5" and BEST_SINGLE not in models:
         raise PbStopped("best_single_not_in_pool")
@@ -897,6 +987,8 @@ def _adapter_config(arm, *, models, request_cap, seed, online_update, dag, promp
         "policy_priors": {model: dict(FOX_RESOURCE_PRIOR) for model in models},
         "topology": "fixed_p1_p2",
     }
+    if node_request_cap is not None:
+        config["node_request_caps"] = {"p1": node_request_cap, "p2": node_request_cap}
     if arm == "A3":
         config["export_mode"] = "resources"
     if arm == "A5":
@@ -917,8 +1009,51 @@ def _usage_block(calls):
     }
 
 
+def _assignment_rows_from_state(state):
+    """Node rows from the checkpoint assignments.
+
+    ``last_native_run`` is written only when the native task returns. A unit
+    that stops on a cap or a gateway error still has ``assignments`` in the
+    same state the checkpoint dumps.
+    """
+    if not isinstance(state, dict):
+        return []
+    raw = state.get("assignments")
+    if not isinstance(raw, dict):
+        return []
+    node_of = {}
+    contracts = state.get("role_tool_contracts")
+    if isinstance(contracts, list):
+        for item in contracts:
+            if not isinstance(item, dict):
+                continue
+            role_id = item.get("role_id")
+            node_id = item.get("node_id")
+            if isinstance(role_id, str) and role_id and isinstance(node_id, str) and node_id:
+                node_of.setdefault(role_id, node_id)
+    rows = []
+    for role, value in raw.items():
+        if not isinstance(value, dict):
+            continue
+        role_id = value.get("role_id") if isinstance(value.get("role_id"), str) else role
+        if not isinstance(role_id, str) or not role_id:
+            continue
+        model_id = value.get("model_id")
+        if not isinstance(model_id, str) or not model_id:
+            continue
+        rows.append({
+            "node_id": node_of.get(role_id, role_id),
+            "role_id": role_id,
+            "model_id": model_id,
+        })
+    order = {node_id: index for index, node_id in enumerate(("p1", "p2", "s1", "s2"))}
+    rows.sort(key=lambda row: (order.get(row["node_id"], 100), row["role_id"]))
+    return rows
+
+
 def _node_assignments(adapter):
-    native = adapter.state.get("last_native_run") if hasattr(adapter, "state") else None
+    state = adapter.state if hasattr(adapter, "state") else None
+    native = state.get("last_native_run") if isinstance(state, dict) else None
     nodes = native.get("node_results") if isinstance(native, dict) else None
     rows = []
     for node in nodes or ():
@@ -929,7 +1064,9 @@ def _node_assignments(adapter):
             "role_id": node.get("role_id"),
             "model_id": node.get("model_id"),
         })
-    return rows
+    if rows:
+        return rows
+    return _assignment_rows_from_state(state)
 
 
 def _first_assignment(adapter, arm):
@@ -959,6 +1096,7 @@ def _manifest(settings, units):
         "task_ids": [unit.task_id for unit in units],
         "unit_ids": [unit.unit_id for unit in units],
         "request_cap": settings["request_cap"],
+        "node_request_cap": settings.get("node_request_cap"),
         "request_cap_candidates": list(REQUEST_CAPS),
         "online_update": bool(settings["online_update"]),
         "frozen": not bool(settings["online_update"]),
@@ -1045,7 +1183,8 @@ def _save_carried(run_dir, observations, models):
 
 
 def run_arm(run_dir, *, arm, tasks=None, g0=False, models="all", request_cap=DEFAULT_REQUEST_CAP,
-            unit_seconds=DEFAULT_UNIT_SECONDS, read_timeout_s=DEFAULT_READ_TIMEOUT_S,
+            node_request_cap=None, unit_seconds=DEFAULT_UNIT_SECONDS,
+            read_timeout_s=DEFAULT_READ_TIMEOUT_S,
             online_update=False, differential_signal=False, role_map=None,
             probe_script_owner="p1", swe_profile=None, model_map=None, live=False,
             sender=None, execute=False, scorer=None, signal_override=None, clock=None,
@@ -1058,6 +1197,7 @@ def run_arm(run_dir, *, arm, tasks=None, g0=False, models="all", request_cap=DEF
     specs = resolve_pb_pool(models)
     model_names = tuple(row.internal for row in specs)
     request_cap = _check_request_cap(request_cap)
+    node_request_cap = _check_node_request_cap(node_request_cap, request_cap)
     unit_seconds = _check_positive(unit_seconds, "invalid_unit_seconds")
     read_timeout_s = _check_positive(read_timeout_s, "invalid_read_timeout")
     try:
@@ -1074,6 +1214,7 @@ def run_arm(run_dir, *, arm, tasks=None, g0=False, models="all", request_cap=DEF
         "arm": arm,
         "models": model_names,
         "request_cap": request_cap,
+        "node_request_cap": node_request_cap,
         "unit_seconds": unit_seconds,
         "read_timeout_s": read_timeout_s,
         "online_update": bool(online_update),
@@ -1158,6 +1299,7 @@ def _run_unit(unit, run_dir, *, settings, specs, model_names, transport, limits,
         "position": unit.position,
         "seed": unit.seed,
         "request_cap": settings["request_cap"],
+        "node_request_cap": settings.get("node_request_cap"),
         "online_update": bool(settings["online_update"]),
         "frozen": not bool(settings["online_update"]),
         "differential_signal": bool(settings["differential_signal"]),
@@ -1201,6 +1343,7 @@ def _run_unit(unit, run_dir, *, settings, specs, model_names, transport, limits,
     group, config = _adapter_config(
         arm, models=model_names, request_cap=settings["request_cap"], seed=unit.seed,
         online_update=settings["online_update"], dag=dag, prompt=prompt,
+        node_request_cap=settings.get("node_request_cap"),
     )
     adapter = adapter_for(group, config)
     observations = {}
@@ -1247,17 +1390,32 @@ def _run_unit(unit, run_dir, *, settings, specs, model_names, transport, limits,
         signal = services.public_signal()
     except Exception:
         signal = "unknown"
-    submission = submission_reference_scan(services.workspace.root)
+    try:
+        submission = submission_reference_scan(services.workspace.root)
+    except Exception:
+        submission = {
+            "ok": False,
+            "violations": [{"kind": "submission_scan_error", "path": ""}],
+            "warnings": [],
+            "unused_probes": [],
+        }
     usage = _usage_block(services.calls)
     plan = pb_eval_plan(
         unit.task_id, services.workspace.root, repo=settings.get("programbench_repo"),
         unit_id=unit.unit_id, run_dir=run_dir)
     if execute and scorer is None:
         scorer = official_pb_scorer
-    scored = apply_pb_score(
-        plan, execute=bool(execute), runner=scorer, public_signal=signal,
-        cost=usage["cost"], wall_clock_s=wall, submission_check=submission,
-    )
+    try:
+        scored = apply_pb_score(
+            plan, execute=bool(execute), runner=scorer, public_signal=signal,
+            cost=usage["cost"], wall_clock_s=wall, submission_check=submission,
+        )
+    except Exception:
+        scored = {
+            "resolved": False, "pass_rate": 0.0, "score": 0, "compile_success": None,
+            "status": "submission_rejected", "reason": "submission_score_error",
+            "official_score_annotation": None,
+        }
     if settings["online_update"] and arm in ALO_ARMS and hasattr(adapter, "state"):
         _save_carried(run_dir, adapter.state.get("observations") or {}, model_names)
     checkpoint = Path(run_dir) / "checkpoints" / unit.unit_id
@@ -1276,8 +1434,12 @@ def _run_unit(unit, run_dir, *, settings, specs, model_names, transport, limits,
         harness_status=scored["status"],
         harness_reason=scored.get("reason"),
         pass_rate=scored["pass_rate"],
+        score=scored.get("score"),
         compile_success=scored["compile_success"],
         submission_ok=submission.get("ok"),
+        submission_warnings=list(submission.get("warnings") or []),
+        submission_unused_probes=list(submission.get("unused_probes") or []),
+        official_score_annotation=scored.get("official_score_annotation"),
         cost=usage["cost"],
         credit=usage["credit"],
         quota=usage["quota"],
@@ -1292,6 +1454,16 @@ def _run_unit(unit, run_dir, *, settings, specs, model_names, transport, limits,
     )
     if arm == "A4":
         record["first_assignment"] = BEST_SINGLE
+    if scored.get("status") == "submission_rejected":
+        record["pass_rate"] = 0.0
+        record["score"] = 0
+        record["resolved"] = False
+        record["harness_resolved"] = False
+        rejection = scored.get("reason") or "submission_rejected"
+        record["submission_rejection_reason"] = rejection
+        record["harness_reason"] = rejection
+        if not record.get("reason"):
+            record["reason"] = rejection
     record["_calls"] = list(services.calls)
     return record
 
@@ -1303,6 +1475,7 @@ def run_g0(root, **kwargs):
     kwargs.pop("arm", None)
     kwargs["g0"] = True
     kwargs["tasks"] = None
+    kwargs.setdefault("node_request_cap", M18_NODE_REQUEST_CAP)
     results = []
     for arm in G0_ARMS:
         results.append(run_arm(root / arm, arm=arm, **kwargs))
@@ -1330,6 +1503,7 @@ def _add_common(parser, *, arm_required):
     parser.add_argument("--g0", action="store_true")
     parser.add_argument("--models", default="all")
     parser.add_argument("--request-cap", type=int, default=DEFAULT_REQUEST_CAP)
+    parser.add_argument("--node-request-cap", type=int, default=None)
     parser.add_argument("--read-timeout", type=float, default=DEFAULT_READ_TIMEOUT_S)
     parser.add_argument("--unit-seconds", type=float, default=DEFAULT_UNIT_SECONDS)
     parser.add_argument("--online-update", action="store_true")
@@ -1350,6 +1524,7 @@ def _kwargs_from_args(args):
         "g0": bool(args.g0),
         "models": args.models,
         "request_cap": args.request_cap,
+        "node_request_cap": args.node_request_cap,
         "unit_seconds": args.unit_seconds,
         "read_timeout_s": args.read_timeout,
         "online_update": bool(args.online_update),
@@ -1384,6 +1559,8 @@ def main(argv=None):
         if args.live == args.dry_run:
             parser.error("pass exactly one of --dry-run or --live")
         kwargs = _kwargs_from_args(args)
+        if (args.command == "g0" or getattr(args, "g0", False)) and kwargs.get("node_request_cap") is None:
+            kwargs["node_request_cap"] = M18_NODE_REQUEST_CAP
         if args.execute and args.live:
             kwargs["scorer"] = official_pb_scorer
         if args.command == "g0":

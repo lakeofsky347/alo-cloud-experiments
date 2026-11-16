@@ -247,11 +247,16 @@ def test_submission_scan_flags_wrap_copy_and_hash(tmp_path):
     assert any(item["kind"] == "embedded_reference_hash" for item in hashed["violations"])
     (root / "note.py").write_text('import subprocess\nsubprocess.run(["./executable"])\n', encoding="utf-8")
     invoked = submission_reference_scan(root, reference_sha256=digest)
-    assert any(item["kind"] == "invokes_reference" for item in invoked["violations"])
+    assert invoked["ok"] is True
+    assert any(item["kind"] == "unused_probe_invokes_reference" and item["path"] == "note.py"
+               for item in invoked["warnings"])
+    assert "note.py" in invoked["unused_probes"]
     (root / "note.py").unlink()
     (root / "shim.sh").write_text("#!/bin/sh\n./executable \"$@\"\n", encoding="utf-8")
     direct = submission_reference_scan(root, reference_sha256=digest)
-    assert any(item["kind"] == "invokes_reference" and item["path"] == "shim.sh" for item in direct["violations"])
+    assert direct["ok"] is True
+    assert any(item["kind"] == "unused_probe_invokes_reference" and item["path"] == "shim.sh"
+               for item in direct["warnings"])
     (root / "shim.sh").unlink()
     (root / "steal.sh").write_text("cp ./executable ./build/wrapped\n", encoding="utf-8")
     assert any(item["kind"] == "copies_reference" for item in submission_reference_scan(
@@ -279,6 +284,35 @@ def test_submission_scan_flags_wrap_copy_and_hash(tmp_path):
     (root / "wrap.py").write_text('open("executable", "rb").read()\n', encoding="utf-8")
     assert any(item["kind"] == "reads_reference_bytes" for item in submission_reference_scan(
         root, reference_sha256=digest)["violations"])
+    (root / "main.c").write_text('#include <stdlib.h>\nint main(void){return system("./executable");}\n', encoding="utf-8")
+    (root / "compile.sh").write_text("#!/bin/sh\ngcc -o executable main.c\n", encoding="utf-8")
+    wrapped = submission_reference_scan(root, reference_sha256=digest)
+    assert wrapped["ok"] is False
+    assert any(item["kind"] == "invokes_reference" and item["path"] == "main.c" for item in wrapped["violations"])
+    (root / "compile.sh").write_text("#!/bin/sh\nstrace -o /tmp/out ./executable\n", encoding="utf-8")
+    traced = submission_reference_scan(root, reference_sha256=digest)
+    assert any(item["kind"] == "instruments_reference" and item["path"] == "compile.sh"
+               for item in traced["violations"])
+    (root / "compile.sh").write_text("#!/bin/sh\ncp ./executable ./stolen\n", encoding="utf-8")
+    copied_ref = submission_reference_scan(root, reference_sha256=digest)
+    assert any(item["kind"] == "copies_reference" and item["path"] == "compile.sh"
+               for item in copied_ref["violations"])
+    (root / "wrap.py").unlink()
+    (root / "probe.py").write_text("#!/usr/bin/env python3\nimport subprocess\nsubprocess.run(['./executable'])\n",
+                                   encoding="utf-8")
+    (root / "compile.sh").write_text("#!/bin/sh\nprintf ok\n", encoding="utf-8")
+    (root / "main.c").unlink()
+    root_probe = submission_reference_scan(root, reference_sha256=digest)
+    assert root_probe["ok"] is True
+    assert any(item["path"] == "probe.py" for item in root_probe["warnings"])
+    (root / "peek.py").write_text(
+        'import subprocess\nsubprocess.run(["objdump", "-d", "./executable"])\n',
+        encoding="utf-8")
+    peeked = submission_reference_scan(root, reference_sha256=digest)
+    assert peeked["ok"] is False
+    assert any(item["kind"] == "inspects_reference" and item["path"] == "peek.py"
+               for item in peeked["violations"])
+    (root / "peek.py").unlink()
     reference.chmod(0o755)
     assert submission_reference_scan(root, reference_sha256=digest)["reference_execute_only"] is False
 
@@ -340,7 +374,8 @@ def test_g0_dry_run_writes_six_units_on_the_allowed_pool(tmp_path, monkeypatch):
         assert set(manifest["models"]) == set(PB_POOL)
         assert "qwen" not in " ".join(manifest["models"])
         assert all("omni" not in model for model in manifest["models"])
-        freeze, digest = decision_freeze({
+        assert manifest["node_request_cap"] == 20
+        freeze_settings = {
             "role_map": manifest["role_map"],
             "probe_script_owner": manifest["probe_script_owner"],
             "differential_signal": manifest["differential_signal"],
@@ -348,7 +383,10 @@ def test_g0_dry_run_writes_six_units_on_the_allowed_pool(tmp_path, monkeypatch):
             "online_update": manifest["online_update"],
             "unit_seconds": manifest["unit_seconds"],
             "read_timeout_s": manifest["read_timeout_s"],
-        })
+        }
+        if manifest.get("node_request_cap") is not None:
+            freeze_settings["node_request_cap"] = manifest["node_request_cap"]
+        freeze, digest = decision_freeze(freeze_settings)
         assert manifest["pb_freeze_sha256"] == digest
         assert freeze["schema"] == "fox-pb-decision-freeze-v1"
         arm_rows = [
@@ -758,3 +796,258 @@ def test_official_compile_moves_the_reference_then_builds_root_executable(tmp_pa
     assert "./compile.sh" in rendered
     assert ".alo-pb-candidate" in rendered
     assert (tmp_path / "build" / ".alo-pb-candidate").read_bytes() == b"built"
+
+
+DEFAULT_PB_DECISION_SHA256 = "5a0f54fa1a88e42d43369c8f6fe8c293fbde6deb94c5d23789f7d69c1bd0c13c"
+# G0 rerun decisions before the per-node cap: differential on, cap 40,
+# s1->p1 / s2->p2, probe owner p1. This is the document PR #44 recorded.
+G0_DECISION_SHA256_BEFORE_NODE_CAP = "a8d5c4949bc3b70db51fa4c8b8ad20b8eedb41aeda4ef023e31a8a4584b9deef"
+G0_M18_DECISION_SHA256 = "c8f34bed293ac4bb8f2f1e7bcbd80d2efb559d90c2bf043202788dc941fbb434"
+
+
+def _decision_settings(**extra):
+    settings = {
+        "role_map": {"s1": "p1", "s2": "p2"},
+        "probe_script_owner": "p1",
+        "differential_signal": False,
+        "request_cap": 40,
+        "online_update": False,
+        "unit_seconds": 2400,
+        "read_timeout_s": 600,
+    }
+    settings.update(extra)
+    return settings
+
+
+def test_default_decision_freeze_stays_and_g0_hash_gains_only_the_node_cap():
+    body, digest = decision_freeze(_decision_settings())
+    assert "node_request_cap" not in body
+    assert digest == DEFAULT_PB_DECISION_SHA256
+    before_body, before = decision_freeze(_decision_settings(differential_signal=True))
+    assert "node_request_cap" not in before_body
+    assert before == G0_DECISION_SHA256_BEFORE_NODE_CAP
+    after_body, after = decision_freeze(_decision_settings(
+        differential_signal=True, node_request_cap=20))
+    assert set(after_body) - set(before_body) == {"node_request_cap"}
+    for key, value in before_body.items():
+        assert after_body[key] == value
+    assert after_body["node_request_cap"] == 20
+    assert after == G0_M18_DECISION_SHA256
+    assert after != before
+    assert r2_freeze_sha256() == FROZEN_R2_SHA256
+
+
+def _fox_reply(body, text, *, status=200, total_tokens=12):
+    model = body.get("model") if isinstance(body, dict) else None
+    payload = {
+        "model": model,
+        "choices": [{"message": {"content": text}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 8, "completion_tokens": 4, "total_tokens": total_tokens},
+    }
+    return status, json.dumps(payload).encode("utf-8")
+
+
+def _role_of(body):
+    parts = []
+    messages = body.get("messages") if isinstance(body, dict) else None
+    if isinstance(messages, list):
+        for message in messages:
+            if isinstance(message, dict) and isinstance(message.get("content"), str):
+                parts.append(message["content"])
+    text = "\n".join(parts)
+    if text.rfind("Role Contract: p2") > text.rfind("Role Contract: p1"):
+        return "p2"
+    return "p1"
+
+
+def _assistant_text(body):
+    parts = []
+    messages = body.get("messages") if isinstance(body, dict) else None
+    if isinstance(messages, list):
+        for message in messages:
+            if (isinstance(message, dict) and message.get("role") == "assistant"
+                    and isinstance(message.get("content"), str)):
+                parts.append(message["content"])
+    return "\n".join(parts)
+
+
+def _no_network(monkeypatch):
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("network")))
+
+
+def test_root_probe_warns_and_is_scored_and_left_out_of_the_pack(tmp_path, monkeypatch):
+    _no_network(monkeypatch)
+
+    def sender(url, body, headers, timeout_s):
+        del url, headers, timeout_s
+        written = _assistant_text(body)
+        if _role_of(body) == "p2":
+            text = json.dumps({"final": "checked"})
+        elif "probe.py" not in written:
+            text = json.dumps({"tool": "write_file", "arguments": {
+                "path": "probe.py",
+                "content": "import subprocess\nsubprocess.run(['./executable'])\n",
+            }})
+        elif '"compile.sh"' not in written:
+            text = json.dumps({"tool": "write_file", "arguments": {
+                "path": "compile.sh",
+                "content": "#!/bin/sh\nprintf ok\n",
+            }})
+        else:
+            text = json.dumps({"final": "submitted"})
+        return _fox_reply(body, text)
+
+    def scorer(plan):
+        return {"status": "finished", "resolved": False, "pass_rate": 0.4, "compile_success": True}
+
+    run_arm(
+        tmp_path / "probe", arm="A2", tasks="kisielk__errcheck", live=False,
+        sender=sender, execute=True, scorer=scorer, signal_override="unknown",
+        models="fox/deepseek-flash,fox/glm-5.3-flash")
+    row = json.loads((tmp_path / "probe" / "records.jsonl").read_text(encoding="utf-8"))
+    assert row["submission_ok"] is True
+    assert row["pass_rate"] == 0.4
+    assert row["score"] == 0.4
+    assert row["harness_status"] == "finished"
+    assert any(item["path"] == "probe.py" and item["kind"] == "unused_probe_invokes_reference"
+               for item in row["submission_warnings"])
+    workspace = next((tmp_path / "probe").glob("units/*/state/workspace"))
+    assert (workspace / "probe.py").is_file()
+    assert (workspace / "compile.sh").is_file()
+    from alo_cloud.collect import _pack_submission
+    import tarfile
+    archive = tmp_path / "submission.tar.gz"
+    _pack_submission(workspace, archive)
+    names = tarfile.open(archive, "r:gz").getnames()
+    assert "compile.sh" in names
+    assert "probe.py" not in names
+    assert all(not name.startswith(".pb-probe") for name in names)
+
+
+def test_build_used_reference_wrap_is_rejected_with_score_zero(tmp_path, monkeypatch):
+    _no_network(monkeypatch)
+
+    def sender(url, body, headers, timeout_s):
+        del url, headers, timeout_s
+        written = _assistant_text(body)
+        if _role_of(body) == "p2":
+            text = json.dumps({"final": "checked"})
+        elif "main.c" not in written:
+            text = json.dumps({"tool": "write_file", "arguments": {
+                "path": "main.c",
+                "content": '#include <stdlib.h>\nint main(void){return system("./executable");}\n',
+            }})
+        elif '"compile.sh"' not in written:
+            text = json.dumps({"tool": "write_file", "arguments": {
+                "path": "compile.sh",
+                "content": "#!/bin/sh\ngcc -o executable main.c\n",
+            }})
+        else:
+            text = json.dumps({"final": "submitted"})
+        return _fox_reply(body, text)
+
+    def scorer(plan):
+        return {"status": "finished", "resolved": True, "pass_rate": 0.8, "compile_success": True}
+
+    run_arm(
+        tmp_path / "reject", arm="A2", tasks="kisielk__errcheck", live=False,
+        sender=sender, execute=True, scorer=scorer, signal_override="unknown",
+        models="fox/deepseek-flash,fox/glm-5.3-flash")
+    lines = (tmp_path / "reject" / "records.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    row = json.loads(lines[0])
+    assert row["submission_ok"] is False
+    assert row["pass_rate"] == 0.0
+    assert row["score"] == 0
+    assert row["resolved"] is False
+    assert row["harness_resolved"] is False
+    assert row["harness_status"] == "submission_rejected"
+    assert "invokes_reference" in row["harness_reason"]
+    assert "main.c" in row["harness_reason"]
+    assert row["reason"]
+    note = row["official_score_annotation"]
+    assert note["annotation"] == "offline_official_score_not_the_unit_score"
+    assert note["unit_score"] == 0
+    assert note["pass_rate"] == 0.8
+    assert note["resolved"] is True
+    assert row["pass_rate"] != note["pass_rate"]
+
+
+def test_stopped_unit_records_the_checkpoint_assignment(tmp_path, monkeypatch):
+    _no_network(monkeypatch)
+
+    def sender(url, body, headers, timeout_s):
+        del url, headers, timeout_s
+        if _role_of(body) == "p2":
+            return 500, b'{"error":{"message":"gateway down"}}'
+        return _fox_reply(body, json.dumps({"final": "p1 submitted"}))
+
+    run_arm(
+        tmp_path / "stop", arm="A2", tasks="raviqqe__muffet", live=False,
+        sender=sender, signal_override="unknown",
+        models="fox/deepseek-flash,fox/glm-5.3-flash")
+    row = json.loads((tmp_path / "stop" / "records.jsonl").read_text(encoding="utf-8"))
+    assert row["status"] == "stopped"
+    assert row["reason"] == "provider_error"
+    checkpoint = json.loads(next((tmp_path / "stop" / "checkpoints").glob("*/adapter.json")).read_text())
+    saved = {
+        role: value["model_id"]
+        for role, value in checkpoint["assignments"].items()
+        if isinstance(value, dict) and isinstance(value.get("model_id"), str)
+    }
+    recorded = {item["role_id"]: item["model_id"] for item in row["node_assignments"]}
+    assert saved
+    assert "p1" in saved
+    assert recorded == saved
+    assert row["first_assignment"] == saved["p1"]
+    assert row["first_assignment"] in {"fox/deepseek-flash", "fox/glm-5.3-flash"}
+
+
+def test_node_request_cap_hands_p1_over_to_p2(tmp_path, monkeypatch):
+    _no_network(monkeypatch)
+    counts = {"p1": 0, "p2": 0}
+
+    def sender(url, body, headers, timeout_s):
+        del url, headers, timeout_s
+        role = _role_of(body)
+        counts[role] += 1
+        return _fox_reply(body, json.dumps({"tool": "list_files", "arguments": {}}))
+
+    run_arm(
+        tmp_path / "cap", arm="A2", tasks="esubaalew__run", live=False,
+        sender=sender, node_request_cap=20, signal_override="unknown",
+        models="fox/deepseek-flash,fox/glm-5.3-flash")
+    row = json.loads((tmp_path / "cap" / "records.jsonl").read_text(encoding="utf-8"))
+    assert counts == {"p1": 20, "p2": 20}
+    assert row["status"] != "stopped"
+    assert row["node_request_cap"] == 20
+    assert row["request_cap"] == 40
+    assert {item["node_id"] for item in row["node_assignments"]} == {"p1", "p2"}
+    manifest = json.loads((tmp_path / "cap" / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["node_request_cap"] == 20
+    assert manifest["pb_freeze"]["node_request_cap"] == 20
+
+
+def test_total_request_cap_still_bounds_both_nodes(tmp_path, monkeypatch):
+    _no_network(monkeypatch)
+    counts = {"p1": 0, "p2": 0}
+
+    def sender(url, body, headers, timeout_s):
+        del url, headers, timeout_s
+        role = _role_of(body)
+        counts[role] += 1
+        return _fox_reply(body, json.dumps({"tool": "list_files", "arguments": {}}))
+
+    run_arm(
+        tmp_path / "bound", arm="A2", tasks="esubaalew__run", live=False,
+        sender=sender, node_request_cap=30, signal_override="unknown",
+        models="fox/deepseek-flash,fox/glm-5.3-flash")
+    row = json.loads((tmp_path / "bound" / "records.jsonl").read_text(encoding="utf-8"))
+    assert counts["p1"] == 30
+    assert counts["p2"] == 10
+    assert row["status"] == "stopped"
+    assert row["reason"] == "turn_cap"
+    assert row["first_assignment"]
+    assert {item["node_id"] for item in row["node_assignments"]} >= {"p1", "p2"}

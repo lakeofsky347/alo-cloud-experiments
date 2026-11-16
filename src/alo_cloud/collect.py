@@ -33,8 +33,20 @@ _PACK_SKIP_DIRS = frozenset({".pb-probe"})
 _PACK_SKIP_NAMES = frozenset({".alo-pb-candidate"})
 
 
-def _submission_skipped(relative):
+def _unused_probe_paths(workspace):
+    """Probe scripts the build does not use. They must not ship."""
+    from .pb_contract import submission_reference_scan
+    try:
+        scan = submission_reference_scan(workspace)
+    except (OSError, ValueError):
+        return set()
+    return {item for item in scan.get("unused_probes") or () if isinstance(item, str)}
+
+
+def _submission_skipped(relative, unused_probes=()):
     if any(part in SUBMISSION_EXCLUDE or part in _PACK_SKIP_DIRS for part in relative.parts):
+        return True
+    if relative.as_posix() in unused_probes:
         return True
     return relative.name in _PACK_SKIP_NAMES
 
@@ -96,12 +108,13 @@ def _pack_submission(workspace, dest_tar):
     workspace = Path(workspace)
     dest_tar.parent.mkdir(parents=True, exist_ok=True)
     files = []
+    unused_probes = _unused_probe_paths(workspace) if workspace.is_dir() else set()
     if workspace.is_dir():
         for path in workspace.rglob("*"):
             if not path.is_file() or path.is_symlink():
                 continue
             relative = path.relative_to(workspace)
-            if _submission_skipped(relative):
+            if _submission_skipped(relative, unused_probes):
                 continue
             files.append(path)
     with tarfile.open(dest_tar, "w:gz") as archive:

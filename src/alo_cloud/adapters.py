@@ -898,6 +898,11 @@ class HeterogeneousALO:
                 # Unknown is not node success. B/TMS still ignore it via the gate.
                 return functional_pass
             if adapter.config.get("pb_mode"):
+                # A per-node request cap ends that node only. p2 still runs.
+                # The shared unit cap remains an upper bound and still raises.
+                if (adapter.config.get("node_request_caps")
+                        and last.get("termination") == "turn_cap"):
+                    return True
                 # A definite compile/differential failure stops the node. A pass
                 # is success. Unknown is not stored; a submitted node still
                 # unblocks the next role so p2 can compile.

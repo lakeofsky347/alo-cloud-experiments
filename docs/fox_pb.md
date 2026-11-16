@@ -41,7 +41,8 @@ These are recorded in `manifest.json` and in that run's `pb_freeze` block. `pb_f
 | Behaviour-probe script | belongs to `p1` | `--probe-script-owner p1\|p2` |
 | `./executable` differential | off. Compile success is the public signal | `--differential-signal` |
 | Online update | off. The arm stays on its initial profile | `--online-update` |
-| Request cap | 40 (also 64 or 80) | `--request-cap` |
+| Request cap | 40 (also 64 or 80). Shared upper bound for the unit | `--request-cap` |
+| Per-node request cap | unset, except G0/M18 which gives p1 and p2 20 each | `--node-request-cap` |
 | Per-request deadline | 600 seconds | `--read-timeout` |
 | Per-unit wall clock | 2400 seconds | `--unit-seconds` |
 
@@ -85,7 +86,7 @@ python -m alo_cloud.fox_pb run \
 - copying it into the submission
 - any network client, URL fetch, or package install
 
-A submission scan flags a built tree that copies the reference bytes, embeds its sha256, reads those bytes, or invokes `./executable` from the submitted program. `compile.sh` may install the agent's own `build/...` output onto `./executable`, including `cp build/executable executable 2>/dev/null || true`. That install is not a wrapper. A behaviour-probe script under `.pb-probe/`, or any probe path outside the submission, may run the reference through its normal interface. It is not part of the submission.
+A submission scan flags a built tree that copies the reference bytes, embeds its sha256, reads those bytes, or invokes `./executable` from a file the build uses. `compile.sh` may install the agent's own `build/...` output onto `./executable`, including `cp build/executable executable 2>/dev/null || true`. That install is not a wrapper. A file the build graph does not reach from `compile.sh` — a root `probe.py`, a script under `.pb-probe/`, or any other unused probe — may run the reference through its normal interface. That is a warning on the unit result, and the file is left out of `submission.tar.gz`. A build input that embeds, copies, wraps, execs, or reads the reference, or that runs `objdump`, `strings`, `strace`, or `ltrace` on it, is still rejected. A rejected unit records score 0 and the reason. When an offline runner is available, its score is stored beside that zero and is not the unit score.
 
 ## G0
 
