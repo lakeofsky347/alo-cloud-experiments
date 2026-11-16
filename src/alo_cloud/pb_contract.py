@@ -705,9 +705,9 @@ def _resolve_existing(root, token, base_dir):
     if not isinstance(token, str):
         return None
     text = token.strip().strip("\"'")
-    if not text or text.startswith(("-", "$")) or "://" in text or any(ch in text for ch in "*?[]{}"):
+    if not text or text.startswith(("-", "$")) or "://" in text or _token_is_glob(text):
         return None
-    if text.startswith("/"):
+    if text.startswith("/") or ".." in PurePosixPath(text).parts:
         return None
     candidate = (base_dir / text)
     try:
@@ -721,6 +721,118 @@ def _resolve_existing(root, token, base_dir):
     if not _build_input_name(relative):
         return None
     return relative
+
+
+def _token_is_glob(text):
+    return any(char in text for char in "*?[")
+
+
+def _token_is_unresolved_reference(text):
+    """A shell variable or substitution whose files this scan cannot name."""
+    if not isinstance(text, str) or not text:
+        return False
+    return text.startswith("$") or "${" in text or "`" in text or "$(" in text
+
+
+def _brace_group(text):
+    """One ``{a,b}`` group, or None when the braces are ordinary punctuation."""
+    if text.count("{") != 1 or text.count("}") != 1:
+        return None
+    match = re.search(r"\{([^{}]*)\}", text)
+    if match is None or "," not in match.group(1):
+        return None
+    return match
+
+
+def _brace_expand(text):
+    """Expand one ``{a,b}`` group. Nested braces are left unresolved."""
+    match = _brace_group(text)
+    if match is None:
+        return [], False
+    start, end = match.span()
+    options = [part for part in match.group(1).split(",") if part]
+    if not options:
+        return [], False
+    return [text[:start] + part + text[end:] for part in options], True
+
+
+def _glob_matches(root, pattern, base_dir):
+    """Files a relative glob names. ``False`` means the pattern did not resolve."""
+    if not pattern or pattern.startswith("/") or ".." in PurePosixPath(pattern).parts:
+        return [], False
+    found = []
+    saw_file = False
+    bases = [base_dir]
+    if base_dir != root:
+        bases.append(root)
+    try:
+        root_resolved = root.resolve()
+    except OSError:
+        return [], False
+    for base in bases:
+        try:
+            matches = list(base.glob(pattern))
+        except (OSError, ValueError):
+            return [], False
+        for path in matches:
+            if path.is_symlink() or not path.is_file():
+                continue
+            saw_file = True
+            try:
+                relative = path.resolve().relative_to(root_resolved).as_posix()
+            except OSError:
+                return [], False
+            if _build_input_name(relative):
+                found.append(relative)
+    if not saw_file:
+        return [], False
+    return found, True
+
+
+def _expand_build_token(root, token, base_dir):
+    """Build inputs named by one shell token.
+
+    The second value is False when the token might name inputs this scan
+    cannot list. An incomplete graph must not be treated as proof that a
+    file is unused.
+    """
+    if not isinstance(token, str):
+        return [], True
+    text = token.strip().strip("\"'")
+    if not text or text.startswith("-") or "://" in text:
+        return [], True
+    if _token_is_unresolved_reference(text):
+        return [], False
+    if _brace_group(text) is not None:
+        patterns, brace_ok = _brace_expand(text)
+        if not brace_ok:
+            return [], False
+    elif _token_is_glob(text):
+        patterns = [text]
+    else:
+        found = _resolve_existing(root, text, base_dir)
+        if found is None and base_dir != root:
+            found = _resolve_existing(root, text, root)
+        return ([found] if found else []), True
+    found = []
+    resolved_any = False
+    for pattern in patterns:
+        if not _token_is_glob(pattern):
+            resolved = _resolve_existing(root, pattern, base_dir)
+            if resolved is None and base_dir != root:
+                resolved = _resolve_existing(root, pattern, root)
+            if resolved:
+                found.append(resolved)
+                resolved_any = True
+            continue
+        matches, ok = _glob_matches(root, pattern, base_dir)
+        if not ok:
+            continue
+        found.extend(matches)
+        resolved_any = True
+    if not resolved_any:
+        return found, False
+    return found, True
 
 
 def _include_paths(text):
@@ -771,17 +883,20 @@ def _build_tool(argv):
 
 
 def submission_build_graph(root):
-    """Files reachable from ``compile.sh``.
+    """Files reachable from ``compile.sh``, and whether that list is complete.
 
     A behaviour probe that ``compile.sh`` never names, and that no file in
-    that graph names, is not part of the submitted program.
+    that graph names, is not part of the submitted program. A glob or shell
+    variable that does not resolve makes the graph incomplete: callers must
+    not treat every other file as unused.
     """
     root = Path(root)
     entry = root / "compile.sh"
     if not entry.is_file() or entry.is_symlink():
-        return set()
+        return set(), True
     pending = ["compile.sh"]
     seen = set()
+    complete = True
     while pending:
         relative = pending.pop()
         if relative in seen:
@@ -813,12 +928,18 @@ def submission_build_graph(root):
         lines = text.splitlines()
         commands = []
         for line in lines:
+            try:
+                shlex.split(line, comments=True, posix=True)
+            except ValueError:
+                if any(char in line for char in "*?$`"):
+                    complete = False
             commands.extend(_simple_commands(line))
         if not commands:
             try:
                 tokens = shlex.split(text, comments=True, posix=True)
             except ValueError:
                 tokens = []
+                complete = False
             if tokens:
                 commands = [tokens]
         for argv in commands:
@@ -832,13 +953,13 @@ def submission_build_graph(root):
                         continue
                     pending.append(found)
             for token in argv:
-                found = _resolve_existing(root, token, base_dir)
-                if found and found not in seen:
-                    pending.append(found)
-                found = _resolve_existing(root, token, root)
-                if found and found not in seen:
-                    pending.append(found)
-    return seen
+                found, token_ok = _expand_build_token(root, token, base_dir)
+                if not token_ok:
+                    complete = False
+                for item in found:
+                    if item not in seen:
+                        pending.append(item)
+    return seen, complete
 
 
 def _hard_reference_kinds(text):
@@ -886,7 +1007,7 @@ def submission_reference_scan(root, *, reference_sha256=None, probe_paths=()):
             "reference_sha256": digest,
             "reference_execute_only": mode_ok,
         }
-    build_graph = submission_build_graph(root)
+    build_graph, graph_complete = submission_build_graph(root)
     for path in sorted(root.rglob("*")):
         if not path.is_file() or path.is_symlink():
             continue
@@ -915,7 +1036,9 @@ def submission_reference_scan(root, *, reference_sha256=None, probe_paths=()):
             violations.append({"kind": hard[0], "path": relative})
             continue
         if _invokes_reference(text):
-            if relative in build_graph:
+            # An unresolved glob or variable means the file might still be a
+            # build input. Do not warn it away or drop it from the archive.
+            if relative in build_graph or not graph_complete:
                 violations.append({"kind": "invokes_reference", "path": relative})
             else:
                 warnings.append({"kind": "unused_probe_invokes_reference", "path": relative})

@@ -1051,3 +1051,67 @@ def test_total_request_cap_still_bounds_both_nodes(tmp_path, monkeypatch):
     assert row["reason"] == "turn_cap"
     assert row["first_assignment"]
     assert {item["node_id"] for item in row["node_assignments"]} >= {"p1", "p2"}
+
+
+def test_compile_glob_keeps_a_wrapped_source_in_the_build_and_the_archive(tmp_path):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    (root / "compile.sh").write_text("#!/bin/sh\ngcc *.c -o executable\n", encoding="utf-8")
+    (root / "main.c").write_text(
+        '#include <stdlib.h>\nint main(void){return system("./executable");}\n',
+        encoding="utf-8")
+    (root / "probe.py").write_text(
+        "import subprocess\nsubprocess.run(['./executable'])\n", encoding="utf-8")
+    scanned = submission_reference_scan(root)
+    assert scanned["ok"] is False
+    assert any(item["kind"] == "invokes_reference" and item["path"] == "main.c"
+               for item in scanned["violations"])
+    assert "main.c" not in scanned["unused_probes"]
+    assert "probe.py" in scanned["unused_probes"]
+    from alo_cloud.collect import _pack_submission
+    import tarfile
+    archive = tmp_path / "submission.tar.gz"
+    _pack_submission(root, archive)
+    names = tarfile.open(archive, "r:gz").getnames()
+    assert "compile.sh" in names
+    assert "main.c" in names
+    assert "probe.py" not in names
+    (root / "compile.sh").write_text("#!/bin/sh\ngcc $SRCS -o executable\n", encoding="utf-8")
+    uncertain = submission_reference_scan(root)
+    assert uncertain["ok"] is False
+    assert any(item["path"] == "main.c" for item in uncertain["violations"])
+    assert "main.c" not in uncertain["unused_probes"]
+    assert "probe.py" not in uncertain["unused_probes"]
+
+
+def test_evaluator_exception_leaves_the_score_unknown(tmp_path, monkeypatch):
+    _no_network(monkeypatch)
+
+    def sender(url, body, headers, timeout_s):
+        del url, headers, timeout_s
+        written = _assistant_text(body)
+        if _role_of(body) == "p2" or '"compile.sh"' in written:
+            return _fox_reply(body, json.dumps({"final": "submitted"}))
+        return _fox_reply(body, json.dumps({"tool": "write_file", "arguments": {
+            "path": "compile.sh", "content": "#!/bin/sh\nprintf ok\n",
+        }}))
+
+    def scorer(plan):
+        raise OSError("harness_archive_failed")
+
+    run_arm(
+        tmp_path / "eval-error", arm="A2", tasks="kisielk__errcheck", live=False,
+        sender=sender, execute=True, scorer=scorer, signal_override="unknown",
+        models="fox/deepseek-flash,fox/glm-5.3-flash")
+    lines = (tmp_path / "eval-error" / "records.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    row = json.loads(lines[0])
+    assert row["submission_ok"] is True
+    assert row["pass_rate"] is None
+    assert row["score"] is None
+    assert row["resolved"] is None
+    assert row["harness_resolved"] is None
+    assert row["harness_status"] == "unavailable"
+    assert row["harness_reason"] == "evaluator_error"
+    assert row["status"] != "submission_rejected"
+    assert "submission_rejection_reason" not in row

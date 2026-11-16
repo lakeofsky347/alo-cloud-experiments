@@ -1390,32 +1390,47 @@ def _run_unit(unit, run_dir, *, settings, specs, model_names, transport, limits,
         signal = services.public_signal()
     except Exception:
         signal = "unknown"
+    scan_failed = False
     try:
         submission = submission_reference_scan(services.workspace.root)
     except Exception:
-        submission = {
-            "ok": False,
-            "violations": [{"kind": "submission_scan_error", "path": ""}],
-            "warnings": [],
-            "unused_probes": [],
-        }
+        scan_failed = True
+        submission = {"ok": None, "violations": [], "warnings": [], "unused_probes": []}
     usage = _usage_block(services.calls)
     plan = pb_eval_plan(
         unit.task_id, services.workspace.root, repo=settings.get("programbench_repo"),
         unit_id=unit.unit_id, run_dir=run_dir)
     if execute and scorer is None:
         scorer = official_pb_scorer
-    try:
-        scored = apply_pb_score(
-            plan, execute=bool(execute), runner=scorer, public_signal=signal,
-            cost=usage["cost"], wall_clock_s=wall, submission_check=submission,
-        )
-    except Exception:
+    if scan_failed:
+        # A scan crash is not a reference-rule rejection. The score stays null.
         scored = {
-            "resolved": False, "pass_rate": 0.0, "score": 0, "compile_success": None,
-            "status": "submission_rejected", "reason": "submission_score_error",
+            "resolved": None, "pass_rate": None, "score": None, "compile_success": None,
+            "status": "unavailable", "reason": "submission_scan_error",
             "official_score_annotation": None,
         }
+    else:
+        try:
+            scored = apply_pb_score(
+                plan, execute=bool(execute), runner=scorer, public_signal=signal,
+                cost=usage["cost"], wall_clock_s=wall, submission_check=submission,
+            )
+        except Exception:
+            if isinstance(submission, dict) and submission.get("ok") is False:
+                scored = {
+                    "resolved": False, "pass_rate": 0.0, "score": 0, "compile_success": None,
+                    "status": "submission_rejected",
+                    "reason": _submission_rejection_reason(submission),
+                    "official_score_annotation": None,
+                }
+            else:
+                # The evaluator failed before measuring. Null is not a model zero,
+                # and this is not a submission rejection.
+                scored = {
+                    "resolved": None, "pass_rate": None, "score": None, "compile_success": None,
+                    "status": "unavailable", "reason": "evaluator_error",
+                    "official_score_annotation": None,
+                }
     if settings["online_update"] and arm in ALO_ARMS and hasattr(adapter, "state"):
         _save_carried(run_dir, adapter.state.get("observations") or {}, model_names)
     checkpoint = Path(run_dir) / "checkpoints" / unit.unit_id
