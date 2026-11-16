@@ -36,8 +36,8 @@ Use python3 when you invoke Python; the image may not have a python command.
 """
 
 # M19 node-budget-v1 (opt-in; never sent without --pb-agent-protocol).
-# Sent once to the implementer node before the call that leaves it at or under
-# PB_NODE_NOTICE_AT of its own requests.
+# Added once to the implementer node's first observation that shows
+# PB_NODE_NOTICE_AT or fewer of its own requests left (key node_budget_notice).
 PB_AGENT_PROTOCOLS = ("node-budget-v1",)
 PB_NODE_NOTICE_AT = 6
 PROGRAMBENCH_NODE_BUDGET_NOTICE = (

@@ -50,8 +50,7 @@ def _budget():
 
 
 def _notices(messages):
-    return [i for i, m in enumerate(messages)
-            if m.get("role") == "system" and str(m.get("content", "")).startswith(NOTICE_PREFIX)]
+    return [i for i, m in enumerate(messages) if NOTICE_PREFIX in str(m.get("content", ""))]
 
 
 def test_loop_shows_the_node_counter_and_sends_the_notice_once_at_six_left():
@@ -67,8 +66,13 @@ def test_loop_shows_the_node_counter_and_sends_the_notice_once_at_six_left():
             last_obs = [m for m in seen if m["role"] == "user"][-1]["content"]
             assert f"requests left for your node p1: {left_before}/20" in last_obs
     first = stub.seen[14]
-    assert first[-1]["role"] == "system" and first[-1]["content"].startswith(NOTICE_PREFIX)
-    assert "6 or fewer" in first[-1]["content"] and "compile.sh" in first[-1]["content"]
+    obs = json.loads(first[-1]["content"])
+    assert first[-1]["role"] == "user" and obs["tool"] == "list_files"
+    assert obs["requests_left"] == "requests left for your node p1: 6/20"
+    assert obs["node_budget_notice"].startswith(NOTICE_PREFIX)
+    assert "6 or fewer" in obs["node_budget_notice"] and "compile.sh" in obs["node_budget_notice"]
+    assert all(m["role"] in {"system", "user", "assistant"} for m in messages)
+    assert sum(m["role"] == "system" for m in messages) == 1   # no extra system message
     assert budget["sent"] is True and budget["sent_at_left"] == 6
     assert len(_notices(messages)) == 1
 
@@ -85,6 +89,8 @@ def test_small_node_cap_gets_the_notice_on_its_first_call():
     stub = Stub(4)
     persistent_tool_loop(stub, "do it", [], max_turns=4, node_budget=_budget())
     assert len(_notices(stub.seen[0])) == 1
+    assert stub.seen[0][-1]["role"] == "user" and stub.seen[0][-1]["content"].startswith("do it\n\n")
+    assert len(_notices(stub.seen[-1])) == 1
 
 
 def test_loop_without_node_budget_is_unchanged():
@@ -152,15 +158,21 @@ def test_flag_shows_p1_its_counter_and_reminds_it_in_its_own_turn_only(tmp_path,
         n = len(_notices(body["messages"]))
         assert n == (1 if 20 - call <= PB_NODE_NOTICE_AT else 0), call
         if call:
-            assert f"requests left for your node p1: {20 - call}/20 (unit: {40 - call}/40)" in \
-                body["messages"][-1 - (n and call == 14)]["content"]
-    assert p1[14]["messages"][-1]["role"] == "system"
+            obs = json.loads(body["messages"][-1]["content"])
+            assert obs["requests_left"] == f"requests left for your node p1: {20 - call}/20 (unit: {40 - call}/40)"
+            assert ("node_budget_notice" in obs) == (call == 14)
+    assert all(m["role"] != "system" for m in p1[19]["messages"][1:])
     # p2 (read-only validator) sees no node counter and no reminder: identical to the default.
     assert p2 == [b for b in off if _role(b) == "p2"]
     # p1 differs from the default only by the counter wording and the one reminder.
     for call, (a, b) in enumerate(zip(p1, [b for b in off if _role(b) == "p1"])):
-        stripped = [m for m in a["messages"]
-                    if not str(m.get("content", "")).startswith(NOTICE_PREFIX)]
+        stripped = []
+        for m in a["messages"]:
+            if NOTICE_PREFIX in str(m.get("content", "")):
+                obs = json.loads(m["content"])
+                del obs["node_budget_notice"]
+                m = dict(m, content=json.dumps(obs, ensure_ascii=False, allow_nan=False))
+            stripped.append(m)
         fixed = json.dumps(stripped).replace(
             f"requests left for your node p1: ", "requests left: ")
         for k in range(1, 21):

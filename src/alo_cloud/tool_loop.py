@@ -146,40 +146,47 @@ def _node_line(node, unit_line):
 
 
 def _node_notice(messages, node):
-    """Append the node budget notice once, before the call that leaves it at or under ``notice_at``."""
+    """The node budget notice text, once, when this node has ``notice_at`` or fewer requests left.
+
+    It rides in the next observation (like ``empty_diff_nudge``), so no extra
+    message role is sent to the provider.
+    """
     template = node.get("notice")
     if not template or node.get("sent"):
-        return
+        return None
     left = node["cap"] - node["used"]
     if left > node["notice_at"]:
-        return
+        return None
     prefix = template.split("{", 1)[0]
-    if any(m.get("role") == "system" and str(m.get("content", "")).startswith(prefix)
-           for m in messages if isinstance(m, dict)):
+    if any(prefix in str(m.get("content", "")) for m in messages if isinstance(m, dict)):
         node["sent"] = True   # already in a resumed transcript
-        return
-    messages.append({"role": "system", "content": template.format(
-        left=left, node=node["node"], cap=node["cap"])})
+        return None
     node["sent"] = True
     node["sent_at_left"] = left
+    return template.format(left=left, node=node["node"], cap=node["cap"])
 
 
 def _append(messages, value, services=None, node=None):
     line, nudge = _budget_line(services, node) if services is not None else (
         (_node_line(node, None), None) if node is not None else (None, None))
+    notice = _node_notice(messages, node) if node is not None else None
     if isinstance(value, str):
         text = value
         if line:
             text = text + "\n" + line
         if nudge:
             text = text + "\n" + nudge
+        if notice:
+            text = text + "\n" + notice
     else:
-        if line or nudge:
+        if line or nudge or notice:
             value = dict(value)
             if line:
                 value["requests_left"] = line
             if nudge:
                 value["empty_diff_nudge"] = nudge
+            if notice:
+                value["node_budget_notice"] = notice
         text = json.dumps(value, ensure_ascii=False, allow_nan=False)
     messages.append({"role": "user", "content": text})
 
@@ -216,9 +223,10 @@ def persistent_tool_loop(services, prompt, messages, *, system="", max_turns=10,
     ``node_budget`` (ProgramBench node-budget-v1, opt-in) is a dict with
     ``node``, ``notice`` and ``notice_at``. When given, every observation shows
     this node's own remaining requests (``max_turns`` is the node cap) before
-    the unit line, and ``notice`` is appended once as a system message before
-    the first call made with ``notice_at`` or fewer node requests left. With
-    ``node_budget=None`` every message is byte-identical to before.
+    the unit line, and ``notice`` is added once, as ``node_budget_notice`` in
+    the first observation that shows ``notice_at`` or fewer node requests left
+    (in the prompt if the cap itself is that small). With ``node_budget=None``
+    every message is byte-identical to before.
     """
     if type(max_turns) is not int or max_turns < 1 or not isinstance(messages, list):
         raise ProtocolError("positive turn limit and checkpoint-owned transcript list required")
@@ -229,10 +237,10 @@ def persistent_tool_loop(services, prompt, messages, *, system="", max_turns=10,
     if node_budget is not None:
         node = node_budget
         node.update(cap=max_turns, used=0)
+        notice = _node_notice(messages, node)   # only when the node cap is <= notice_at
+        if notice:
+            messages[-1] = {"role": "user", "content": prompt + "\n\n" + notice}
     for turn in range(max_turns):
-        if node is not None:
-            node["used"] = turn
-            _node_notice(messages, node)
         reply = services.complete(messages)
         if node is not None:
             node["used"] = turn + 1
