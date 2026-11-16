@@ -1315,3 +1315,15 @@ def test_live_flashx_run_stops_without_the_glm_key(tmp_path, monkeypatch):
     with pytest.raises(PbStopped, match="credential_missing:GLM_API_KEY"):
         run_arm(tmp_path / "A2", arm="A2", g0=True, request_cap=40, node_request_cap=20,
                 differential_signal=True, pool_substitute="glm-flashx", live=True)
+
+
+def test_zhipu_only_subset_does_not_need_the_foxrouter_key(monkeypatch):
+    from alo_cloud.fox_single import FoxStopped, _transport_for
+    monkeypatch.delenv("FOXROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("GLM_API_KEY", "glm-test-key")
+    kwargs = dict(live=True, sender=None, timeout_s=5, sleep=lambda s: None, clock=lambda: None, max_attempts=1)
+    _transport_for(key_envs=["GLM_API_KEY"], **kwargs)
+    with pytest.raises(FoxStopped, match="credential_missing"):
+        _transport_for(**kwargs)
+    with pytest.raises(FoxStopped, match="credential_missing"):
+        _transport_for(key_envs=["FOXROUTER_API_KEY", "GLM_API_KEY"], **kwargs)

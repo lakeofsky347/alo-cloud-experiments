@@ -1163,10 +1163,12 @@ def _live_secrets():
     return values
 
 
-def _transport_for(*, live, sender, timeout_s, sleep, clock, max_attempts):
+def _transport_for(*, live, sender, timeout_s, sleep, clock, max_attempts, key_envs=None):
+    """``key_envs`` names the key env vars the selected rows read (default: Foxrouter only)."""
     if sender is None and not live:
         raise FoxStopped("fox_sender_required")
-    if live and sender is None and not key_configured():
+    required = (FOX_KEY_ENV,) if key_envs is None else tuple(key_envs)
+    if live and sender is None and not all(key_configured(name) for name in required):
         raise FoxStopped("credential_missing")
 
     def transport(model, messages, max_tokens, max_sends=None):

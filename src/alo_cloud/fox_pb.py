@@ -1314,6 +1314,7 @@ def run_arm(run_dir, *, arm, tasks=None, g0=False, models="all", request_cap=DEF
         sleep=time.sleep,
         clock=clock or (lambda: datetime.now(timezone.utc)),
         max_attempts=4,
+        key_envs=sorted({row.key_env for row in specs}),
     )
     limits = {"requests": request_cap, "tokens": 900_000, "tools": 120, "seconds": unit_seconds}
     done = _done_ids(run_dir)
