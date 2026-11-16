@@ -1,8 +1,9 @@
 """The shlex fast path, the scan deadline, and the per-request call journal.
 
 The fast path must not change one scan finding. Every corpus line is split
-both ways (fast path vs plain ``shlex.split``) and every corpus text is
-scanned both ways. ``ALO_PB_SCAN_CORPUS`` may name extra directories, e.g. a
+both ways (fast path vs plain ``shlex.split``), the linear tokenizer used for
+long lines is compared with ``shlex.split`` on the same lines and on long
+generated ones, and every corpus text is scanned both ways. ``ALO_PB_SCAN_CORPUS`` may name extra directories, e.g. a
 copy of a live workspace; the repository itself is always part of the corpus.
 """
 import json
@@ -80,6 +81,74 @@ def test_fast_path_matches_shlex_on_every_corpus_and_adversarial_line():
     assert checked > 20000
 
 
+def test_linear_tokenizer_matches_shlex_on_every_line():
+    checked = 0
+    for _path, text in _corpus_texts():
+        for line in text.splitlines():
+            if len(line) <= 200_000:
+                assert _split(pc._posix_shlex_split, line) == _split(_plain, line), line[:200]
+                checked += 1
+        # Whole texts too: newlines end comments the way shlex's readline does.
+        if len(text) <= 200_000:
+            assert _split(pc._posix_shlex_split, text) == _split(_plain, text), str(_path)
+    for line in _adversarial_lines():
+        assert _split(pc._posix_shlex_split, line) == _split(_plain, line), repr(line[:200])
+        checked += 1
+    rng = random.Random(4096)
+    alphabet = _ALPHABET + ["\n", "xxxxxxxx", "    ", "\\\"", "''", '""', " # "]
+    for _ in range(600):
+        size = rng.choice([50, 500, 5000, 9000])
+        line = "".join(rng.choice(alphabet) for _ in range(size))
+        assert _split(pc._posix_shlex_split, line) == _split(_plain, line), repr(line[:200])
+        assert _split(pc._shlex_words, line) == _split(_plain, line), repr(line[:200])
+        checked += 1
+    assert checked > 20000
+
+
+_LONG_LINES = {
+    "word_then_space": "x" * 5_000_000 + " ",
+    "word_space_word": "x" * 2_500_000 + " " + "y" * 2_500_000,
+    "double_quoted": '"' + "x" * 5_000_000 + '"',
+    "single_quoted": "'" + "x" * 5_000_000 + "'",
+    "many_words": "ab " * 1_000_000,
+    "escapes": "\\x" * 1_000_000,
+    "comment_tail": "./executable " + "#" + "x" * 5_000_000,
+    "unclosed": '"' + "x" * 5_000_000,
+}
+_LONG_EXPECTED = {
+    "word_then_space": ("ok", ["x" * 5_000_000]),
+    "word_space_word": ("ok", ["x" * 2_500_000, "y" * 2_500_000]),
+    "double_quoted": ("ok", ["x" * 5_000_000]),
+    "single_quoted": ("ok", ["x" * 5_000_000]),
+    "many_words": ("ok", ["ab"] * 1_000_000),
+    "escapes": ("ok", ["x" * 1_000_000]),
+    "comment_tail": ("ok", ["./executable"]),
+    "unclosed": ("ValueError", "No closing quotation"),
+}
+
+
+@pytest.mark.parametrize("name", sorted(_LONG_LINES))
+def test_long_slow_path_lines_are_linear(name):
+    line = _LONG_LINES[name]
+    started = time.monotonic()
+    got = _split(pc._shlex_words, line)
+    assert time.monotonic() - started < 10.0
+    # Expected values are what shlex.split returns (it is too slow to run here).
+    assert got == _LONG_EXPECTED[name]
+    pc._simple_commands(line)
+
+
+def test_scan_deadline_interrupts_one_long_line():
+    line = "x" * 5_000_000 + " " + "y " * 200_000
+
+    def expired():
+        raise pc.SubmissionScanDeadline("submission_scan_deadline")
+    with pytest.raises(pc.SubmissionScanDeadline):
+        pc._simple_commands(line, expired)
+    with pytest.raises(pc.SubmissionScanDeadline):
+        pc._text_submission_violations(line, allow_reference_execution=False, check=expired)
+
+
 def _fixture_workspace(tmp_path):
     root = tmp_path / "ws"
     (root / "build").mkdir(parents=True)
@@ -109,16 +178,17 @@ def test_scan_findings_identical_with_and_without_fast_path(monkeypatch, tmp_pat
         return per_text, scans
 
     fast = run_all()
-    monkeypatch.setattr(pc, "_shlex_words", _plain)
+    monkeypatch.setattr(pc, "_shlex_words", lambda line, check=None: _plain(line))
     slow = run_all()
     assert fast == slow
     assert any(scan["violations"] for scan in fast[1])
 
 
-def test_five_megabyte_single_line_is_fast(tmp_path):
-    line = "x" * 5_000_000
+@pytest.mark.parametrize("tail", ["", " ", " ./executable"])
+def test_five_megabyte_single_line_is_fast(tmp_path, tail):
+    line = "x" * 5_000_000 + tail
     started = time.monotonic()
-    assert pc._simple_commands(line) == [[line]]
+    assert pc._simple_commands(line) == [["x" * 5_000_000] + tail.split()]
     assert time.monotonic() - started < 2.0
     nested = tmp_path / "ws" / ".pbwork" / "t1" / "sub1" / "sub2"
     nested.mkdir(parents=True)

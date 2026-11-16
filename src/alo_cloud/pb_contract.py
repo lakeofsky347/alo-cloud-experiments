@@ -378,19 +378,123 @@ def _strip_redirects(tokens):
 # the line as one word: its whitespace, quotes, escape, and comment start. ``\s``
 # is wider than shlex's whitespace, so such a line just takes the slow path.
 _SHLEX_ACTIVE = re.compile(r"[\s'\"\\#]")
+# Lines up to this length keep the stdlib tokenizer itself. Longer ones use
+# ``_posix_shlex_split``, the same state machine in linear time.
+_SHLEX_DIRECT_MAX = 4096
+_SHLEX_WS = " \t\r\n"
+_WORD_RUN = re.compile(r"[^ \t\r\n'\"\\#]+")
+_WS_RUN = re.compile(r"[ \t\r\n]+")
+_DQ_RUN = re.compile(r'[^"\\]+')
+_CHECK_EVERY = 4096
 
 
-def _shlex_words(line):
-    """``shlex.split(line, comments=True, posix=True)`` with one exact fast path.
+def _posix_shlex_split(text, check=None):
+    """``shlex.split(text, comments=True, posix=True)`` in linear time.
+
+    This follows ``shlex.read_token`` for posix mode with ``whitespace_split``,
+    the default whitespace, quotes ``'"``, escape ``\\``, escaped quotes ``"``
+    and commenter ``#``. Tokens are built from slices instead of one character
+    at a time. The same ``ValueError`` messages are raised. ``check`` is called
+    every few thousand steps so a deadline can stop a very long line.
+    """
+    tokens = []
+    parts = []
+    quoted = False
+    state = " "
+    escaped_state = None
+    index = 0
+    size = len(text)
+    steps = 0
+    while True:
+        steps += 1
+        if check is not None and steps % _CHECK_EVERY == 0:
+            check()
+        if state == " ":
+            if index >= size:
+                return tokens
+            char = text[index]
+            if char in _SHLEX_WS:
+                index = _WS_RUN.match(text, index).end()
+            elif char == "#":
+                newline = text.find("\n", index)
+                index = size if newline < 0 else newline + 1
+            elif char == "\\":
+                escaped_state, state = "a", "\\"
+                index += 1
+            elif char in "'\"":
+                state = char
+                index += 1
+            else:
+                state = "a"
+        elif state == "a":
+            if index >= size:
+                tokens.append("".join(parts))
+                return tokens
+            char = text[index]
+            if char in _SHLEX_WS or char == "#":
+                if char == "#":
+                    newline = text.find("\n", index)
+                    index = size if newline < 0 else newline + 1
+                else:
+                    index += 1
+                tokens.append("".join(parts))
+                parts, quoted, state = [], False, " "
+            elif char in "'\"":
+                state = char
+                index += 1
+            elif char == "\\":
+                escaped_state, state = "a", "\\"
+                index += 1
+            else:
+                end = _WORD_RUN.match(text, index).end()
+                parts.append(text[index:end])
+                index = end
+        elif state == "'":
+            quoted = True
+            close = text.find("'", index)
+            if close < 0:
+                raise ValueError("No closing quotation")
+            parts.append(text[index:close])
+            index, state = close + 1, "a"
+        elif state == '"':
+            quoted = True
+            if index >= size:
+                raise ValueError("No closing quotation")
+            char = text[index]
+            if char == '"':
+                index, state = index + 1, "a"
+            elif char == "\\":
+                escaped_state, state = '"', "\\"
+                index += 1
+            else:
+                end = _DQ_RUN.match(text, index).end()
+                parts.append(text[index:end])
+                index = end
+        else:  # escape
+            if index >= size:
+                raise ValueError("No escaped character")
+            char = text[index]
+            if escaped_state == '"' and char != "\\" and char != '"':
+                parts.append("\\")
+            parts.append(char)
+            index += 1
+            state = escaped_state
+
+
+def _shlex_words(line, check=None):
+    """``shlex.split(line, comments=True, posix=True)``, same result, linear time.
 
     shlex grows each token one character at a time, which is quadratic in the
     token length: one 5 MB word took hours. A line with none of the characters
     above is a single word, which is exactly what shlex returns for it
-    (an empty line still goes to shlex, which returns ``[]``).
+    (an empty line still goes to shlex, which returns ``[]``). Other short
+    lines use shlex itself; long ones use ``_posix_shlex_split``.
     """
     if line and _SHLEX_ACTIVE.search(line) is None:
         return [line]
-    return shlex.split(line, comments=True, posix=True)
+    if len(line) <= _SHLEX_DIRECT_MAX:
+        return shlex.split(line, comments=True, posix=True)
+    return _posix_shlex_split(line, check)
 
 
 class SubmissionScanDeadline(Exception):
@@ -408,12 +512,12 @@ def _deadline_check(deadline, clock):
     return check
 
 
-def _simple_commands(line):
+def _simple_commands(line, check=None):
     """Split one shell line into argv lists, dropping redirects and ``|| true``."""
     if not isinstance(line, str) or not line.strip():
         return []
     try:
-        tokens = _shlex_words(line)
+        tokens = _shlex_words(line, check)
     except ValueError:
         return []
     groups = []
@@ -465,7 +569,7 @@ def _text_submission_violations(text, *, allow_reference_execution, check=None):
     for line in text.splitlines():
         if check is not None:
             check()
-        for argv in _simple_commands(line):
+        for argv in _simple_commands(line, check):
             if _installs_own_build(argv):
                 continue
             if _reads_reference_bytes(argv):
