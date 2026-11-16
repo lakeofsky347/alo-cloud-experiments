@@ -74,6 +74,7 @@ from .pb_contract import (
     submission_reference_scan,
     submission_reference_scan_bounded,
 )
+from .programbench_prompt import PB_AGENT_PROTOCOLS, PB_NODE_NOTICE_AT
 from .sandbox import DockerSandbox
 from .workspace_prep import seed_image_tree
 from .run import load_frozen_transfer, load_public_payload, stage_for
@@ -150,7 +151,7 @@ _LOCKED = (
     "arm", "models", "task_ids", "unit_ids", "request_cap", "node_request_cap", "pool_substitution",
     "online_update", "differential_signal", "role_map", "probe_script_owner",
     "unit_seconds", "read_timeout_s", "live", "frozen", "data_dir",
-    "programbench_repo",
+    "programbench_repo", "pb_agent_protocol",
 )
 
 
@@ -199,6 +200,15 @@ def decision_freeze(settings):
     node_cap = settings.get("node_request_cap")
     if node_cap is not None:
         body["node_request_cap"] = node_cap
+    # M19 opt-in agent protocol. Prompts and tools are not hashed above, so a
+    # protocol change is recorded here on purpose. Absent means the M18 protocol.
+    protocol = settings.get("pb_agent_protocol")
+    if protocol is not None:
+        body["pb_agent_protocol"] = {
+            "version": protocol,
+            "node_budget_nodes": [settings["role_map"]["s1"]],
+            "notice_at_node_requests_left": PB_NODE_NOTICE_AT,
+        }
     digest = hashlib.sha256(_canonical(body).encode("utf-8")).hexdigest()
     return body, digest
 
@@ -1083,7 +1093,7 @@ def apply_pb_score(plan, *, execute, runner, public_signal, cost, wall_clock_s, 
 
 
 def _adapter_config(arm, *, models, request_cap, seed, online_update, dag, prompt,
-                    node_request_cap=None):
+                    node_request_cap=None, pb_agent_protocol=None, implementer_node=None):
     if arm == "A4":
         if BEST_SINGLE not in models:
             raise PbStopped("best_single_not_in_pool")
@@ -1114,6 +1124,10 @@ def _adapter_config(arm, *, models, request_cap, seed, online_update, dag, promp
         config["export_mode"] = "resources"
     if arm == "A5":
         config["fixed_model"] = BEST_SINGLE
+    if pb_agent_protocol is not None and node_request_cap is not None:
+        # Two-node arms with node caps only. A4 returned above and is unchanged.
+        config["pb_agent_protocol"] = pb_agent_protocol
+        config["pb_node_budget_nodes"] = [implementer_node or "p1"]
     return "G2", config
 
 
@@ -1206,7 +1220,7 @@ def _first_assignment(adapter, arm):
 
 def _manifest(settings, units):
     freeze_body, freeze_digest = decision_freeze(settings)
-    return {
+    manifest = {
         "experiment": EXPERIMENT,
         "schema": SCHEMA,
         "pool": "fox",
@@ -1244,6 +1258,9 @@ def _manifest(settings, units):
         "pb_freeze_sha256": freeze_digest,
         "swe_profile_sha256": settings.get("swe_profile_sha256"),
     }
+    if settings.get("pb_agent_protocol") is not None:
+        manifest["pb_agent_protocol"] = settings["pb_agent_protocol"]
+    return manifest
 
 
 def _write_manifest(run_dir, payload):
@@ -1255,6 +1272,9 @@ def _write_manifest(run_dir, payload):
         for key in _LOCKED:
             if key in existing and existing.get(key) != payload.get(key):
                 raise PbStopped("fox_run_settings_mismatch")
+        if existing.get("pb_agent_protocol") != payload.get("pb_agent_protocol"):
+            # A run dir never mixes agent protocols, in either direction.
+            raise PbStopped("fox_run_settings_mismatch")
         return
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(_canonical(payload) + "\n", encoding="utf-8")
@@ -1313,7 +1333,8 @@ def run_arm(run_dir, *, arm, tasks=None, g0=False, models="all", request_cap=DEF
             online_update=False, differential_signal=False, role_map=None,
             probe_script_owner="p1", swe_profile=None, model_map=None, live=False,
             sender=None, execute=False, scorer=None, signal_override=None, clock=None,
-            data_dir=None, programbench_repo=None, image_seeder=None, pool_substitute=None):
+            data_dir=None, programbench_repo=None, image_seeder=None, pool_substitute=None,
+            pb_agent_protocol=None):
     """Run one arm in its own directory. Completed unit ids are skipped."""
     if arm not in ARMS:
         raise PbStopped("unknown_pb_arm")
@@ -1323,6 +1344,11 @@ def run_arm(run_dir, *, arm, tasks=None, g0=False, models="all", request_cap=DEF
     model_names = tuple(row.internal for row in specs)
     request_cap = _check_request_cap(request_cap)
     node_request_cap = _check_node_request_cap(node_request_cap, request_cap)
+    if pb_agent_protocol is not None:
+        if pb_agent_protocol not in PB_AGENT_PROTOCOLS:
+            raise PbStopped("unknown_pb_agent_protocol")
+        if node_request_cap is None:
+            raise PbStopped("pb_agent_protocol_requires_node_request_cap")
     unit_seconds = _check_positive(unit_seconds, "invalid_unit_seconds")
     read_timeout_s = _check_positive(read_timeout_s, "invalid_read_timeout")
     try:
@@ -1355,6 +1381,8 @@ def run_arm(run_dir, *, arm, tasks=None, g0=False, models="all", request_cap=DEF
         "programbench_repo": str(programbench_repo) if programbench_repo else None,
         "image_seeder": image_seeder,
     }
+    if pb_agent_protocol is not None:
+        settings["pb_agent_protocol"] = pb_agent_protocol
     initial_observations, profile_sha = ({}, None)
     if arm in {"A1", "A3"}:
         initial_observations, profile_sha = _initial_observations(settings)
@@ -1443,6 +1471,8 @@ def _run_unit(unit, run_dir, *, settings, specs, model_names, transport, limits,
         "container_name": _container_name(arm, unit.unit_id),
         "run_dir": str(run_dir),
     }
+    if settings.get("pb_agent_protocol") is not None:
+        record["pb_agent_protocol"] = settings["pb_agent_protocol"]
     state_dir = Path(run_dir) / "units" / unit.unit_id / "state"
     if state_dir.exists():
         shutil.rmtree(state_dir)
@@ -1480,6 +1510,8 @@ def _run_unit(unit, run_dir, *, settings, specs, model_names, transport, limits,
         arm, models=model_names, request_cap=settings["request_cap"], seed=unit.seed,
         online_update=settings["online_update"], dag=dag, prompt=prompt,
         node_request_cap=settings.get("node_request_cap"),
+        pb_agent_protocol=settings.get("pb_agent_protocol"),
+        implementer_node=settings["role_map"]["s1"],
     )
     adapter = adapter_for(group, config)
     observations = {}
@@ -1667,6 +1699,8 @@ def _add_common(parser, *, arm_required):
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--live", action="store_true")
     parser.add_argument("--execute", action="store_true")
+    parser.add_argument("--pb-agent-protocol", default=None, choices=PB_AGENT_PROTOCOLS,
+                        help="M19 opt-in. Omit for the M18 protocol.")
 
 
 def _kwargs_from_args(args):
@@ -1688,6 +1722,7 @@ def _kwargs_from_args(args):
         "execute": bool(args.execute and args.live),
         "data_dir": args.data_dir,
         "programbench_repo": args.programbench_repo,
+        **({"pb_agent_protocol": args.pb_agent_protocol} if args.pb_agent_protocol else {}),
     }
 
 

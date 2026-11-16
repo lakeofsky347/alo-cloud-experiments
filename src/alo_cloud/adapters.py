@@ -34,6 +34,7 @@ from .repro import REPRO_CRITERION_ID, REPRO_INSTRUCTION, cached_repro_v1
 from .review_isolation import role_is_review, snapshot_workspace, tree_digest
 from .sandbox import CRITERION_ID
 from .tool_loop import TOOL_LOOP_VERSION, persistent_tool_loop
+from .programbench_prompt import PB_AGENT_PROTOCOLS, PB_NODE_NOTICE_AT, PROGRAMBENCH_NODE_BUDGET_NOTICE
 
 ROUTING_MODES = ("thompson", "fixed", "random")
 FIXED_ROUTE_MODEL = G1_DEEPSEEK_FLASH_MODEL
@@ -494,7 +495,8 @@ class HeterogeneousALO:
                  planner_requests=None, verifier_requests=None, topology=None,
                  learn_quality=True, filter_resources_by_topics=False,
                  fixed_model=None, export_mode=None,
-                 pb_mode=False, pb_dag=None, pb_prompt=None):
+                 pb_mode=False, pb_dag=None, pb_prompt=None,
+                 pb_agent_protocol=None, pb_node_budget_nodes=None):
         if (type(max_turns) is not int or max_turns < 1
                 or type(max_attempts) is not int or max_attempts < 1):
             raise PilotStopped("invalid_alo_attempt_or_turn_limit")
@@ -566,6 +568,19 @@ class HeterogeneousALO:
             self.config["pb_mode"] = True
             self.config["pb_dag"] = pb_dag
             self.config["pb_prompt"] = pb_prompt or ""
+            if pb_agent_protocol is not None:
+                # Opt-in (M19). Stored only when set, so the default config is unchanged.
+                if pb_agent_protocol not in PB_AGENT_PROTOCOLS:
+                    raise PilotStopped("unknown_pb_agent_protocol")
+                if not node_request_caps:
+                    raise PilotStopped("pb_agent_protocol_requires_node_caps")
+                nodes = list(pb_node_budget_nodes or ())
+                if not nodes or not all(isinstance(n, str) and n in node_request_caps for n in nodes):
+                    raise PilotStopped("invalid_pb_node_budget_nodes")
+                self.config["pb_agent_protocol"] = pb_agent_protocol
+                self.config["pb_node_budget_nodes"] = nodes
+        elif pb_agent_protocol is not None or pb_node_budget_nodes is not None:
+            raise PilotStopped("pb_agent_protocol_requires_pb_mode")
         self.state = {"observations": {}, "worker_transcripts": {}, "planner_messages": []}
 
     def dump_state(self):
@@ -755,8 +770,18 @@ class HeterogeneousALO:
                 worker_system = system + "\n" + WORK_ORDER
                 if adapter.config.get("criterion_id") == REPRO_CRITERION_ID:
                     worker_system += "\n" + REPRO_INSTRUCTION
+                node_budget = None
+                if (adapter.config.get("pb_agent_protocol") == "node-budget-v1"
+                        and adapter.config.get("node_request_caps")
+                        and node_id in (adapter.config.get("pb_node_budget_nodes") or ())):
+                    node_budget = {"node": node_id, "notice": PROGRAMBENCH_NODE_BUDGET_NOTICE,
+                                   "notice_at": PB_NODE_NOTICE_AT}
                 result = persistent_tool_loop(BoundModel(services, self.model), prompt, messages,
-                    system=worker_system, max_turns=turn_cap)
+                    system=worker_system, max_turns=turn_cap, node_budget=node_budget)
+                if node_budget is not None:
+                    last["node_budget_notice_sent"] = bool(node_budget.get("sent"))
+                    if "sent_at_left" in node_budget:
+                        last["node_budget_notice_at_left"] = node_budget["sent_at_left"]
                 last["termination"] = result.get("termination")
                 last.update(model=self.model, submission_status=result["status"],
                             tool_index_after=getattr(services, "tools", None))

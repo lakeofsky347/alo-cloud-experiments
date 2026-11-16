@@ -122,31 +122,71 @@ def _diff_empty(services):
     return False
 
 
-def _budget_line(services):
+def _budget_line(services, node=None):
     pair = _requests_left(services)
     if pair is None:
-        return None, None
+        if node is None:
+            return None, None
+        return _node_line(node, None), None
     left, cap = pair
     line = f"requests left: {left}/{cap}" if cap is not None else f"requests left: {left}"
     nudge = EMPTY_DIFF_NUDGE if cap is not None and left <= 3 and _diff_empty(services) else None
+    if node is not None:
+        line = _node_line(node, line)
     return line, nudge
 
 
-def _append(messages, value, services=None):
-    line, nudge = _budget_line(services) if services is not None else (None, None)
+def _node_line(node, unit_line):
+    """This node's own remaining requests, then the unit line it used to see."""
+    left = max(node["cap"] - node["used"], 0)
+    line = f"requests left for your node {node['node']}: {left}/{node['cap']}"
+    if unit_line:
+        line += " (" + unit_line.replace("requests left: ", "unit: ", 1) + ")"
+    return line
+
+
+def _node_notice(messages, node):
+    """The node budget notice text, once, when this node has ``notice_at`` or fewer requests left.
+
+    It rides in the next observation (like ``empty_diff_nudge``), so no extra
+    message role is sent to the provider.
+    """
+    template = node.get("notice")
+    if not template or node.get("sent"):
+        return None
+    left = node["cap"] - node["used"]
+    if left > node["notice_at"]:
+        return None
+    prefix = template.split("{", 1)[0]
+    if any(prefix in str(m.get("content", "")) for m in messages if isinstance(m, dict)):
+        node["sent"] = True   # already in a resumed transcript
+        return None
+    node["sent"] = True
+    node["sent_at_left"] = left
+    return template.format(left=left, node=node["node"], cap=node["cap"])
+
+
+def _append(messages, value, services=None, node=None):
+    line, nudge = _budget_line(services, node) if services is not None else (
+        (_node_line(node, None), None) if node is not None else (None, None))
+    notice = _node_notice(messages, node) if node is not None else None
     if isinstance(value, str):
         text = value
         if line:
             text = text + "\n" + line
         if nudge:
             text = text + "\n" + nudge
+        if notice:
+            text = text + "\n" + notice
     else:
-        if line or nudge:
+        if line or nudge or notice:
             value = dict(value)
             if line:
                 value["requests_left"] = line
             if nudge:
                 value["empty_diff_nudge"] = nudge
+            if notice:
+                value["node_budget_notice"] = notice
         text = json.dumps(value, ensure_ascii=False, allow_nan=False)
     messages.append({"role": "user", "content": text})
 
@@ -170,7 +210,7 @@ def _finish(status, summary, termination, services):
             "length_stops": _length_stops(services)}
 
 
-def persistent_tool_loop(services, prompt, messages, *, system="", max_turns=10):
+def persistent_tool_loop(services, prompt, messages, *, system="", max_turns=10, node_budget=None):
     """Use at most max_turns model calls. A format error is feedback, not a tool call.
 
     An empty ``finish_reason=length`` turn, and an empty ``finish_reason=stop``
@@ -179,14 +219,31 @@ def persistent_tool_loop(services, prompt, messages, *, system="", max_turns=10)
     that was not reached before the request was sent gets the same continuation
     and does not end the unit. Provider ``tool_calls`` fields are ignored.
     Only ``dispatch_action`` runs tools.
+
+    ``node_budget`` (ProgramBench node-budget-v1, opt-in) is a dict with
+    ``node``, ``notice`` and ``notice_at``. When given, every observation shows
+    this node's own remaining requests (``max_turns`` is the node cap) before
+    the unit line, and ``notice`` is added once, as ``node_budget_notice`` in
+    the first observation that shows ``notice_at`` or fewer node requests left
+    (in the prompt if the cap itself is that small). With ``node_budget=None``
+    every message is byte-identical to before.
     """
     if type(max_turns) is not int or max_turns < 1 or not isinstance(messages, list):
         raise ProtocolError("positive turn limit and checkpoint-owned transcript list required")
     if not messages:
         messages.append({"role": "system", "content": SYSTEM_INSTRUCTIONS + system})
     messages.append({"role": "user", "content": prompt})
-    for _ in range(max_turns):
+    node = None
+    if node_budget is not None:
+        node = node_budget
+        node.update(cap=max_turns, used=0)
+        notice = _node_notice(messages, node)   # only when the node cap is <= notice_at
+        if notice:
+            messages[-1] = {"role": "user", "content": prompt + "\n\n" + notice}
+    for turn in range(max_turns):
         reply = services.complete(messages)
+        if node is not None:
+            node["used"] = turn + 1
         text = reply.get("text") if isinstance(reply, dict) else None
         # Retain the received text before parsing/dispatch. No provider-level
         # tool_calls are inspected or invoked, even if present in reply.
@@ -195,27 +252,27 @@ def persistent_tool_loop(services, prompt, messages, *, system="", max_turns=10)
             return _finish("failed", "pro_share_cap", "budget", services)
         if isinstance(reply, dict) and reply.get("provider_not_reached"):
             _append(messages, "The provider was not reached before the request was sent. "
-                    "Reply with ONE short action.", services)
+                    "Reply with ONE short action.", services, node)
             continue
         if isinstance(reply, dict) and reply.get("vendor_error"):
             _note_transport(services, "rejected")
             _append(messages, {"provider_error": "vendor_error",
                 "detail": "The provider rejected this request. It was not billed.",
-                "automatic_retry": False, "protocol_version": TOOL_LOOP_VERSION}, services)
+                "automatic_retry": False, "protocol_version": TOOL_LOOP_VERSION}, services, node)
             continue
         empty_visible = not (isinstance(text, str) and text.strip())
         finish = reply.get("finish_reason") if isinstance(reply, dict) else None
         if isinstance(reply, dict) and empty_visible and (reply.get("length_stop") or finish == "stop"):
             if reply.get("length_stop"):
                 _bump_length_stop(services)
-            _append(messages, LENGTH_STOP_NUDGE, services)
+            _append(messages, LENGTH_STOP_NUDGE, services, node)
             continue
         if text == "":
             _note_transport(services, "rejected")
             _append(messages, {"public_tool_error": "empty_assistant_turn",
                 "detail": "The assistant message was empty.",
                 "protocol_version": TOOL_LOOP_VERSION, "error_phase": "response_validation",
-                "required_response": FORMAT_RULE, "automatic_retry": False}, services)
+                "required_response": FORMAT_RULE, "automatic_retry": False}, services, node)
             continue
         action = None
         extra = 0
@@ -232,28 +289,28 @@ def persistent_tool_loop(services, prompt, messages, *, system="", max_turns=10)
         _note_transport(services, transport)
         if action is None:
             _append(messages, _error_feedback(services, ProtocolError("unparsed public action"),
-                                              phase="response_validation"), services)
+                                              phase="response_validation"), services, node)
             continue
         if set(action) <= {"final"} or (set(action) == {"final"}):
             if isinstance(action.get("final"), str) and action["final"].strip():
                 return _finish("completed", action["final"].strip(), "final", services)
             _append(messages, _error_feedback(services, ProtocolError("final requires exactly one nonempty string summary"),
-                                              phase="response_validation"), services)
+                                              phase="response_validation"), services, node)
             continue
         if "tool" not in action:
             _append(messages, _error_feedback(services, ProtocolError("one tool and arguments required"),
-                                              phase="response_validation"), services)
+                                              phase="response_validation"), services, node)
             continue
         try:
             result = dispatch_action(services, action)
         except (ValueError, TypeError, KeyError) as error:
-            _append(messages, _error_feedback(services, error, phase="service_argument_or_operation_validation"), services)
+            _append(messages, _error_feedback(services, error, phase="service_argument_or_operation_validation"), services, node)
             continue
         except BaseException as error:
             _append(messages, {"public_tool_interrupted": type(error).__name__, "tool": action["tool"],
                 "status": "unconfirmed", "automatic_retry": False,
                 "instruction": "Execution stopped. Do not assume this operation failed or repeat it without confirming its recorded side effects."},
-                services)
+                services, node)
             raise
         observation = {"tool": action["tool"], "result": result}
         if extra:
@@ -263,7 +320,7 @@ def persistent_tool_loop(services, prompt, messages, *, system="", max_turns=10)
             json.dumps(observation, ensure_ascii=False, allow_nan=False)
         except (ValueError, TypeError) as error:
             _append(messages, {"public_tool_result_unserializable": type(error).__name__, "tool": action["tool"],
-                "status": "unconfirmed", "automatic_retry": False}, services)
+                "status": "unconfirmed", "automatic_retry": False}, services, node)
             raise
-        _append(messages, observation, services)
+        _append(messages, observation, services, node)
     return _finish("failed", "public tool turn cap reached without a valid final submission", "turn_cap", services)

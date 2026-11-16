@@ -43,8 +43,11 @@ These are recorded in `manifest.json` and in that run's `pb_freeze` block. `pb_f
 | Online update | off. The arm stays on its initial profile | `--online-update` |
 | Request cap | 40 (also 64 or 80). Shared upper bound for the unit | `--request-cap` |
 | Per-node request cap | unset, except G0/M18 which gives p1 and p2 20 each | `--node-request-cap` |
+| Agent protocol (M19) | unset, the M18 protocol | `--pb-agent-protocol node-budget-v1` |
 | Per-request deadline | 600 seconds | `--read-timeout` |
 | Per-unit wall clock | 2400 seconds | `--unit-seconds` |
+
+`--pb-agent-protocol node-budget-v1` needs `--node-request-cap` and applies only to the two-node arms. The `s1` node (`p1` with the default map) sees its own remaining requests in every observation, for example `requests left for your node p1: 12/20 (unit: 32/40)`. The first observation that shows 6 or fewer node requests left also carries `node_budget_notice` (once): write the source and `compile.sh` now and run it once, because the next node cannot write files. No extra message or role is sent. The other node and A4 are unchanged; A4 requests are byte-identical with the flag on or off. Prompts and tools are not in `pb_freeze`, so the flag adds a `pb_agent_protocol` block there and the hash changes on purpose. Without the flag, the manifest, `pb_freeze_sha256` and every request are identical to `753e54a`. A run directory never mixes protocols.
 
 PB is fully frozen unless `--online-update` is set. With the default, A1, A2, and A3 use the initial profile on every task, and an in-task observation does not change the next assignment. Unknown compile or differential results are not written into learning state.
 
