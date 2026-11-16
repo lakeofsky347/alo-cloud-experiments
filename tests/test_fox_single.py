@@ -629,7 +629,7 @@ def _gateway_call(model, returned, usage=None, content='{"final":"ok"}'):
 def test_gateway_model_ids_accept_cosmetic_aliases_and_reject_other_models():
     assert r2_freeze_sha256() == FROZEN_R2
     kimi = resolve_model("fox/kimi-k3.1-pro")
-    assert kimi.accepted_aliases == ("kimi-k3p1-pro",)
+    assert kimi.accepted_aliases == ("kimi-k3p1-pro", "kimi-k3.1-pro-ta")
     assert all(
         row.accepted_aliases == ()
         for row in FOX_MODELS if row.internal != "fox/kimi-k3.1-pro")
@@ -730,7 +730,7 @@ def test_kimi_k3p1_alias_accepts_only_that_gateway_spelling():
     assert r2_freeze_sha256() == FROZEN_R2
     kimi = resolve_model("fox/kimi-k3.1-pro")
     assert kimi.upstream == "kimi-k3.1-pro"
-    assert kimi.accepted_aliases == ("kimi-k3p1-pro",)
+    assert kimi.accepted_aliases == ("kimi-k3p1-pro", "kimi-k3.1-pro-ta")
     qwen = resolve_model("fox/qwen3.8-max")
     assert qwen.accepted_aliases == ()
     for returned in ("kimi-k3p1-pro", "fw/kimi-k3p1-pro"):
@@ -855,3 +855,31 @@ def test_cli_estimate_and_run_dir_guard(tmp_path, capsys):
     assert main(["smoke", "--run-dir", str(tmp_path / "smoke"), "--split", "dev", "--limit", "3",
                  "--models", "fox/deepseek-flash"]) == 2
     assert "smoke_limit_is_1_or_2" in capsys.readouterr().out
+
+
+def test_kimi_ta_alias_is_accepted_and_the_returned_id_is_logged():
+    """Foxrouter returns ``kimi-k3.1-pro-ta`` for ``kimi-k3.1-pro`` since 2026-11-16."""
+    assert r2_freeze_sha256() == FROZEN_R2
+    kimi = resolve_model("fox/kimi-k3.1-pro")
+    assert kimi.upstream == "kimi-k3.1-pro"
+    assert model_match_kind("kimi-k3.1-pro-ta", kimi.upstream) == "mismatch"
+    for returned in ("kimi-k3.1-pro-ta", "fw/kimi-k3.1-pro-ta"):
+        row = _gateway_call(kimi, returned, content='{"final":"ok"}')
+        assert row["ok"] is True, returned
+        assert "failure" not in row
+        assert "model_mismatch" not in row
+        assert row["returned_model"] == returned
+        assert row["upstream_model"] == "kimi-k3.1-pro"
+        assert row["model_alias_normalized"] == {
+            "requested": "kimi-k3.1-pro", "returned": returned}
+        assert model_match_kind(returned, kimi.upstream, kimi.accepted_aliases) == "normalized"
+    for returned in ("kimi-k3.1-pro-tb", "kimi-k3.2-pro-ta", "kimi-k3.1-ta"):
+        row = _gateway_call(kimi, returned)
+        assert row["ok"] is False, returned
+        assert row["failure"] == "provider_error"
+        assert row["model_mismatch"] is True
+        assert row["returned_model"] == returned
+    for name in ("fox/qwen3.8-max", "fox/glm-5.3-flash", "fox/mimo-v2.6-flash", "fox/deepseek-flash"):
+        row = _gateway_call(resolve_model(name), "kimi-k3.1-pro-ta")
+        assert row["ok"] is False, name
+        assert row["model_mismatch"] is True
