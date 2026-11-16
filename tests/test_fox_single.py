@@ -635,6 +635,8 @@ def test_gateway_model_ids_accept_cosmetic_aliases_and_reject_other_models():
         for row in FOX_MODELS if row.internal != "fox/kimi-k3.1-pro")
     accepted = (
         ("fox/deepseek-flash", "deepseek-v4.1-flash"),
+        # Foxrouter returned this for deepseek-flash on 2026-11-16 16:26 SGT (accepted by chen 17:14).
+        ("fox/deepseek-flash", "group/deepseek-v4.1-flash"),
         ("fox/kimi-k3.1-pro", "kimi-k3-1-pro"),
         ("fox/qwen3.8-max", "qwen/qwen3.8-max"),
         ("fox/qwen3.8-flash", "qwen3.8-flash"),
