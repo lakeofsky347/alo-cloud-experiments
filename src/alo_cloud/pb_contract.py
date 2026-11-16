@@ -13,6 +13,7 @@ import hashlib
 from pathlib import Path, PurePosixPath
 import re
 import shlex
+import time
 
 from .errors import ProtocolError
 from .public_tools import TOOLS
@@ -373,12 +374,46 @@ def _strip_redirects(tokens):
     return cleaned
 
 
+# Characters that make posix ``shlex.split(comments=True)`` do more than return
+# the line as one word: its whitespace, quotes, escape, and comment start. ``\s``
+# is wider than shlex's whitespace, so such a line just takes the slow path.
+_SHLEX_ACTIVE = re.compile(r"[\s'\"\\#]")
+
+
+def _shlex_words(line):
+    """``shlex.split(line, comments=True, posix=True)`` with one exact fast path.
+
+    shlex grows each token one character at a time, which is quadratic in the
+    token length: one 5 MB word took hours. A line with none of the characters
+    above is a single word, which is exactly what shlex returns for it
+    (an empty line still goes to shlex, which returns ``[]``).
+    """
+    if line and _SHLEX_ACTIVE.search(line) is None:
+        return [line]
+    return shlex.split(line, comments=True, posix=True)
+
+
+class SubmissionScanDeadline(Exception):
+    """The end-of-unit submission scan ran past its deadline."""
+
+
+def _deadline_check(deadline, clock):
+    if deadline is None:
+        return None
+    clock = clock or time.monotonic
+
+    def check():
+        if clock() > deadline:
+            raise SubmissionScanDeadline("submission_scan_deadline")
+    return check
+
+
 def _simple_commands(line):
     """Split one shell line into argv lists, dropping redirects and ``|| true``."""
     if not isinstance(line, str) or not line.strip():
         return []
     try:
-        tokens = shlex.split(line, comments=True, posix=True)
+        tokens = _shlex_words(line)
     except ValueError:
         return []
     groups = []
@@ -409,7 +444,7 @@ def is_excluded_probe(relative):
     return PROBE_DIR in PurePosixPath(relative).parts
 
 
-def _text_submission_violations(text, *, allow_reference_execution):
+def _text_submission_violations(text, *, allow_reference_execution, check=None):
     """Violation kinds in one text file.
 
     Running the reference through its normal interface is ``invokes_reference``
@@ -428,6 +463,8 @@ def _text_submission_violations(text, *, allow_reference_execution):
     if not allow_reference_execution and (_INVOKE.search(text) or _DIRECT_CALL.search(text)):
         found.append("invokes_reference")
     for line in text.splitlines():
+        if check is not None:
+            check()
         for argv in _simple_commands(line):
             if _installs_own_build(argv):
                 continue
@@ -1156,20 +1193,21 @@ def submission_build_graph(root):
     return seen, complete
 
 
-def _hard_reference_kinds(text):
+def _hard_reference_kinds(text, check=None):
     """Copy, read, inspect, or instrument. A normal-interface run is not here."""
     kinds = []
-    for kind in _text_submission_violations(text, allow_reference_execution=True):
+    for kind in _text_submission_violations(text, allow_reference_execution=True, check=check):
         if kind != "invokes_reference" and kind not in kinds:
             kinds.append(kind)
     return kinds
 
 
-def _invokes_reference(text):
-    return "invokes_reference" in _text_submission_violations(text, allow_reference_execution=False)
+def _invokes_reference(text, check=None):
+    return "invokes_reference" in _text_submission_violations(
+        text, allow_reference_execution=False, check=check)
 
 
-def submission_reference_scan(root, *, reference_sha256=None, probe_paths=()):
+def submission_reference_scan(root, *, reference_sha256=None, probe_paths=(), deadline=None, clock=None):
     """Flag a submission that copies, embeds, wraps, or reads the reference.
 
     ``./executable`` itself is the reference and is not a submitted file.
@@ -1180,7 +1218,12 @@ def submission_reference_scan(root, *, reference_sha256=None, probe_paths=()):
     is a warning, not a rejection. A build input that embeds, copies, wraps,
     execs, reads, or runs ``objdump`` / ``strings`` / ``strace`` / ``ltrace``
     on the reference is rejected.
+
+    ``deadline`` (a ``clock()`` value, default ``time.monotonic``) is checked
+    before each file and each scanned line; past it the scan raises
+    ``SubmissionScanDeadline``. ``None`` keeps the scan unbounded.
     """
+    check = _deadline_check(deadline, clock)
     root = Path(root)
     digest = reference_sha256 if isinstance(reference_sha256, str) and reference_sha256 else reference_digest(root)
     mode_ok = None
@@ -1203,6 +1246,8 @@ def submission_reference_scan(root, *, reference_sha256=None, probe_paths=()):
         }
     build_graph, graph_complete = submission_build_graph(root)
     for path in sorted(root.rglob("*")):
+        if check is not None:
+            check()
         if not path.is_file() or path.is_symlink():
             continue
         relative = path.relative_to(root).as_posix()
@@ -1225,11 +1270,11 @@ def submission_reference_scan(root, *, reference_sha256=None, probe_paths=()):
         if digest and digest in text:
             violations.append({"kind": "embedded_reference_hash", "path": relative})
             continue
-        hard = _hard_reference_kinds(text)
+        hard = _hard_reference_kinds(text, check)
         if hard:
             violations.append({"kind": hard[0], "path": relative})
             continue
-        if _invokes_reference(text):
+        if _invokes_reference(text, check):
             # An unresolved glob or variable means the file might still be a
             # build input. Do not warn it away or drop it from the archive.
             if relative in build_graph or not graph_complete:
@@ -1238,6 +1283,8 @@ def submission_reference_scan(root, *, reference_sha256=None, probe_paths=()):
                 warnings.append({"kind": "unused_probe_invokes_reference", "path": relative})
                 unused_probes.append(relative)
     for probe in probe_paths or ():
+        if check is not None:
+            check()
         path = Path(probe)
         try:
             resolved = path.resolve()
@@ -1267,7 +1314,7 @@ def submission_reference_scan(root, *, reference_sha256=None, probe_paths=()):
         if digest and digest in text:
             violations.append({"kind": "embedded_reference_hash", "path": path.name})
             continue
-        for kind in _text_submission_violations(text, allow_reference_execution=True):
+        for kind in _text_submission_violations(text, allow_reference_execution=True, check=check):
             violations.append({"kind": kind, "path": path.name})
             break
     return {
