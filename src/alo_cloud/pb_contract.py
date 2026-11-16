@@ -70,9 +70,18 @@ _BINARY_READ = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 _INVOKE = re.compile(
-    r"(?:\bexec\b|\bos\.system\b|\bsubprocess\b|\bPopen\b|\bos\.exec[a-z_]*\b)"
-    r".{0,160}(?<![\w.])(?<!build/)(?:\./|/workspace/)executable\b",
+    r"(?:\bexec(?:l|v|le|lp|vpe)?\b|\bos\.system\b|\bsystem\s*\(|\bpopen\s*\(|"
+    r"\bsubprocess\b|\bPopen\b|\bos\.exec[a-z_]*\b)"
+    r".{0,200}(?<![\w.])(?<!build/)(?:\./|/workspace/)executable\b",
     re.IGNORECASE | re.DOTALL,
+)
+# objdump/strings/strace/ltrace (and the same family) aimed at the reference
+# from Python or C, where the line is not a shell command.
+_FORBIDDEN_TOOL_CALL = re.compile(
+    r"(?is)(?:subprocess|\bos\.system\b|\bsystem\s*\(|\bpopen\s*\(|\bexecl|\bexecv|\bPopen\b)"
+    r".{0,240}\b(objdump|llvm-objdump|strings|hexdump|xxd|readelf|eu-readelf|ghidra|"
+    r"strace|ltrace|gdb|lldb|nm)\b"
+    r".{0,160}(?<![\w.])(?<!build/)(?:\./|/workspace/)?executable\b"
 )
 _DIRECT_CALL = re.compile(
     r"(?m)^[ \t]*(?:(?:sudo|command|exec)[ \t]+)*(?:\./|/workspace/)executable(?:[ \t]|$)",
@@ -351,7 +360,9 @@ def _strip_redirects(tokens):
     index = 0
     while index < len(tokens):
         token = tokens[index]
-        if token in {">", ">>", "<", ">&", "&>"}:
+        bare_redirect = token in {">", ">>", "<", ">&", "&>"} or (
+            isinstance(token, str) and re.fullmatch(r"\d*(?:>>?|&>)", token))
+        if bare_redirect:
             index += 2 if index + 1 < len(tokens) else 1
             continue
         if isinstance(token, str) and _REDIRECT_TOKEN.fullmatch(token):
@@ -401,9 +412,11 @@ def is_excluded_probe(relative):
 def _text_submission_violations(text, *, allow_reference_execution):
     """Violation kinds in one text file.
 
-    Running the reference through its normal interface is allowed only for a
-    probe that is outside the submission or excluded from it. Copying,
-    wrapping, or reading the reference is never allowed.
+    Running the reference through its normal interface is ``invokes_reference``
+    unless ``allow_reference_execution`` is set. The scan turns that into a
+    warning when the file is outside the build graph, and a rejection when
+    the build uses the file. Copying, reading, inspecting, or instrumenting
+    the reference is never allowed.
     """
     if not isinstance(text, str) or not text:
         return []
@@ -421,9 +434,17 @@ def _text_submission_violations(text, *, allow_reference_execution):
             if _reads_reference_bytes(argv):
                 found.append("reads_reference_bytes")
                 break
+            if (argv and not is_reference_path(argv[0]) and _targets_reference(argv)
+                    and _basename(argv[0]) in _INSTRUMENT):
+                found.append("instruments_reference")
+                break
             if _copies_reference(argv):
                 found.append("copies_reference")
                 break
+    forbidden = _FORBIDDEN_TOOL_CALL.search(text)
+    if forbidden:
+        tool = forbidden.group(1).lower()
+        found.append("instruments_reference" if tool in _INSTRUMENT else "inspects_reference")
     return found
 
 
@@ -651,14 +672,514 @@ def _looks_text(path):
     return False
 
 
+_BUILD_SUFFIXES = frozenset({
+    ".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".hh", ".rs", ".go", ".py",
+    ".sh", ".bash", ".s", ".java", ".js", ".ts", ".mak", ".cmake", ".toml",
+    ".mod", ".sum", ".f", ".f90", ".rb", ".pl", ".m", ".mm", ".swift", ".kt",
+    ".cs", ".php", ".lua", ".r", ".asm", ".inc", ".in", ".pyi", ".pyx", ".pxd",
+    ".zig", ".d", ".ml", ".mli", ".hs", ".lhs", ".cabal", ".gradle", ".kts",
+    ".xml", ".nim",
+})
+_BUILD_NAMES = frozenset({
+    "makefile", "gnumakefile", "cargo.toml", "cargo.lock", "go.mod", "go.sum",
+    "cmakelists.txt", "meson.build", "build.gradle", "pom.xml", "package.json",
+    "requirements.txt", "setup.py", "pyproject.toml", "compile.sh",
+})
+_PROJECT_GLOBS = {
+    "cargo": ("Cargo.toml", "Cargo.lock", "build.rs", "src/**/*.rs"),
+    "go": ("go.mod", "go.sum", "**/*.go"),
+    "make": ("Makefile", "makefile", "GNUmakefile", "**/*.mk"),
+    "cmake": ("CMakeLists.txt", "**/*.cmake", "meson.build"),
+}
+
+
+def _build_input_name(relative):
+    """True for a source, script, or project file the build can name."""
+    path = PurePosixPath(relative)
+    if path.name == REFERENCE_BASENAME and "build" not in path.parts[:-1]:
+        return False
+    if path.suffix.lower() in _BUILD_SUFFIXES:
+        return True
+    return path.name.lower() in _BUILD_NAMES
+
+
+def _resolve_existing(root, token, base_dir):
+    if not isinstance(token, str):
+        return None
+    text = token.strip().strip("\"'")
+    if not text or text.startswith(("-", "$")) or "://" in text or _token_is_glob(text):
+        return None
+    if text.startswith("/"):
+        return None
+    # ``../helper.h`` is a build input when it still lands inside the submission.
+    candidate = (base_dir / text)
+    try:
+        resolved = candidate.resolve()
+        root_resolved = root.resolve()
+        if not resolved.is_file() or resolved.is_symlink() or not resolved.is_relative_to(root_resolved):
+            return None
+    except OSError:
+        return None
+    relative = resolved.relative_to(root_resolved).as_posix()
+    if not _build_input_name(relative):
+        return None
+    return relative
+
+
+def _token_is_glob(text):
+    return any(char in text for char in "*?[")
+
+
+def _token_is_unresolved_reference(text):
+    """A shell variable or substitution whose files this scan cannot name."""
+    if not isinstance(text, str) or not text:
+        return False
+    return text.startswith("$") or "${" in text or "`" in text or "$(" in text
+
+
+def _brace_group(text):
+    """One ``{a,b}`` group, or None when the braces are ordinary punctuation."""
+    if text.count("{") != 1 or text.count("}") != 1:
+        return None
+    match = re.search(r"\{([^{}]*)\}", text)
+    if match is None or "," not in match.group(1):
+        return None
+    return match
+
+
+def _brace_expand(text):
+    """Expand one ``{a,b}`` group. Nested braces are left unresolved."""
+    match = _brace_group(text)
+    if match is None:
+        return [], False
+    start, end = match.span()
+    options = [part for part in match.group(1).split(",") if part]
+    if not options:
+        return [], False
+    return [text[:start] + part + text[end:] for part in options], True
+
+
+def _glob_matches(root, pattern, base_dir):
+    """Files a relative glob names. ``False`` means the pattern did not resolve."""
+    if not pattern or pattern.startswith("/") or ".." in PurePosixPath(pattern).parts:
+        return [], False
+    found = []
+    saw_file = False
+    bases = [base_dir]
+    if base_dir != root:
+        bases.append(root)
+    try:
+        root_resolved = root.resolve()
+    except OSError:
+        return [], False
+    for base in bases:
+        try:
+            matches = list(base.glob(pattern))
+        except (OSError, ValueError):
+            return [], False
+        for path in matches:
+            if path.is_symlink() or not path.is_file():
+                continue
+            saw_file = True
+            try:
+                relative = path.resolve().relative_to(root_resolved).as_posix()
+            except OSError:
+                return [], False
+            if _build_input_name(relative):
+                found.append(relative)
+    if not saw_file:
+        return [], False
+    return found, True
+
+
+def _expand_build_token(root, token, base_dir):
+    """Build inputs named by one shell token.
+
+    The second value is False when the token might name inputs this scan
+    cannot list. An incomplete graph must not be treated as proof that a
+    file is unused.
+    """
+    if not isinstance(token, str):
+        return [], True
+    text = token.strip().strip("\"'")
+    if not text or text.startswith("-") or "://" in text:
+        return [], True
+    if _token_is_unresolved_reference(text):
+        return [], False
+    if _brace_group(text) is not None:
+        patterns, brace_ok = _brace_expand(text)
+        if not brace_ok:
+            return [], False
+    elif _token_is_glob(text):
+        patterns = [text]
+    else:
+        found = _resolve_existing(root, text, base_dir)
+        if found is None and base_dir != root:
+            found = _resolve_existing(root, text, root)
+        return ([found] if found else []), True
+    found = []
+    resolved_any = False
+    for pattern in patterns:
+        if not _token_is_glob(pattern):
+            resolved = _resolve_existing(root, pattern, base_dir)
+            if resolved is None and base_dir != root:
+                resolved = _resolve_existing(root, pattern, root)
+            if resolved:
+                found.append(resolved)
+                resolved_any = True
+            continue
+        matches, ok = _glob_matches(root, pattern, base_dir)
+        if not ok:
+            continue
+        found.extend(matches)
+        resolved_any = True
+    if not resolved_any:
+        return found, False
+    return found, True
+
+
+def _include_paths(text):
+    if not isinstance(text, str):
+        return []
+    return re.findall(r'#\s*include\s+"([^"]+)"', text)
+
+
+def _python_modules(text):
+    if not isinstance(text, str):
+        return []
+    names = []
+    for match in re.finditer(r"(?m)^\s*(?:from\s+([A-Za-z_][\w.]*)\s+import|import\s+([A-Za-z_][\w.]*))", text):
+        name = match.group(1) or match.group(2)
+        names.append(name.split(",")[0].strip().split(" as ")[0].strip())
+    return names
+
+
+def _project_files(root, tool):
+    patterns = _PROJECT_GLOBS.get(tool) or ()
+    found = []
+    for pattern in patterns:
+        for path in root.glob(pattern):
+            if not path.is_file() or path.is_symlink():
+                continue
+            try:
+                relative = path.resolve().relative_to(root.resolve()).as_posix()
+            except OSError:
+                continue
+            if _build_input_name(relative) or path.name.lower() in _BUILD_NAMES:
+                found.append(relative)
+    return found
+
+
+def _build_tool(argv):
+    if not argv:
+        return None
+    base = _basename(argv[0])
+    if base in {"cargo", "rustc"}:
+        return "cargo"
+    if base == "go" and any(token in {"build", "install", "test"} for token in argv[1:]):
+        return "go"
+    if base == "make":
+        return "make"
+    if base in {"cmake", "meson", "ninja"}:
+        return "cmake"
+    return None
+
+
+_SHELL_FLOW = frozenset({
+    "if", "then", "else", "elif", "fi", "while", "until", "for", "do", "done",
+    "case", "esac", "select", "time", "coproc",
+})
+
+
+def _shell_tokens(text):
+    """Split a shell script. ``None`` means the quotes do not close."""
+    tokens = []
+    index = 0
+    length = len(text)
+    while index < length:
+        char = text[index]
+        if char in " \t\r":
+            index += 1
+            continue
+        if char == "\n":
+            if not tokens or tokens[-1] != "\n":
+                tokens.append("\n")
+            index += 1
+            continue
+        if char == "#":
+            while index < length and text[index] != "\n":
+                index += 1
+            continue
+        if char in "\"'":
+            quote = char
+            index += 1
+            buffer = []
+            while index < length and text[index] != quote:
+                if quote == "\"" and text[index] == "\\" and index + 1 < length:
+                    buffer.append(text[index + 1])
+                    index += 2
+                    continue
+                buffer.append(text[index])
+                index += 1
+            if index >= length:
+                return None
+            index += 1
+            tokens.append("".join(buffer))
+            continue
+        if text.startswith("&&", index) or text.startswith("||", index):
+            tokens.append(text[index:index + 2])
+            index += 2
+            continue
+        if char in "();|&{}":
+            tokens.append(char)
+            index += 1
+            continue
+        if char in "<>":
+            end = index + 1
+            while end < length and text[end] in "<>&":
+                end += 1
+            tokens.append(text[index:end])
+            index = end
+            continue
+        end = index + 1
+        while end < length and text[end] not in " \t\r\n#\"'();|&{}<>":
+            if text.startswith("&&", end) or text.startswith("||", end):
+                break
+            end += 1
+        tokens.append(text[index:end])
+        index = end
+    return tokens
+
+
+def _resolve_shell_dir(root, cwd, token):
+    """A directory inside the submission, or None when the token is not one."""
+    if not isinstance(token, str):
+        return None
+    text = token.strip().strip("\"'")
+    if (not text or text == "-" or text.startswith(("-", "/"))
+            or _token_is_unresolved_reference(text) or _token_is_glob(text)):
+        return None
+    candidate = cwd / text
+    try:
+        resolved = candidate.resolve()
+        root_resolved = root.resolve()
+        if (not resolved.is_dir() or resolved.is_symlink()
+                or not resolved.is_relative_to(root_resolved)):
+            return None
+    except OSError:
+        return None
+    return resolved
+
+
+class _BuildShell:
+    """Working directory while reading one shell script for build inputs.
+
+    ``cd``, ``pushd``, and ``popd`` move ``cwd``. A ``(...)`` subshell gets
+    its own directory and stack, then the parent is restored. A change or a
+    construct this walker cannot follow sets ``complete`` false.
+    """
+
+    def __init__(self, root, cwd):
+        self.root = root
+        self.cwd = cwd
+        self.stack = []
+        self.files = []
+        self.complete = True
+
+    def consume(self, tokens):
+        index = 0
+        while index < len(tokens):
+            token = tokens[index]
+            if token in _SHELL_SPLIT or token in {"&", "\n", "{", "}"}:
+                index += 1
+                continue
+            if token == "(":
+                end = _matching_paren(tokens, index)
+                if end is None:
+                    self.complete = False
+                    index += 1
+                    continue
+                child = _BuildShell(self.root, self.cwd)
+                child.stack = list(self.stack)
+                child.consume(tokens[index + 1:end])
+                self.files.extend(child.files)
+                self.complete = self.complete and child.complete
+                index = end + 1
+                continue
+            if token == ")":
+                self.complete = False
+                index += 1
+                continue
+            if token in _SHELL_FLOW:
+                self.complete = False
+                index += 1
+                continue
+            argv = []
+            while index < len(tokens) and tokens[index] not in _SHELL_SPLIT | {"&", "\n", "(", ")", "{", "}"}:
+                argv.append(tokens[index])
+                index += 1
+            self._command(_strip_redirects(argv))
+
+    def _command(self, argv):
+        if not argv:
+            return
+        base = _basename(argv[0])
+        if base == "cd":
+            self._move(argv, push=False)
+            return
+        if base == "pushd":
+            self._move(argv, push=True)
+            return
+        if base == "popd":
+            if len(argv) != 1 or not self.stack:
+                self.complete = False
+                return
+            self.cwd = self.stack.pop()
+            return
+        tool = _build_tool(argv)
+        if tool:
+            for found in _project_files(self.root, tool):
+                if not is_excluded_probe(found):
+                    self.files.append(found)
+        for token in argv:
+            found, token_ok = _expand_build_token(self.root, token, self.cwd)
+            if not token_ok:
+                self.complete = False
+            self.files.extend(found)
+
+    def _move(self, argv, *, push):
+        operands = [token for token in argv[1:] if isinstance(token, str) and not token.startswith("-")]
+        if len(operands) != 1:
+            self.complete = False
+            return
+        resolved = _resolve_shell_dir(self.root, self.cwd, operands[0])
+        if resolved is None:
+            self.complete = False
+            return
+        if push:
+            self.stack.append(self.cwd)
+        self.cwd = resolved
+
+
+def _matching_paren(tokens, open_index):
+    depth = 0
+    for index in range(open_index, len(tokens)):
+        if tokens[index] == "(":
+            depth += 1
+        elif tokens[index] == ")":
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
+
+
+_SHELL_SUFFIXES = frozenset({".sh", ".bash", ".ksh", ".zsh"})
+
+
+def _is_shell_script(path, text):
+    """Shell completeness applies only to shell scripts, not to C or Python."""
+    if path.suffix.lower() in _SHELL_SUFFIXES or path.name.lower() in {"compile.sh", "configure"}:
+        return True
+    first = ""
+    if isinstance(text, str) and text.lstrip():
+        first = text.lstrip().splitlines()[0]
+    if first.startswith("#!") and re.search(r"\b(?:sh|bash|dash|ksh|zsh)\b", first):
+        return True
+    return False
+
+
+def _shell_build_inputs(text, root, start):
+    tokens = _shell_tokens(text)
+    if tokens is None:
+        return [], False
+    walker = _BuildShell(root, start)
+    walker.consume(tokens)
+    return walker.files, walker.complete
+
+
+def submission_build_graph(root):
+    """Files reachable from ``compile.sh``, and whether that list is complete.
+
+    A behaviour probe that ``compile.sh`` never names, and that no file in
+    that graph names, is not part of the submitted program. ``cd``,
+    ``pushd``, ``popd``, and ``(...)`` subshells move the directory used for
+    relative paths. A glob, variable, or directory change that does not
+    resolve makes the graph incomplete: callers must not treat every other
+    file as unused.
+    """
+    root = Path(root)
+    entry = root / "compile.sh"
+    if not entry.is_file() or entry.is_symlink():
+        return set(), True
+    pending = ["compile.sh"]
+    seen = set()
+    complete = True
+    while pending:
+        relative = pending.pop()
+        if relative in seen:
+            continue
+        seen.add(relative)
+        path = root / relative
+        if not path.is_file() or path.is_symlink():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            continue
+        base_dir = path.parent
+        for include in _include_paths(text):
+            found = _resolve_existing(root, include, base_dir)
+            if found and found not in seen:
+                pending.append(found)
+            elif found is None and ".." in PurePosixPath(include).parts:
+                # A parent-relative include that escapes the tree, or does not
+                # exist, is not proof that every other file is unused.
+                complete = False
+        for module in _python_modules(text):
+            parts = module.split(".")
+            for candidate in (base_dir, root):
+                file_name = "/".join(parts) + ".py"
+                found = _resolve_existing(root, file_name, candidate)
+                if found and found not in seen:
+                    pending.append(found)
+                package = "/".join(parts) + "/__init__.py"
+                found = _resolve_existing(root, package, candidate)
+                if found and found not in seen:
+                    pending.append(found)
+        if _is_shell_script(path, text):
+            found, shell_complete = _shell_build_inputs(text, root, base_dir)
+            if not shell_complete:
+                complete = False
+            for item in found:
+                if item not in seen:
+                    pending.append(item)
+    return seen, complete
+
+
+def _hard_reference_kinds(text):
+    """Copy, read, inspect, or instrument. A normal-interface run is not here."""
+    kinds = []
+    for kind in _text_submission_violations(text, allow_reference_execution=True):
+        if kind != "invokes_reference" and kind not in kinds:
+            kinds.append(kind)
+    return kinds
+
+
+def _invokes_reference(text):
+    return "invokes_reference" in _text_submission_violations(text, allow_reference_execution=False)
+
+
 def submission_reference_scan(root, *, reference_sha256=None, probe_paths=()):
     """Flag a submission that copies, embeds, wraps, or reads the reference.
 
     ``./executable`` itself is the reference and is not a submitted file.
     A ``compile.sh`` that installs the agent's own ``build/...`` output onto
-    ``./executable`` is the legal output path, not a wrapper. A behaviour-probe
-    script under ``.pb-probe/`` or passed in ``probe_paths`` (outside the
-    submission) may run the reference through its normal interface.
+    ``./executable`` is the legal output path, not a wrapper. A file the
+    build graph does not use, including a root ``probe.py`` or a script under
+    ``.pb-probe/``, may run the reference through its normal interface. That
+    is a warning, not a rejection. A build input that embeds, copies, wraps,
+    execs, reads, or runs ``objdump`` / ``strings`` / ``strace`` / ``ltrace``
+    on the reference is rejected.
     """
     root = Path(root)
     digest = reference_sha256 if isinstance(reference_sha256, str) and reference_sha256 else reference_digest(root)
@@ -667,15 +1188,20 @@ def submission_reference_scan(root, *, reference_sha256=None, probe_paths=()):
     if reference.is_file() and not reference.is_symlink():
         mode_ok = reference_is_execute_only(reference.stat().st_mode)
     violations = []
+    warnings = []
+    unused_probes = []
     if mode_ok is False:
         violations.append({"kind": "reference_not_execute_only", "path": REFERENCE_BASENAME})
     if not root.is_dir():
         return {
             "ok": not violations,
             "violations": violations,
+            "warnings": warnings,
+            "unused_probes": unused_probes,
             "reference_sha256": digest,
             "reference_execute_only": mode_ok,
         }
+    build_graph, graph_complete = submission_build_graph(root)
     for path in sorted(root.rglob("*")):
         if not path.is_file() or path.is_symlink():
             continue
@@ -699,10 +1225,18 @@ def submission_reference_scan(root, *, reference_sha256=None, probe_paths=()):
         if digest and digest in text:
             violations.append({"kind": "embedded_reference_hash", "path": relative})
             continue
-        allow_execution = is_excluded_probe(relative)
-        for kind in _text_submission_violations(text, allow_reference_execution=allow_execution):
-            violations.append({"kind": kind, "path": relative})
-            break
+        hard = _hard_reference_kinds(text)
+        if hard:
+            violations.append({"kind": hard[0], "path": relative})
+            continue
+        if _invokes_reference(text):
+            # An unresolved glob or variable means the file might still be a
+            # build input. Do not warn it away or drop it from the archive.
+            if relative in build_graph or not graph_complete:
+                violations.append({"kind": "invokes_reference", "path": relative})
+            else:
+                warnings.append({"kind": "unused_probe_invokes_reference", "path": relative})
+                unused_probes.append(relative)
     for probe in probe_paths or ():
         path = Path(probe)
         try:
@@ -739,6 +1273,8 @@ def submission_reference_scan(root, *, reference_sha256=None, probe_paths=()):
     return {
         "ok": not violations,
         "violations": violations,
+        "warnings": warnings,
+        "unused_probes": unused_probes,
         "reference_sha256": digest,
         "reference_execute_only": mode_ok,
     }

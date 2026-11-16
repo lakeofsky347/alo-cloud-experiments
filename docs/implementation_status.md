@@ -8,6 +8,8 @@
 
 2026-11-14：`fox-alo-learn-v1` 把 ALO 多模型学习流接到 Foxrouter 池（见 [fox_alo_learn.md](fox_alo_learn.md)）。`--pool fox` 使用 fox-single 的客户端、别名规则、墙钟截止和原样 cost／credit／quota。池成员可由 `--models` 或 `--models-file` 选子集。国内池和 CNY 账本不走这条命令；`python -m alo_cloud.run --arm g2-learn` 会指向它，不进入 `iter_r2_units`，也不改 `r2_freeze_sha256`。六条链是 persist／reset／resources-only × forward／reverse，各用独立 run dir、run id、workdir 和容器名。链内按顺序跑，`--turn-cap` 默认 24。已完成的 `unit_id` 会跳过。persist 链结束后 `export` 对最终 profile 调用 `export_transfer_package`。离线测试不发请求。
 
+2026-11-16：`fox-pb-v1` 的提交扫描把构建图用不到、且只通过正常接口运行 `./executable` 的探测脚本（含仓库根的 `probe.py`）记成警告，不因此拒绝提交，打包时也不放入 `submission.tar.gz`。构建所用文件若嵌入、复制、包装、执行或读取参考二进制，或对其使用 `objdump` / `strings` / `strace` / `ltrace`，仍然拒绝；拒绝的单元记 0 分和原因，离线官方分数另记在标注字段里。提前停止的单元从检查点里的指派写入结果记录。G0/M18 给 p1 和 p2 各 20 次请求，单元总帽 40 仍是上限；p1 用尽自己的帽之后继续跑 p2。默认决策冻结哈希不变。这些改动不进入 `r2_freeze_sha256`。
+
 2026-11-15：`fox-pb-v1` 的 G0 管线与官方 `895f659` 对齐。每条沙箱命令使用独立容器名，超时后 `docker rm -f`；容器名冲突不再记成 daemon 不可用。提交扫描允许把 `build/...` 安装到 `./executable`，并允许 `.pb-probe/` 里只通过正常接口运行参考二进制的探测脚本；提交物里嵌入、复制、包装、执行或读取参考字节仍然拒绝。`compile.sh` 必须在仓库根产出 `./executable`。公开信号在编译前把镜像里的参考文件移开（不读字节），再用官方同样的 `./executable` 做差分。只读审查在还原工作区前放开镜像文件的写权限，但保持参考二进制为 mode 111。这些改动不进入 `r2_freeze_sha256`。
 
 2026-11-14：`fox-pb-v1` 是 ProgramBench 迁移臂（见 [fox_pb.md](fox_pb.md)）。池是 fox 池里的 `deepseek-flash`、`kimi-k3.1-pro`、`mimo-v2.6-flash`、`glm-5.3-flash`，不收 qwen，也不收任何带 `omni` 的别名。A1 只读导入 SWE `fox_learn export` 的冻结 profile，A2 从共同先验冷启动，A3 只带资源观测，A4 是单节点 `deepseek-flash`，A5 用同一模型担任 p1 和 p2。默认全冻结：不跨题更新，题内观测不改变指派；`--online-update` 才打开并写入清单。公开信号默认只看 `compile.sh`；`--differential-signal` 才加上对 `./executable` 的黑盒 I/O 对照。参考二进制保持 mode 111，角色契约和命令过滤拒绝对其反汇编、插桩、读字节、复制和联网。提交扫描拒绝包装、调用或嵌入该参考文件。这些开关记在运行清单的 `pb_freeze` 里，不改 `r2_freeze_sha256`。离线测试不发请求，也不跑 Docker。
