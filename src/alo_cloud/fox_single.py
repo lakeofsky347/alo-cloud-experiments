@@ -85,9 +85,9 @@ def _now():
     return datetime.now(timezone.utc)
 
 
-def key_configured():
+def key_configured(env_name=FOX_KEY_ENV):
     """True when the env var holds a non-empty single-line key. The value is not returned."""
-    value = os.environ.get(FOX_KEY_ENV)
+    value = os.environ.get(env_name)
     try:
         return (isinstance(value, str) and value != "" and value.strip() == value
                 and "\r" not in value and "\n" not in value and "\0" not in value)
@@ -95,8 +95,8 @@ def key_configured():
         value = None
 
 
-def _read_key():
-    value = os.environ.get(FOX_KEY_ENV)
+def _read_key(env_name=FOX_KEY_ENV):
+    value = os.environ.get(env_name)
     if not (isinstance(value, str) and value != "" and value.strip() == value
             and "\r" not in value and "\n" not in value and "\0" not in value):
         value = None
@@ -1149,14 +1149,18 @@ def run_instance(run_dir, model, task, *, settings, turn_cap, transport, live, d
     return record, services
 
 
+# Every key env var a fox row may read. Redaction covers all of them.
+FOX_SECRET_ENV_NAMES = (FOX_KEY_ENV, "GLM_API_KEY")
+
+
 def _live_secrets():
-    value = os.environ.get(FOX_KEY_ENV)
-    try:
-        if isinstance(value, str) and value:
-            return [value]
-        return []
-    finally:
+    values = []
+    for name in FOX_SECRET_ENV_NAMES:
+        value = os.environ.get(name)
+        if isinstance(value, str) and value and value not in values:
+            values.append(value)
         value = None
+    return values
 
 
 def _transport_for(*, live, sender, timeout_s, sleep, clock, max_attempts):
@@ -1166,7 +1170,8 @@ def _transport_for(*, live, sender, timeout_s, sleep, clock, max_attempts):
         raise FoxStopped("credential_missing")
 
     def transport(model, messages, max_tokens, max_sends=None):
-        key = _read_key() if live and sender is None else os.environ.get(FOX_KEY_ENV)
+        env_name = getattr(model, "key_env", FOX_KEY_ENV)
+        key = _read_key(env_name) if live and sender is None else os.environ.get(env_name)
         try:
             if isinstance(key, str) and key:
                 blob = json.dumps(messages, ensure_ascii=False)
@@ -1177,7 +1182,8 @@ def _transport_for(*, live, sender, timeout_s, sleep, clock, max_attempts):
                 result, retries, _body = post_with_retries(
                     model, messages, max_tokens, key=key if isinstance(key, str) else "",
                     sender=post, timeout_s=timeout_s, sleep=sleep, clock=clock,
-                    max_attempts=max_attempts, max_sends=max_sends)
+                    max_attempts=max_attempts, max_sends=max_sends,
+                    url=getattr(model, "chat_url", FOX_CHAT_URL))
             except FoxStopped:
                 raise
             except (OSError, urllib.error.URLError) as error:

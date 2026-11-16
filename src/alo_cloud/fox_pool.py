@@ -62,6 +62,10 @@ class FoxModel:
     ``kimi-k3.1-pro`` since 2026-11-16 14:36 SGT (``-ta`` is not a snapshot
     tag, so normalization alone rejects it). The other scheduled models leave
     the tuple empty.
+
+    ``api_base`` and ``key_env`` default to Foxrouter. A row that names another
+    OpenAI-compatible endpoint reads its own key env var; the key itself is
+    never stored on the row.
     """
 
     internal: str
@@ -70,6 +74,12 @@ class FoxModel:
     context_token_cap: int
     max_tokens: int = DEFAULT_MAX_TOKENS
     accepted_aliases: tuple = ()
+    api_base: str = FOX_API_BASE
+    key_env: str = FOX_KEY_ENV
+
+    @property
+    def chat_url(self):
+        return self.api_base + "/chat/completions"
 
     def __post_init__(self):
         if not self.internal.startswith("fox/") or self.internal in MODEL_POOL:
@@ -83,6 +93,10 @@ class FoxModel:
             raise ValueError("invalid_context_cap")
         if type(self.max_tokens) is not int or self.max_tokens < 1:
             raise ValueError("invalid_max_tokens")
+        if type(self.api_base) is not str or not self.api_base.startswith("https://") or self.api_base.endswith("/"):
+            raise ValueError("invalid_api_base")
+        if type(self.key_env) is not str or not re.fullmatch(r"[A-Z][A-Z0-9_]*_API_KEY", self.key_env):
+            raise ValueError("invalid_key_env")
         aliases = self.accepted_aliases
         if type(aliases) is not tuple or any(type(item) is not str or not item.strip() for item in aliases):
             raise ValueError("invalid_accepted_aliases")

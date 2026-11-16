@@ -52,6 +52,7 @@ from .fox_single import (
     _sum_tokens,
     _transport_for,
     assert_fox_run_dir,
+    key_configured,
     redact_secrets,
 )
 from .freeze import PlannedUnit
@@ -88,10 +89,16 @@ PB_POOL = (
 PB_POOL_SET = frozenset(PB_POOL)
 # Opt-in slot substitution for one PB run. Unset leaves PB_POOL, the default
 # decision freeze, and every other track unchanged. ``glm-flashx`` replaces the
-# glm slot with Foxrouter's ``glm-5.3-flashx`` (2026-11-16: ``glm-5.3-flash``
-# answered HTTP 503 ``upstream_unavailable`` on every probe). The substitute
-# row lives here, not in ``FOX_MODELS``, so SWE / learn pools do not gain it.
-GLM_FLASHX = FoxModel("fox/glm-5.3-flashx", "glm-5.3-flashx", "fox/glm-5.3-flashx", 128_000)
+# glm slot with ``glm-5.3-flashx`` served by Zhipu's official API
+# (open.bigmodel.cn), keyed by ``GLM_API_KEY``. 2026-11-16: Foxrouter
+# ``glm-5.3-flash`` answered HTTP 503 ``upstream_unavailable`` on every probe
+# from 15:53 SGT and Foxrouter ``glm-5.3-flashx`` timed out at 16:28 and 16:30.
+# The other three slots stay on Foxrouter. The substitute row lives here, not in
+# ``FOX_MODELS``, so SWE / learn pools do not gain it.
+ZHIPU_API_BASE = "https://open.bigmodel.cn/api/paas/v4"
+GLM_KEY_ENV = "GLM_API_KEY"
+GLM_FLASHX = FoxModel("fox/glm-5.3-flashx", "glm-5.3-flashx", "fox/glm-5.3-flashx", 128_000,
+                      api_base=ZHIPU_API_BASE, key_env=GLM_KEY_ENV)
 PB_SUBSTITUTE_MODELS = {GLM_FLASHX.internal: GLM_FLASHX}
 PB_POOL_SUBSTITUTIONS = {
     "glm-flashx": {"from": "fox/glm-5.3-flash", "to": GLM_FLASHX.internal},
@@ -174,7 +181,10 @@ def decision_freeze(settings):
     substitute = settings.get("pool_substitute")
     if substitute is not None:
         rule = PB_POOL_SUBSTITUTIONS[substitute]
-        body["pool_substitution"] = {"name": substitute, "from": rule["from"], "to": rule["to"]}
+        spec = PB_SUBSTITUTE_MODELS[rule["to"]]
+        body["pool_substitution"] = {"name": substitute, "from": rule["from"], "to": rule["to"],
+                                     "upstream": spec.upstream, "api_base": spec.api_base,
+                                     "key_env": spec.key_env}
     node_cap = settings.get("node_request_cap")
     if node_cap is not None:
         body["node_request_cap"] = node_cap
@@ -1164,6 +1174,8 @@ def _manifest(settings, units):
         "source_commit": PROGRAMBENCH_COMMIT,
         "tests_revision": PROGRAMBENCH_TESTS_REVISION,
         "api_key_env": FOX_KEY_ENV,
+        "model_endpoints": {row.internal: {"api_base": row.api_base, "key_env": row.key_env}
+                            for row in (_pb_spec(name) for name in settings["models"])},
         "api_key_recorded": False,
         "pb_freeze": freeze_body,
         "pb_freeze_sha256": freeze_digest,
@@ -1290,6 +1302,11 @@ def run_arm(run_dir, *, arm, tasks=None, g0=False, models="all", request_cap=DEF
         existing = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
         if existing.get("swe_profile_sha256") not in {None, profile_sha}:
             raise PbStopped("swe_profile_changed")
+    if live and sender is None:
+        # Each slot reads its own key env var. Only presence is checked here.
+        for env_name in sorted({row.key_env for row in specs}):
+            if not key_configured(env_name):
+                raise PbStopped("credential_missing:" + env_name)
     transport = _transport_for(
         live=live,
         sender=sender if sender is not None else (None if live else dry_gateway),
