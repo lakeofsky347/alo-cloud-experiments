@@ -35,6 +35,19 @@ That install copies your build, not the reference. Copying or wrapping the refer
 Use python3 when you invoke Python; the image may not have a python command.
 """
 
+# M19 node-budget-v1 (opt-in; never sent without --pb-agent-protocol).
+# Added once to the implementer node's first observation that shows
+# PB_NODE_NOTICE_AT or fewer of its own requests left (key node_budget_notice).
+PB_AGENT_PROTOCOLS = ("node-budget-v1",)
+PB_NODE_NOTICE_AT = 6
+PROGRAMBENCH_NODE_BUDGET_NOTICE = (
+    "Node budget notice: {left} or fewer model requests remain for your node {node} "
+    "(node cap {cap}). Stop exploring. Write the program source and compile.sh now: "
+    "compile.sh must sit at the workspace root and must build ./executable. "
+    "Then run chmod +x compile.sh and ./compile.sh once to check it builds. "
+    "The next node cannot write files, so anything you have not written stays missing."
+)
+
 PROGRAMBENCH_BUDGET_NOTICE = (
     "Budget notice: 3 or fewer model requests remain in this unit. "
     "Stop exploring. Finalize compile.sh and ./executable now. "
