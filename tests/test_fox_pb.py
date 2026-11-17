@@ -1309,6 +1309,145 @@ def test_flashx_slot_uses_the_zhipu_endpoint_and_its_own_key(monkeypatch):
     assert seen[1] == ("https://foxrouter.org/v1/chat/completions", "Bearer fox-test-key", "deepseek-v4.1-flash-1017")
 
 
+def test_pb_exact_returned_deepseek_flash_is_opt_in(tmp_path, monkeypatch, capsys):
+    """HTTP 200 ``deepseek-flash`` stays a mismatch until the run opts in."""
+    _no_network(monkeypatch)
+    from alo_cloud.fox_pb import _specs_with_exact_return, main
+    from alo_cloud.fox_pool import (
+        DEEPSEEK_EXACT_RETURN, DEEPSEEK_EXACT_RETURN_VERSION, FOX_BY_INTERNAL,
+    )
+
+    seen = []
+
+    def sender(url, body, headers, timeout_s):
+        del url, headers, timeout_s
+        seen.append(body.get("model"))
+        payload = {
+            "model": "deepseek-flash",
+            "choices": [{"message": {"content": json.dumps({"final": "submitted"})}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 8, "completion_tokens": 4, "total_tokens": 12},
+            "cost": 0.25,
+        }
+        return 200, json.dumps(payload).encode("utf-8")
+
+    default_dir = tmp_path / "default"
+    run_arm(
+        default_dir, arm="A4", tasks="kisielk__errcheck", live=False,
+        sender=sender, signal_override="unknown")
+    assert seen == ["deepseek-v4.1-flash-1017"]
+    default_row = json.loads((default_dir / "records.jsonl").read_text(encoding="utf-8"))
+    assert default_row["status"] == "stopped"
+    assert default_row["reason"] == "provider_error"
+    assert "exact_returned_opt_in" not in default_row
+    manifest_path = default_dir / "manifest.json"
+    manifest_bytes = manifest_path.read_bytes()
+    manifest = json.loads(manifest_bytes)
+    assert manifest["exact_returned_opt_in"] is None
+    assert "exact_returned_opt_in" not in manifest["pb_freeze"]
+    assert manifest["pb_freeze_sha256"] == DEFAULT_PB_DECISION_SHA256
+    assert manifest["pb_freeze"]["pool"] == list(PB_POOL)
+    default_call = json.loads((default_dir / "calls.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    assert default_call["ok"] is False
+    assert default_call["failure"] == "provider_error"
+    assert default_call["model_mismatch"] is True
+    assert default_call["upstream_model"] == "deepseek-v4.1-flash-1017"
+    assert default_call["returned_model"] == "deepseek-flash"
+    assert "model_alias_normalized" not in default_call
+    assert "exact_returned_opt_in" not in default_call
+    journal = [
+        json.loads(line) for line in (default_dir / "call_journal.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert journal[0]["model_mismatch"] is True
+    assert journal[0]["returned_model"] == "deepseek-flash"
+    assert "text" not in journal[0]
+    with pytest.raises(PbStopped, match="fox_run_settings_mismatch"):
+        run_arm(
+            default_dir, arm="A4", tasks="kisielk__errcheck", live=False,
+            sender=sender, signal_override="unknown",
+            returned_name_opt_in=DEEPSEEK_EXACT_RETURN_VERSION)
+    assert manifest_path.read_bytes() == manifest_bytes
+
+    specs = _specs_with_exact_return(resolve_pb_pool("all"), dict(DEEPSEEK_EXACT_RETURN))
+    by_internal = {row.internal: row for row in specs}
+    assert by_internal["fox/deepseek-flash"].exact_returned_opt_in == DEEPSEEK_EXACT_RETURN_VERSION
+    assert by_internal["fox/deepseek-flash"].upstream == "deepseek-v4.1-flash-1017"
+    assert by_internal["fox/deepseek-flash"].accepted_aliases == ()
+    assert by_internal["fox/glm-5.3-flash"].exact_returned_opt_in is None
+    assert by_internal["fox/kimi-k3.1-pro"].accepted_aliases == ("kimi-k3p1-pro", "kimi-k3.1-pro-ta")
+    assert FOX_BY_INTERNAL["fox/deepseek-flash"].exact_returned_opt_in is None
+    assert FOX_BY_INTERNAL["fox/deepseek-flash"].accepted_aliases == ()
+
+    seen.clear()
+    opt_dir = tmp_path / "opt"
+    run_arm(
+        opt_dir, arm="A4", tasks="kisielk__errcheck", live=False,
+        sender=sender, signal_override="unknown",
+        returned_name_opt_in=DEEPSEEK_EXACT_RETURN_VERSION)
+    assert seen == ["deepseek-v4.1-flash-1017"]
+    opt_row = json.loads((opt_dir / "records.jsonl").read_text(encoding="utf-8"))
+    assert opt_row["status"] != "stopped"
+    assert opt_row["reason"] != "provider_error"
+    assert opt_row["exact_returned_opt_in"] == dict(DEEPSEEK_EXACT_RETURN)
+    opt_manifest = json.loads((opt_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert opt_manifest["exact_returned_opt_in"] == dict(DEEPSEEK_EXACT_RETURN)
+    assert set(opt_manifest["pb_freeze"]) - set(manifest["pb_freeze"]) == {"exact_returned_opt_in"}
+    assert opt_manifest["pb_freeze"]["exact_returned_opt_in"] == dict(DEEPSEEK_EXACT_RETURN)
+    assert opt_manifest["pb_freeze"]["pool"] == manifest["pb_freeze"]["pool"]
+    assert opt_manifest["pb_freeze_sha256"] != DEFAULT_PB_DECISION_SHA256
+    assert opt_manifest["models"] == list(PB_POOL)
+    assert r2_freeze_sha256() == FROZEN_R2_SHA256
+    opt_call = json.loads((opt_dir / "calls.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    assert opt_call["ok"] is True
+    assert opt_call["upstream_model"] == "deepseek-v4.1-flash-1017"
+    assert opt_call["returned_model"] == "deepseek-flash"
+    assert "model_mismatch" not in opt_call
+    assert "model_alias_normalized" not in opt_call
+    assert opt_call["exact_returned_opt_in"] == dict(DEEPSEEK_EXACT_RETURN)
+    assert opt_call["exact_returned_opt_in"]["identity"] == "uncertain"
+    opt_journal = json.loads((opt_dir / "call_journal.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    assert opt_journal["exact_returned_opt_in"]["version"] == DEEPSEEK_EXACT_RETURN_VERSION
+    assert opt_journal["returned_model"] == "deepseek-flash"
+    assert opt_journal["upstream_model"] == "deepseek-v4.1-flash-1017"
+    assert "text" not in opt_journal
+    with pytest.raises(PbStopped, match="exact_return_opt_in_requires_slot"):
+        run_arm(
+            tmp_path / "glm-only", arm="A2", tasks="kisielk__errcheck",
+            models="fox/glm-5.3-flash", live=False, sender=sender,
+            signal_override="unknown", returned_name_opt_in=DEEPSEEK_EXACT_RETURN_VERSION)
+    with pytest.raises(PbStopped, match="unknown_returned_name_opt_in"):
+        run_arm(
+            tmp_path / "bad-version", arm="A4", tasks="kisielk__errcheck", live=False,
+            sender=sender, signal_override="unknown", returned_name_opt_in="other")
+
+    assert main([
+        "run", "--arm", "A4", "--tasks", "lz4__lz4.1519f46",
+        "--run-dir", str(tmp_path / "lz4"), "--dry-run",
+        "--returned-name-opt-in", DEEPSEEK_EXACT_RETURN_VERSION,
+    ]) == 0
+    capsys.readouterr()
+    lz4_manifest = json.loads((tmp_path / "lz4" / "manifest.json").read_text(encoding="utf-8"))
+    assert lz4_manifest["arm"] == "A4"
+    assert lz4_manifest["task_ids"] == ["lz4__lz4.1519f46"]
+    assert lz4_manifest["exact_returned_opt_in"]["version"] == DEEPSEEK_EXACT_RETURN_VERSION
+    assert lz4_manifest["exact_returned_opt_in"]["identity"] == "uncertain"
+    assert lz4_manifest["pb_freeze"]["pool"] == list(PB_POOL)
+    lz4_call = json.loads((tmp_path / "lz4" / "calls.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    assert lz4_call["upstream_model"] == "deepseek-v4.1-flash-1017"
+    assert lz4_call["returned_model"] == "deepseek-v4.1-flash-1017"
+    assert "exact_returned_opt_in" not in lz4_call
+    assert main([
+        "run", "--arm", "A4", "--tasks", "lz4__lz4.1519f46",
+        "--run-dir", str(tmp_path / "lz4"), "--dry-run",
+    ]) == 2
+    assert "fox_run_settings_mismatch" in capsys.readouterr().out
+    with pytest.raises(SystemExit):
+        main([
+            "run", "--arm", "A4", "--tasks", "lz4__lz4.1519f46",
+            "--run-dir", str(tmp_path / "other"), "--dry-run",
+            "--returned-name-opt-in", "pb-other",
+        ])
+
+
 def test_live_flashx_run_stops_without_the_glm_key(tmp_path, monkeypatch):
     monkeypatch.setenv("FOXROUTER_API_KEY", "fox-test-key")
     monkeypatch.delenv("GLM_API_KEY", raising=False)
