@@ -885,3 +885,77 @@ def test_kimi_ta_alias_is_accepted_and_the_returned_id_is_logged():
         row = _gateway_call(resolve_model(name), "kimi-k3.1-pro-ta")
         assert row["ok"] is False, name
         assert row["model_mismatch"] is True
+
+
+def test_deepseek_flash_exact_return_is_opt_in_and_not_an_alias():
+    """The report name is not an accepted alias. One opt-in accepts that exact string."""
+    from dataclasses import replace
+
+    from alo_cloud.fox_pool import (
+        DEEPSEEK_EXACT_RETURN, DEEPSEEK_EXACT_RETURN_VERSION, FOX_BY_INTERNAL,
+        exact_returned_name_accepted,
+    )
+
+    assert r2_freeze_sha256() == FROZEN_R2
+    base = resolve_model("fox/deepseek-flash")
+    assert base is FOX_BY_INTERNAL["fox/deepseek-flash"]
+    assert base.upstream == "deepseek-v4.1-flash-1017"
+    assert base.accepted_aliases == ()
+    assert base.exact_returned_opt_in is None
+    assert exact_returned_name_accepted(base.internal, base.upstream, "deepseek-flash", None) is False
+    default = _gateway_call(base, "deepseek-flash")
+    assert default["ok"] is False
+    assert default["failure"] == "provider_error"
+    assert default["model_mismatch"] is True
+    assert default["upstream_model"] == "deepseek-v4.1-flash-1017"
+    assert default["returned_model"] == "deepseek-flash"
+    assert "model_alias_normalized" not in default
+    assert "exact_returned_opt_in" not in default
+    # Prefix folding would accept an alias entry. This opt-in does not use that path.
+    assert model_match_kind("fw/deepseek-flash", base.upstream, ("deepseek-flash",)) == "normalized"
+    assert model_match_kind("deepseek-flash", base.upstream) == "mismatch"
+    opted = replace(base, exact_returned_opt_in=DEEPSEEK_EXACT_RETURN_VERSION)
+    assert opted is not base and base.exact_returned_opt_in is None
+    assert FOX_BY_INTERNAL["fox/deepseek-flash"].exact_returned_opt_in is None
+    row = _gateway_call(opted, "deepseek-flash", content='{"final":"ok"}')
+    assert row["ok"] is True
+    assert "failure" not in row and "model_mismatch" not in row
+    assert "model_alias_normalized" not in row
+    assert row["upstream_model"] == "deepseek-v4.1-flash-1017"
+    assert row["returned_model"] == "deepseek-flash"
+    assert row["finish_reason"] == "stop"
+    assert row["prompt_tokens"] == 11 and row["cost"] == 0.4
+    assert row["exact_returned_opt_in"] == dict(DEEPSEEK_EXACT_RETURN)
+    assert row["exact_returned_opt_in"]["identity"] == "uncertain"
+    assert row["exact_returned_opt_in"]["match"] == "exact"
+    for returned in (
+            "fw/deepseek-flash", "group/deepseek-flash", "DeepSeek-Flash",
+            "deepseek_flash", "deepseek-flash ", "deepseek-flash-1017",
+            "deepseek-v4.1-pro"):
+        missed = _gateway_call(opted, returned)
+        assert missed["ok"] is False, returned
+        assert missed["failure"] == "provider_error" and missed["model_mismatch"] is True
+        assert missed["returned_model"] == returned
+        assert missed["upstream_model"] == "deepseek-v4.1-flash-1017"
+        assert "exact_returned_opt_in" not in missed
+        assert "model_alias_normalized" not in missed
+    cosmetic = _gateway_call(opted, "deepseek-v4.1-flash")
+    assert cosmetic["ok"] is True
+    assert cosmetic["model_alias_normalized"] == {
+        "requested": "deepseek-v4.1-flash-1017", "returned": "deepseek-v4.1-flash"}
+    assert "exact_returned_opt_in" not in cosmetic
+    glm = resolve_model("fox/glm-5.3-flash")
+    with pytest.raises(ValueError, match="invalid_exact_returned_opt_in"):
+        replace(glm, exact_returned_opt_in=DEEPSEEK_EXACT_RETURN_VERSION)
+    foreign = _gateway_call(glm, "deepseek-flash")
+    assert foreign["model_mismatch"] is True
+    assert foreign["upstream_model"] == "glm-5.3-flash"
+    assert exact_returned_name_accepted(
+        "fox/deepseek-flash", "deepseek-v4.1-flash-1017", "deepseek-flash",
+        DEEPSEEK_EXACT_RETURN_VERSION) is True
+    assert exact_returned_name_accepted(
+        "fox/glm-5.3-flash", "glm-5.3-flash", "deepseek-flash",
+        DEEPSEEK_EXACT_RETURN_VERSION) is False
+    assert exact_returned_name_accepted(
+        "fox/deepseek-flash", "deepseek-v4.1-flash-1017", "fw/deepseek-flash",
+        DEEPSEEK_EXACT_RETURN_VERSION) is False

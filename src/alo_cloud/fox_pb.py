@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 from contextlib import contextmanager
 import copy
+from dataclasses import replace
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -37,6 +38,8 @@ from .images import programbench_instance_image
 from .fox_learn import FoxAloServices, dry_gateway, planner_for
 from .fox_pool import (
     DEFAULT_READ_TIMEOUT_S,
+    DEEPSEEK_EXACT_RETURN,
+    DEEPSEEK_EXACT_RETURN_VERSION,
     FOX_BY_INTERNAL,
     FoxModel,
     FOX_KEY_ENV,
@@ -149,6 +152,7 @@ G0_TASKS = (
 _TERMINAL = frozenset({"completed", "failed", "blocked", "stopped"})
 _LOCKED = (
     "arm", "models", "task_ids", "unit_ids", "request_cap", "node_request_cap", "pool_substitution",
+    "exact_returned_opt_in",
     "online_update", "differential_signal", "role_map", "probe_script_owner",
     "unit_seconds", "read_timeout_s", "live", "frozen", "data_dir",
     "programbench_repo", "pb_agent_protocol",
@@ -200,6 +204,11 @@ def decision_freeze(settings):
     node_cap = settings.get("node_request_cap")
     if node_cap is not None:
         body["node_request_cap"] = node_cap
+    # Present only when the run sets it. The default document stays byte-identical.
+    # The block records an explicit opt-in. ``identity`` stays ``uncertain``.
+    opt_in = settings.get("exact_returned_opt_in")
+    if opt_in is not None:
+        body["exact_returned_opt_in"] = dict(opt_in)
     # M19 opt-in agent protocol. Prompts and tools are not hashed above, so a
     # protocol change is recorded here on purpose. Absent means the M18 protocol.
     protocol = settings.get("pb_agent_protocol")
@@ -1233,6 +1242,7 @@ def _manifest(settings, units):
         "request_cap": settings["request_cap"],
         "node_request_cap": settings.get("node_request_cap"),
         "pool_substitution": decision_freeze(settings)[0].get("pool_substitution"),
+        "exact_returned_opt_in": freeze_body.get("exact_returned_opt_in"),
         "request_cap_candidates": list(REQUEST_CAPS),
         "online_update": bool(settings["online_update"]),
         "frozen": not bool(settings["online_update"]),
@@ -1272,6 +1282,11 @@ def _write_manifest(run_dir, payload):
         for key in _LOCKED:
             if key in existing and existing.get(key) != payload.get(key):
                 raise PbStopped("fox_run_settings_mismatch")
+        # An older manifest omits the key. That omission means the opt-in was
+        # off. Turning it on in that directory would change the recorded freeze
+        # without rewriting the manifest, so it is refused.
+        if payload.get("exact_returned_opt_in") != existing.get("exact_returned_opt_in"):
+            raise PbStopped("fox_run_settings_mismatch")
         if existing.get("pb_agent_protocol") != payload.get("pb_agent_protocol"):
             # A run dir never mixes agent protocols, in either direction.
             raise PbStopped("fox_run_settings_mismatch")
@@ -1327,6 +1342,30 @@ def _save_carried(run_dir, observations, models):
     _carried_path(run_dir).write_text(_canonical(body) + "\n", encoding="utf-8")
 
 
+def _exact_returned_document(version):
+    """The one audit document, or None when the run leaves the default."""
+    if version is None:
+        return None
+    if version != DEEPSEEK_EXACT_RETURN_VERSION:
+        raise PbStopped("unknown_returned_name_opt_in")
+    return dict(DEEPSEEK_EXACT_RETURN)
+
+
+def _specs_with_exact_return(specs, document):
+    """Copy the deepseek slot with the opt-in. The catalog row stays unset."""
+    if document is None:
+        return specs
+    if not any(row.internal == document["slot"] for row in specs):
+        raise PbStopped("exact_return_opt_in_requires_slot")
+    updated = []
+    for row in specs:
+        if row.internal == document["slot"]:
+            updated.append(replace(row, exact_returned_opt_in=document["version"]))
+        else:
+            updated.append(row)
+    return tuple(updated)
+
+
 def run_arm(run_dir, *, arm, tasks=None, g0=False, models="all", request_cap=DEFAULT_REQUEST_CAP,
             node_request_cap=None, unit_seconds=DEFAULT_UNIT_SECONDS,
             read_timeout_s=DEFAULT_READ_TIMEOUT_S,
@@ -1334,13 +1373,15 @@ def run_arm(run_dir, *, arm, tasks=None, g0=False, models="all", request_cap=DEF
             probe_script_owner="p1", swe_profile=None, model_map=None, live=False,
             sender=None, execute=False, scorer=None, signal_override=None, clock=None,
             data_dir=None, programbench_repo=None, image_seeder=None, pool_substitute=None,
-            pb_agent_protocol=None):
+            returned_name_opt_in=None, pb_agent_protocol=None):
     """Run one arm in its own directory. Completed unit ids are skipped."""
     if arm not in ARMS:
         raise PbStopped("unknown_pb_arm")
     if arm in {"A1", "A3"} and not swe_profile:
         raise PbStopped("swe_profile_required")
     specs = resolve_pb_pool(models, pool_substitute)
+    exact_returned = _exact_returned_document(returned_name_opt_in)
+    specs = _specs_with_exact_return(specs, exact_returned)
     model_names = tuple(row.internal for row in specs)
     request_cap = _check_request_cap(request_cap)
     node_request_cap = _check_node_request_cap(node_request_cap, request_cap)
@@ -1377,6 +1418,7 @@ def run_arm(run_dir, *, arm, tasks=None, g0=False, models="all", request_cap=DEF
         "swe_profile": swe_profile,
         "model_map": model_map,
         "pool_substitute": pool_substitute,
+        "exact_returned_opt_in": exact_returned,
         "data_dir": str(data_dir) if data_dir else None,
         "programbench_repo": str(programbench_repo) if programbench_repo else None,
         "image_seeder": image_seeder,
@@ -1471,6 +1513,8 @@ def _run_unit(unit, run_dir, *, settings, specs, model_names, transport, limits,
         "container_name": _container_name(arm, unit.unit_id),
         "run_dir": str(run_dir),
     }
+    if settings.get("exact_returned_opt_in"):
+        record["exact_returned_opt_in"] = dict(settings["exact_returned_opt_in"])
     if settings.get("pb_agent_protocol") is not None:
         record["pb_agent_protocol"] = settings["pb_agent_protocol"]
     state_dir = Path(run_dir) / "units" / unit.unit_id / "state"
@@ -1687,6 +1731,10 @@ def _add_common(parser, *, arm_required):
     parser.add_argument("--request-cap", type=int, default=DEFAULT_REQUEST_CAP)
     parser.add_argument("--node-request-cap", type=int, default=None)
     parser.add_argument("--pool-substitute", default=None, choices=tuple(PB_POOL_SUBSTITUTIONS))
+    parser.add_argument(
+        "--returned-name-opt-in", default=None, choices=(DEEPSEEK_EXACT_RETURN_VERSION,),
+        help="Accept only the exact returned name deepseek-flash on fox/deepseek-flash. "
+             "Default rejects that name. The upstream request id is unchanged.")
     parser.add_argument("--read-timeout", type=float, default=DEFAULT_READ_TIMEOUT_S)
     parser.add_argument("--unit-seconds", type=float, default=DEFAULT_UNIT_SECONDS)
     parser.add_argument("--online-update", action="store_true")
@@ -1711,6 +1759,7 @@ def _kwargs_from_args(args):
         "request_cap": args.request_cap,
         "node_request_cap": args.node_request_cap,
         "pool_substitute": args.pool_substitute,
+        "returned_name_opt_in": args.returned_name_opt_in,
         "unit_seconds": args.unit_seconds,
         "read_timeout_s": args.read_timeout,
         "online_update": bool(args.online_update),

@@ -48,6 +48,20 @@ FAILURE_TAXONOMY = (
 )
 _CF_ERROR = re.compile(r"error code:\s*(\d+)", re.IGNORECASE)
 
+# One ProgramBench opt-in. Every catalog row leaves ``exact_returned_opt_in``
+# unset, so a default run still rejects a returned ``deepseek-flash``. The
+# match is that exact string. ``identity`` is ``uncertain``: accepting the
+# string does not establish that the gateway served the upstream id.
+DEEPSEEK_EXACT_RETURN_VERSION = "pb-deepseek-flash-exact-return-v1"
+DEEPSEEK_EXACT_RETURN = {
+    "version": DEEPSEEK_EXACT_RETURN_VERSION,
+    "slot": "fox/deepseek-flash",
+    "upstream": "deepseek-v4.1-flash-1017",
+    "returned": "deepseek-flash",
+    "match": "exact",
+    "identity": "uncertain",
+}
+
 
 @dataclass(frozen=True)
 class FoxModel:
@@ -61,7 +75,14 @@ class FoxModel:
     ``kimi-k3.1-pro-ta``, the id Foxrouter has returned for requested
     ``kimi-k3.1-pro`` since 2026-11-16 14:36 SGT (``-ta`` is not a snapshot
     tag, so normalization alone rejects it). The other scheduled models leave
-    the tuple empty.
+    the tuple empty. ``deepseek-flash`` is the report name of
+    ``fox/deepseek-flash`` and is not an entry in that tuple.
+
+    ``exact_returned_opt_in`` is unset on every catalog row. A ProgramBench
+    run may set ``DEEPSEEK_EXACT_RETURN_VERSION`` on a copy of the deepseek
+    slot. That copy accepts only the exact returned string ``deepseek-flash``.
+    Alias normalization is not used. The field records an explicit opt-in
+    whose identity is uncertain.
 
     ``api_base`` and ``key_env`` default to Foxrouter. A row that names another
     OpenAI-compatible endpoint reads its own key env var; the key itself is
@@ -76,6 +97,7 @@ class FoxModel:
     accepted_aliases: tuple = ()
     api_base: str = FOX_API_BASE
     key_env: str = FOX_KEY_ENV
+    exact_returned_opt_in: str | None = None
 
     @property
     def chat_url(self):
@@ -100,6 +122,12 @@ class FoxModel:
         aliases = self.accepted_aliases
         if type(aliases) is not tuple or any(type(item) is not str or not item.strip() for item in aliases):
             raise ValueError("invalid_accepted_aliases")
+        opt_in = self.exact_returned_opt_in
+        if opt_in is not None and (
+                opt_in != DEEPSEEK_EXACT_RETURN_VERSION
+                or self.internal != DEEPSEEK_EXACT_RETURN["slot"]
+                or self.upstream != DEEPSEEK_EXACT_RETURN["upstream"]):
+            raise ValueError("invalid_exact_returned_opt_in")
 
 
 # Upstream ids are the gateway's model strings. DeepSeek is ``deepseek-flash``
@@ -153,6 +181,24 @@ def context_cap_allowed(internal, cap):
     if internal == "fox/mimo-v2.6-flash":
         return cap < MIMO_CONTEXT_HARD_MAX
     return True
+
+
+def exact_returned_name_accepted(internal, upstream, returned, opt_in_version):
+    """True only for the one exact returned string on the deepseek slot.
+
+    Comparison is string equality. A vendor prefix, a different case, or a
+    folded separator stays rejected. ``opt_in_version`` must be the explicit
+    version; ``None`` is the default and rejects the string. A true result
+    means the caller chose to keep the response. It does not mean the returned
+    name and ``upstream`` are the same model.
+    """
+    return (
+        opt_in_version == DEEPSEEK_EXACT_RETURN_VERSION
+        and internal == DEEPSEEK_EXACT_RETURN["slot"]
+        and upstream == DEEPSEEK_EXACT_RETURN["upstream"]
+        and type(returned) is str
+        and returned == DEEPSEEK_EXACT_RETURN["returned"]
+    )
 
 
 def resolve_model(name):

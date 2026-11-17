@@ -34,12 +34,14 @@ from .fox_pool import (
     FAILURE_TAXONOMY,
     FOX_CHAT_URL,
     TEST_EXTRAPOLATION_INSTANCES,
+    DEEPSEEK_EXACT_RETURN,
     FOX_KEY_ENV,
     FOX_MODELS,
     apply_context_limit,
     auth_headers,
     cloudflare_error_code,
     estimate_size,
+    exact_returned_name_accepted,
     is_transient_status,
     json_safe,
     model_settings,
@@ -531,7 +533,9 @@ def interpret_call(model, sent_messages, max_tokens, result, retries, *, estimat
 
     Usage is copied even when the call is later rejected, so a billed response
     still lands in the unit totals. A cosmetic model id is a warning. A
-    different model is ``provider_error``.
+    different model is ``provider_error``. ``exact_returned_opt_in`` on the
+    deepseek slot accepts only the exact returned string ``deepseek-flash``
+    and records that opt-in. It is not written as a same-model alias.
     """
     payload = result.get("payload") if isinstance(result, dict) else None
     usage = payload.get("usage") if isinstance(payload, dict) and isinstance(payload.get("usage"), dict) else None
@@ -539,15 +543,24 @@ def interpret_call(model, sent_messages, max_tokens, result, retries, *, estimat
     text, reasoning_present = _message_text(payload)
     returned_model = payload.get("model") if isinstance(payload, dict) and "model" in payload else None
     aliases = getattr(model, "accepted_aliases", ()) or ()
+    opt_in_version = getattr(model, "exact_returned_opt_in", None)
     if returned_model is None:
         identity = "exact"
+    elif exact_returned_name_accepted(
+            model.internal, model.upstream, returned_model, opt_in_version):
+        identity = "exact_opt_in"
     else:
         identity = model_match_kind(returned_model, model.upstream, aliases)
     identity_ok = identity != "mismatch"
+    # The parser's alias list folds prefixes. Pass the exact string only after
+    # the predicate above has already required that this payload uses it.
+    parse_aliases = aliases
+    if identity == "exact_opt_in":
+        parse_aliases = tuple(aliases) + (DEEPSEEK_EXACT_RETURN["returned"],)
     parsed = None
     if isinstance(payload, dict) and identity_ok:
         try:
-            parsed = parse_openai_chat_completion(payload, model.upstream, aliases)
+            parsed = parse_openai_chat_completion(payload, model.upstream, parse_aliases)
         except PilotStopped:
             parsed = None
     prompt = completion = total = reasoning = None
@@ -611,6 +624,9 @@ def interpret_call(model, sent_messages, max_tokens, result, retries, *, estimat
             "requested": model.upstream,
             "returned": row["returned_model"],
         }
+    if identity == "exact_opt_in":
+        row["exact_returned_opt_in"] = dict(DEEPSEEK_EXACT_RETURN)
+        row["exact_returned_opt_in"]["returned"] = row["returned_model"]
     if not identity_ok:
         row["ok"] = False
         row["failure"] = "provider_error"

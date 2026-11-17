@@ -46,6 +46,43 @@ These are recorded in `manifest.json` and in that run's `pb_freeze` block. `pb_f
 | Agent protocol (M19) | unset, the M18 protocol | `--pb-agent-protocol node-budget-v1` |
 | Per-request deadline | 600 seconds | `--read-timeout` |
 | Per-unit wall clock | 2400 seconds | `--unit-seconds` |
+| Exact returned `deepseek-flash` | off. That returned string is `model_mismatch` | `--returned-name-opt-in pb-deepseek-flash-exact-return-v1` |
+
+## Exact returned name
+
+The fox/deepseek-flash slot requests upstream `deepseek-v4.1-flash-1017`. `accepted_aliases` stays empty on that catalog row. Alias matching folds a vendor prefix, letter case, and separators, so it is the wrong switch for this case. The default run still rejects HTTP 200 when `payload.model` is the exact string `deepseek-flash`, and records `model_mismatch` / `provider_error`. The requested upstream and the raw returned name stay on the call row.
+
+`--returned-name-opt-in pb-deepseek-flash-exact-return-v1` is the only acceptance. It applies to a copy of the fox/deepseek-flash slot for that run. The request body `model` stays `deepseek-v4.1-flash-1017`. The raw `payload.model` must be exactly `deepseek-flash`: no prefix, no case fold, no separator fold. `fw/deepseek-flash`, `DeepSeek-Flash`, `deepseek_flash`, and `group/deepseek-flash` stay mismatches. Other slots stay mismatches if they return that string. The call row stores `exact_returned_opt_in` with `version`, `slot`, `upstream`, `returned`, `match=exact`, and `identity=uncertain`. That record is the opt-in. It is not `model_alias_normalized` and it is not evidence that the returned name and the upstream id are the same model.
+
+The default `pb_freeze` document omits `exact_returned_opt_in`, so `pb_freeze_sha256` for an otherwise identical run stays `5a0f54fa1a88e42d43369c8f6fe8c293fbde6deb94c5d23789f7d69c1bd0c13c`. The M18 settings document (cap 40, node cap 20, differential on, glm-flashx, no agent-protocol flag) stays `b38db09ff4321ad9249ced71f6cc39e8a095e93ba1371d51abdc915e1d53c062`. With the returned-name flag, that one key is added and the hash changes. `r2_freeze_sha256` stays `77bddfbfd3472ae4c0d280c3dacf20810f11b5f9b5c247c17650629ebf9e241f`. The pool, scoring, and protocol schedule do not change. A new manifest always stores the field (`null` when off). Resuming a directory with a different value, including an older manifest that omitted the key, exits with `fox_run_settings_mismatch` and leaves the manifest bytes in place.
+
+`alo_cloud.fox_pool.exact_returned_name_accepted(internal, upstream, returned, opt_in_version)` is the predicate. An out-of-repo guard that compares `payload.model` with the upstream id, or that rejects the exact string `deepseek-flash`, still drops the response before this process can record it. After this commit is on the box, that guard accepts a response only when the predicate is true, leaves `payload.model` unchanged, and logs the requested upstream, the raw returned name, the opt-in version, and `identity=uncertain`. Every other returned string stays rejected. The guard can check the predicate without a network call:
+
+```sh
+python -c "from alo_cloud.fox_pool import exact_returned_name_accepted as ok; raise SystemExit(0 if ok('fox/deepseek-flash','deepseek-v4.1-flash-1017','deepseek-flash','pb-deepseek-flash-exact-return-v1') else 1)"
+python -c "from alo_cloud.fox_pool import exact_returned_name_accepted as ok; raise SystemExit(0 if not ok('fox/deepseek-flash','deepseek-v4.1-flash-1017','deepseek-flash',None) else 1)"
+python -c "from alo_cloud.fox_pool import exact_returned_name_accepted as ok; raise SystemExit(0 if not ok('fox/deepseek-flash','deepseek-v4.1-flash-1017','fw/deepseek-flash','pb-deepseek-flash-exact-return-v1') else 1)"
+```
+
+Offline tests, still with no paid call:
+
+```sh
+python -m pytest tests/test_fox_single.py::test_deepseek_flash_exact_return_is_opt_in_and_not_an_alias tests/test_fox_pb.py::test_pb_exact_returned_deepseek_flash_is_opt_in -q -p no:cacheprovider
+```
+
+The authorized continuation after those tests is one new A4 directory for the lz4 task already on the schedule (`lz4__lz4.1519f46` in the administrative catalog; pass the same task string the historical schedule used). Use a new `--run-dir`. Do not point the flag at the historical A4 directory. Do not rerun zevv (`zevv__duc.a58fa4e`) and do not rewrite its records. Historical results stay as recorded. Primary A4 is the original 16 plus this lz4 unit, 17. The sensitivity count 18 keeps the anomalous zevv in the appendix.
+
+```sh
+python -m alo_cloud.fox_pb run \
+  --arm A4 \
+  --tasks lz4__lz4.1519f46 \
+  --run-dir /tmp/fox-pb-a4-lz4 \
+  --returned-name-opt-in pb-deepseek-flash-exact-return-v1 \
+  --programbench-repo "$PROGRAMBENCH_REPO" \
+  --live --execute
+```
+
+That command is the launcher shape. It is not part of the offline check, and it is a paid call only when someone runs it with `--live`.
 
 `--pb-agent-protocol node-budget-v1` needs `--node-request-cap` and applies only to the two-node arms. The `s1` node (`p1` with the default map) sees its own remaining requests in every observation, for example `requests left for your node p1: 12/20 (unit: 32/40)`. The first observation that shows 6 or fewer node requests left also carries `node_budget_notice` (once): write the source and `compile.sh` now and run it once, because the next node cannot write files. No extra message or role is sent. The other node and A4 are unchanged; A4 requests are byte-identical with the flag on or off. Prompts and tools are not in `pb_freeze`, so the flag adds a `pb_agent_protocol` block there and the hash changes on purpose. Without the flag, the manifest, `pb_freeze_sha256` and every request are identical to `753e54a`. A run directory never mixes protocols.
 
