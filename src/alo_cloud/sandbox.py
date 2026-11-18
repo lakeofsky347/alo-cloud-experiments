@@ -9,6 +9,7 @@ credential environment variables; building that argv does not start a daemon.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -502,6 +503,22 @@ setpriv --clear-groups --inh-caps -all --ambient-caps -all --bounding-set -all -
 exit $status
 """
 
+# A container's own exit status is infrastructure evidence. Record the actual
+# program's exit separately so two launch errors cannot compare equal.
+_PUBLIC_PROBE_DRIVER = r"""
+import json, subprocess, sys, tempfile
+with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+    child = subprocess.run(sys.argv[1:], stdout=stdout, stderr=stderr)
+    stdout.seek(0)
+    stderr.seek(0)
+    out, err = stdout.read(262145), stderr.read(262145)
+    if len(out) > 262144 or len(err) > 262144:
+        raise SystemExit("public_probe_output_too_large")
+    print(json.dumps(dict(returncode=child.returncode, stdout=out.decode(errors="replace"),
+                          stderr=err.decode(errors="replace")), ensure_ascii=False))
+"""
+
+
 _OFFICIAL_CAPS = (
     "--cap-add=CHOWN", "--cap-add=DAC_OVERRIDE", "--cap-add=DAC_READ_SEARCH",
     "--cap-add=FOWNER", "--cap-add=SETGID", "--cap-add=SETUID", "--cap-add=SETPCAP",
@@ -756,6 +773,54 @@ class DockerSandbox:
         except Exception:
             raise SandboxUnknown("sandbox_outcome_unknown") from None
         return _finish_docker_result(result, daemon_code="docker_daemon_unavailable")
+
+    def public_build_command(self, detached_workspace, argv, timeout_s):
+        """Build in a disposable mount that hides the entire image workspace."""
+        root = Path(detached_workspace).resolve(strict=True)
+        if root.is_relative_to(self.workspace) or self.workspace.is_relative_to(root):
+            raise ProtocolError("public_build_requires_detached_workspace")
+        box = DockerSandbox(
+            root, image=self.resolved_image(), memory=self.memory, pids_limit=self.pids_limit,
+            tmpfs_size=self.tmpfs_size, path=self.path, container_name=self.container_name or "alo-pb-build",
+        )
+        command = box.docker_argv(argv)
+        # Use only a local task image. Keep tool caches writable without carrying
+        # them into the submission or mounting any directory from the agent run.
+        command[3:3] = ["--pull=never", "--env", "XDG_CACHE_HOME=/tmp/alo-cache"]
+        return self._public_docker_result(command, timeout_s)
+
+    def _public_docker_result(self, command, timeout_s):
+        if self.runner is not None:
+            runner = self.runner
+        elif self.permit_execution:
+            runner = subprocess_docker_runner
+        else:
+            raise IntegrationNotConfigured("docker_execution_not_permitted")
+        result = runner(command, timeout_s)
+        return _finish_docker_result(result, daemon_code="docker_daemon_unavailable")
+
+    def public_probe_command(self, detached_workspace, argv, timeout_s):
+        """Run a black-box command against a scratch tree and the local reference image."""
+        root = Path(detached_workspace).resolve(strict=True)
+        if root.is_relative_to(self.workspace) or self.workspace.is_relative_to(root):
+            raise ProtocolError("public_probe_requires_detached_workspace")
+        # Keep the image's execute-only reference at /workspace/executable.
+        # Both processes run in /agent, a direct writable mount. This preserves
+        # creations, deletions and renames without overlaying historical image
+        # files or copying the reference bytes. The caller stages only a link.
+        box = DockerSandbox(root, image=self.resolved_image(), memory=self.memory,
+                            pids_limit=self.pids_limit, tmpfs_size=self.tmpfs_size, path=self.path,
+                            container_name=self.container_name or "alo-pb-probe",
+                            workdir="/agent", mount_points=("/agent",))
+        command = box.docker_argv(["python3", "-I", "-c", _PUBLIC_PROBE_DRIVER, *argv])
+        command.insert(3, "--pull=never")
+        host = self._public_docker_result(command, timeout_s)
+        if host.get("timed_out") or host.get("failure") or host["returncode"] != 0:
+            raise SandboxUnknown("public_probe_execution_unknown")
+        try:
+            return known_sandbox_result(json.loads(host["stdout"]))
+        except (TypeError, ValueError):
+            raise SandboxUnknown("public_probe_missing_receipt") from None
 
     def official_compile_argv(self):
         """Docker argv that matches the official compile layout.

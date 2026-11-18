@@ -77,7 +77,11 @@ from .pb_contract import (
     submission_reference_scan,
     submission_reference_scan_bounded,
 )
-from .programbench_prompt import PB_AGENT_PROTOCOLS, PB_NODE_NOTICE_AT
+from .programbench_prompt import (
+    PB_AGENT_PROTOCOLS, PB_BUILD_PROTOCOL, PB_FIRST_BUILD_TURN, PB_NODE_NOTICE_AT,
+    PB_REPAIR_TOOLS, PB_REPAIR_TURNS,
+)
+from .pb_submission import capture_submission, pack_snapshot, scan_snapshot, submission_file_state
 from .sandbox import DockerSandbox
 from .workspace_prep import seed_image_tree
 from .run import load_frozen_transfer, load_public_payload, stage_for
@@ -218,6 +222,14 @@ def decision_freeze(settings):
             "node_budget_nodes": [settings["role_map"]["s1"]],
             "notice_at_node_requests_left": PB_NODE_NOTICE_AT,
         }
+    if protocol == PB_BUILD_PROTOCOL:
+        body["pb_agent_protocol"].update(
+            first_build_request=PB_FIRST_BUILD_TURN, reserved_repair_requests=PB_REPAIR_TURNS,
+            repair_tools=list(PB_REPAIR_TOOLS), submission_manifest_version=1,
+            build_tool="pb_build", verify_final_snapshot=True,
+            build_workdir="/workspace", public_probe_workdir="/agent",
+            review_build="writable_copy_of_handoff",
+        )
     digest = hashlib.sha256(_canonical(body).encode("utf-8")).hexdigest()
     return body, digest
 
@@ -391,123 +403,126 @@ def _side_effect_digest(root):
     return digest.hexdigest()
 
 
-def _parse_pb_score_text(text):
-    if not isinstance(text, str) or "{" not in text:
-        return None
-    start, end = text.find("{"), text.rfind("}")
-    if end <= start:
-        return None
-    try:
-        value = json.loads(text[start:end + 1])
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(value, dict):
-        return None
-    parsed = {}
-    rate = value.get("pass_rate")
-    passed, total = value.get("passed"), value.get("total")
-    if rate is None and type(passed) is int and type(total) is int and total > 0:
-        rate = passed / total
-    if not isinstance(rate, bool) and isinstance(rate, (int, float)):
-        parsed["pass_rate"] = float(rate)
-        parsed["resolved"] = float(rate) >= 1.0
-    if value.get("resolved") is True or value.get("resolved") is False:
-        parsed["resolved"] = value["resolved"]
-    if value.get("compile_success") is True or value.get("compile_success") is False:
-        parsed["compile_success"] = value["compile_success"]
-    return parsed or None
+def _official_unavailable(reason, **evidence):
+    return {"status": "unavailable", "reason": reason, "resolved": None,
+            "pass_rate": None, "compile_success": None, **evidence}
 
 
-def run_official_pb_eval(plan, *, harness_run=None, git_head=None):
-    """Pack one submission and run ``programbench eval`` when the checkout matches.
-
-    A missing checkout, the wrong commit, or a missing ``uv`` is ``unavailable``.
-    That is not a score of zero. Tests pass ``harness_run`` and do not start Docker.
-    """
-    repo = plan.get("repo") if isinstance(plan, dict) else None
-    if not repo:
-        return {"status": "unavailable", "reason": "programbench_checkout_required",
-                "resolved": None, "pass_rate": None, "compile_success": None}
-    head = (git_head or _git_head)(repo)
-    if head != PROGRAMBENCH_COMMIT:
-        return {"status": "unavailable", "reason": "programbench_commit_mismatch",
-                "observed_commit": head, "resolved": None, "pass_rate": None,
-                "compile_success": None}
-    sealed = plan.get("sealed_dir")
-    workspace = plan.get("submission_dir")
-    task_id = plan.get("task_id")
-    command = list(plan.get("eval_command") or [])
-    if not sealed or not workspace or not task_id or not command:
-        return {"status": "unavailable", "reason": "programbench_submissions_missing",
-                "resolved": None, "pass_rate": None, "compile_success": None}
-    dest = Path(sealed) / task_id / "submission.tar.gz"
-    _pack_submission(workspace, dest)
-    if harness_run is None and shutil.which("uv") is None:
-        return {"status": "unavailable", "reason": "uv_missing", "resolved": None,
-                "pass_rate": None, "compile_success": None, "command": command}
-    run = harness_run or _harness_run
-    run_dir = plan.get("run_dir") or sealed
-    completed = run(command, cwd=harness_cwd(run_dir), env=programbench_env())
-    parsed = _parse_pb_score_text(getattr(completed, "stdout", "") or "")
-    if parsed is None:
-        parsed = _parse_pb_score_text(getattr(completed, "stderr", "") or "")
-    failed = completed.returncode != 0 or _container_start_failed(completed)
-    body = {
-        "status": "harness_failed" if failed and not parsed else "finished",
-        "returncode": completed.returncode,
-        "resolved": None,
-        "pass_rate": None,
-        "compile_success": None,
-        "command": command,
-    }
-    if parsed:
-        body.update(parsed)
-    elif failed:
-        body["status"] = "harness_failed"
-    official = _read_official_eval_json(plan.get("sealed_dir"), plan.get("run_dir"))
-    if official:
-        body.update(official)
-        if body.get("status") == "harness_failed" and official.get("pass_rate") is not None:
-            body["status"] = "finished"
-    return body
+def _attempt_directory(run_dir, arm, unit_id, attempt_id, task_id):
+    if not run_dir or not isinstance(arm, str) or arm not in ARMS:
+        return None
+    for value in (unit_id, attempt_id, task_id):
+        if (not isinstance(value, str) or not value or value in {".", ".."}
+                or Path(value).name != value):
+            return None
+    return Path(run_dir).resolve() / "sealed" / "programbench" / arm / unit_id / attempt_id
 
 
 def _score_eval_document(data):
-    """Pass rate from an official ``*.eval.json``. Test names are not kept."""
+    """Return build evidence and the fraction passed among the stored test_results.
+
+    This is the historical ALO denominator, including skipped and not_run cases
+    in a measured result. No test names, branch names or grader logs are exported.
+    """
     if not isinstance(data, dict):
-        return None
-    results = data.get("test_results")
+        return _official_unavailable("official_eval_unreadable")
     error = data.get("error_code")
-    compile_success = not (isinstance(error, str) and "compile" in error)
-    if not isinstance(results, list) or not results:
-        if error:
-            return {"resolved": False, "pass_rate": 0.0, "compile_success": compile_success}
-        return None
-    passed = sum(1 for item in results if isinstance(item, dict) and item.get("status") == "passed")
-    rate = passed / len(results)
-    return {
-        "pass_rate": rate,
-        "resolved": rate == 1.0 and not error,
-        "compile_success": compile_success,
-    }
+    if error is not None and not isinstance(error, str):
+        return _official_unavailable("official_eval_unreadable")
+    if error in ("compile_failed", "copy_executable_failed"):
+        return {"status": "finished", "reason": error, "compile_success": False,
+                "pass_rate": 0.0, "resolved": False}
+    if error:
+        # seed_git, workspace setup, Docker and other harness errors do not
+        # establish that the submitted program failed to build.
+        return _official_unavailable("official_infrastructure_error", official_error_code=error)
+    results = data.get("test_results")
+    valid = {"passed", "failure", "error", "skipped", "system_error", "not_run"}
+    if not isinstance(results, list) or any(
+            not isinstance(row, dict) or not isinstance(row.get("status"), str)
+            or row["status"] not in valid for row in results):
+        return _official_unavailable("official_eval_unreadable")
+    executable_hash = data.get("executable_hash")
+    hashed = (isinstance(executable_hash, str) and len(executable_hash) == 64
+              and all(c in "0123456789abcdef" for c in executable_hash))
+    # Older official files can lack the hash. Executed behavioural cases
+    # independently establish that the cleanroom reached its test phase.
+    executed = any(row["status"] in {"passed", "failure", "error"} for row in results)
+    if not hashed and not executed:
+        return _official_unavailable("official_build_unobserved")
+    if not results or all(row["status"] in {"not_run", "system_error"} for row in results):
+        return _official_unavailable("official_tests_unobserved", compile_success=True)
+    passed = sum(row["status"] == "passed" for row in results)
+    return {"status": "finished", "compile_success": True,
+            "pass_rate": passed / len(results), "resolved": passed == len(results)}
 
 
-def _read_official_eval_json(*roots):
-    for root in roots:
-        if not root:
-            continue
-        path = Path(root)
-        if not path.is_dir():
-            continue
-        for candidate in sorted(path.rglob("*.eval.json")):
+def run_official_pb_eval(plan, *, harness_run=None, git_head=None):
+    """Evaluate only the archive sealed for this arm, unit, attempt and task."""
+    repo = plan.get("repo") if isinstance(plan, dict) else None
+    if not repo:
+        return _official_unavailable("programbench_checkout_required")
+    head = (git_head or _git_head)(repo)
+    if head != PROGRAMBENCH_COMMIT:
+        return _official_unavailable("programbench_commit_mismatch", observed_commit=head)
+    identity = {key: plan.get(key) for key in ("arm", "unit_id", "task_id", "attempt_id")}
+    if identity != plan.get("attempt_identity"):
+        return _official_unavailable("official_attempt_identity_mismatch")
+    task = plan.get("task_id")
+    sealed = _attempt_directory(plan.get("run_dir"), plan.get("arm"), plan.get("unit_id"),
+                                plan.get("attempt_id"), task)
+    workspace = plan.get("submission_dir")
+    if sealed is None or not workspace or not Path(workspace).is_dir():
+        return _official_unavailable("official_attempt_identity_missing")
+    if (plan.get("submission_sha256") is None) != (plan.get("submission_manifest") is None):
+        return _official_unavailable("official_submission_binding_incomplete")
+    if str(sealed) != plan.get("sealed_dir") or sealed.resolve() != sealed:
+        return _official_unavailable("official_attempt_identity_mismatch")
+    command = programbench_command(repo, sealed)
+    if command != plan.get("eval_command"):
+        return _official_unavailable("official_attempt_identity_mismatch")
+    if harness_run is None and shutil.which("uv") is None:
+        return _official_unavailable("uv_missing", command=command)
+    try:
+        # ProgramBench reuses an existing eval file, so allow only a new
+        # attempt directory, including if a previous process stopped halfway.
+        sealed.mkdir(parents=True, exist_ok=False)
+    except FileExistsError:
+        return _official_unavailable("official_attempt_already_exists")
+    dest = sealed / task / "submission.tar.gz"
+    identity["submission_sha256"] = plan.get("submission_sha256")
+    try:
+        if plan.get("submission_manifest") is not None:
             try:
-                data = json.loads(candidate.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                continue
-            parsed = _score_eval_document(data)
-            if parsed:
-                return parsed
-    return None
+                pack_snapshot(workspace, dest, plan["submission_manifest"], plan["submission_sha256"])
+            except (OSError, ValueError):
+                return _official_unavailable("official_submission_snapshot_mismatch", official_eval_identity=identity)
+        else:
+            _pack_submission(workspace, dest)
+        with dest.open("rb") as stream:
+            identity["archive_sha256"] = hashlib.file_digest(stream, "sha256").hexdigest()
+        (sealed / "identity.json").write_text(json.dumps(identity, sort_keys=True), encoding="utf-8")
+        run = harness_run or _harness_run
+        completed = run(command, cwd=harness_cwd(sealed), env=programbench_env())
+        with dest.open("rb") as stream:
+            unchanged = hashlib.file_digest(stream, "sha256").hexdigest() == identity["archive_sha256"]
+        if not unchanged:
+            return _official_unavailable("official_archive_changed", official_eval_identity=identity)
+        evidence = {"official_eval_identity": identity, "returncode": completed.returncode,
+                    "command": command}
+        if completed.returncode or _container_start_failed(completed):
+            return _official_unavailable("official_harness_failed", **evidence)
+        path = dest.with_name(f"{task}.eval.json")
+        if not path.is_file() or path.resolve() != path:
+            return _official_unavailable("official_eval_missing", **evidence)
+        raw = path.read_bytes()
+        identity["eval_sha256"] = hashlib.sha256(raw).hexdigest()
+        data = json.loads(raw)
+        if isinstance(data, dict) and data.get("instance_id", task) != task:
+            return _official_unavailable("official_eval_identity_mismatch", **evidence)
+        return {**_score_eval_document(data), **evidence}
+    except (OSError, UnicodeError, ValueError):
+        return _official_unavailable("official_eval_unreadable", official_eval_identity=identity)
 
 
 def official_pb_scorer(plan):
@@ -684,6 +699,29 @@ def _scan_submission(root, *, started, unit_seconds, clock=time.monotonic, scan=
         return None, "submission_scan_error"
 
 
+def _capture_final_submission(source, directory, *, started, unit_seconds):
+    """Hold the same bytes for review evidence, the final scan and the official grader."""
+    deadline = max(started + float(unit_seconds), time.monotonic() + SCAN_MIN_SECONDS)
+    snapshot = None
+
+    def check_deadline():
+        if time.monotonic() >= deadline:
+            raise SubmissionScanDeadline("submission_scan_deadline")
+
+    try:
+        snapshot = capture_submission(source, directory / "files", check_deadline=check_deadline)
+        (directory / "manifest.json").write_text(json.dumps({
+            "submission_sha256": snapshot.sha256, "files": snapshot.manifest,
+        }, sort_keys=True), encoding="utf-8")
+        check_deadline()
+        result = scan_snapshot(snapshot, source, seconds=deadline - time.monotonic())
+        return snapshot, result, None
+    except SubmissionScanDeadline:
+        return snapshot, None, "submission_scan_deadline"
+    except (OSError, RuntimeError, ValueError):
+        return snapshot, None, "submission_snapshot_error"
+
+
 class PbServices(FoxAloServices):
     """Fox pool services plus the ProgramBench reference-binary guard."""
 
@@ -694,8 +732,51 @@ class PbServices(FoxAloServices):
         self.last_pb_signal = None
         self.compile_returncode = None
         self.reference_invocations = []
+        self.pb_build_enabled = False
 
-    def public_signal(self):
+    def pb_build(self):
+        """Both worker roles can compile a private copy. Charge the shared tool budget."""
+        if not self.pb_build_enabled:
+            raise ProtocolError("unknown public tool")
+        return self._tool(lambda: self._snapshot_build()[0])
+
+    def _snapshot_build(self, *, differential=False, sealed_snapshot=None):
+        from .pb_build import run_public_build, snapshot_differential
+
+        source = self.workspace.root
+        if getattr(self, "current_node", None) == "p2" and getattr(self, "role_tools", None) is not None:
+            source = getattr(self, "review_snapshot", None)
+        unknown = {"status": "unknown", "stage": "snapshot", "returncode": None,
+                   "artifact_present": None, "submission_sha256": None}
+        if sealed_snapshot is None and source is None:
+            return {**unknown, "reason": "review_snapshot_unavailable"}, None
+        with tempfile.TemporaryDirectory(prefix="alo-pb-check-") as tmp:
+            try:
+                def check_deadline():
+                    if self._wall_remaining() <= 0:
+                        raise SubmissionScanDeadline("public_build_deadline")
+
+                snapshot = sealed_snapshot
+                if snapshot is None:
+                    snapshot = capture_submission(source, Path(tmp) / "source", check_deadline=check_deadline)
+                    unknown["submission_sha256"] = snapshot.sha256
+                    check = scan_snapshot(snapshot, self.workspace.root, seconds=min(60, max(0, self._wall_remaining())))
+                    if check.get("ok") is not True:
+                        return {**unknown, "stage": "submission_scan", "reason": "submission_rejected",
+                                "diagnostic": _submission_rejection_reason(check)}, None
+                unknown["submission_sha256"] = snapshot.sha256
+                artifact = Path(tmp) / "candidate" if differential else None
+                build = run_public_build(self.sandbox, snapshot.root, snapshot.sha256,
+                                         timeout_s=min(60, self._wall_remaining()), artifact_path=artifact)
+                if artifact is None or build["status"] != "pass":
+                    return build, None
+                diff = snapshot_differential(self.sandbox, snapshot, artifact, build["artifact_sha256"],
+                                             self.reference_invocations, self._wall_remaining)
+                return build, diff
+            except (SubmissionScanDeadline, OSError, RuntimeError, ValueError) as exc:
+                return {**unknown, "reason": type(exc).__name__, "diagnostic": str(exc)[:500]}, None
+
+    def public_signal(self, *, sealed_snapshot=None):
         """Run ``compile.sh`` in the sandbox. Differential I/O is opt-in.
 
         The default signal is that compile result alone. ``--differential-signal``
@@ -704,6 +785,13 @@ class PbServices(FoxAloServices):
         script or a sandbox that cannot execute stays unknown and is not
         written into learning state.
         """
+        if self.pb_build_enabled and (self.signal_override is None or sealed_snapshot is not None):
+            build, diff = self._snapshot_build(differential=self.differential_enabled, sealed_snapshot=sealed_snapshot)
+            code = {"pass": 0, "fail": 1}.get(build["status"])
+            self.last_pb_signal = combine_pb_signal(
+                code, differential_enabled=self.differential_enabled, differential_signal=diff)
+            self.last_pb_signal["build"] = build
+            return self.last_pb_signal["signal"]
         try:
             if self.signal_override in {"pass", "fail", "unknown"}:
                 compile_code = {"pass": 0, "fail": 1, "unknown": None}[self.signal_override]
@@ -815,7 +903,30 @@ class PbServices(FoxAloServices):
         violation = pb_command_violation(argv)
         if violation:
             raise ProtocolError(violation)
-        result = super().command(argv, timeout_s)
+        if self.pb_build_enabled and getattr(self, "current_node", None) == "p1":
+            def check_deadline():
+                if self._wall_remaining() <= 0:
+                    raise PilotStopped("resource_limit")
+
+            def file_state():
+                try:
+                    return submission_file_state(self.workspace.root, check_deadline=check_deadline)
+                except (OSError, ValueError):
+                    # A command may repair an unreadable file. Preserve its own result.
+                    return None
+
+            before = file_state()
+            result = super().command(argv, timeout_s)
+            after = file_state()
+            if before is None or after is None:
+                result = dict(result, changed_files=None, deleted_files=None,
+                              receipt_error="submission_file_state_unavailable")
+            else:
+                changed = [{"path": path, "bytes": row["size"]} for path, row in after.items()
+                           if before.get(path) != row]
+                result = dict(result, changed_files=changed, deleted_files=sorted(before.keys() - after.keys()))
+        else:
+            result = super().command(argv, timeout_s)
         self._observe_command(argv, result)
         return result
 
@@ -960,12 +1071,14 @@ def import_swe_profile(source_path, *, allowed_models, model_map=None, strip_qua
     }
 
 
-def pb_eval_plan(task_id, submission_dir, *, repo=None, unit_id=None, run_dir=None):
+def pb_eval_plan(task_id, submission_dir, *, repo=None, unit_id=None, run_dir=None, arm=None,
+                 attempt_id=None):
     """Official cleanroom build plus ``programbench eval``. This does not run it."""
-    sealed = None
-    if run_dir and unit_id:
-        sealed = Path(run_dir) / "sealed" / "programbench" / unit_id
+    sealed = _attempt_directory(run_dir, arm, unit_id, attempt_id, task_id)
+    repo = str(Path(repo).resolve()) if repo else None
     return {
+        "attempt_identity": {"arm": arm, "unit_id": unit_id, "task_id": task_id,
+                             "attempt_id": attempt_id},
         "task_id": task_id,
         "image_family": "task_cleanroom_v6",
         "source_commit": PROGRAMBENCH_COMMIT,
@@ -977,11 +1090,13 @@ def pb_eval_plan(task_id, submission_dir, *, repo=None, unit_id=None, run_dir=No
         "build_exec": ["./compile.sh"],
         "build_in_cleanroom": "chmod +x ./compile.sh && ./compile.sh",
         "eval_command": programbench_command(repo, sealed) if repo and sealed else [],
-        "submission_dir": str(submission_dir),
+        "submission_dir": str(Path(submission_dir).resolve()),
         "sealed_dir": str(sealed) if sealed else None,
         "repo": str(repo) if repo else None,
         "run_dir": str(run_dir) if run_dir else None,
         "unit_id": unit_id,
+        "attempt_id": attempt_id,
+        "arm": arm,
     }
 
 
@@ -1033,24 +1148,21 @@ def _annotated_official_score(result, reason):
     }
 
 
-def apply_pb_score(plan, *, execute, runner, public_signal, cost, wall_clock_s, submission_check):
+def apply_pb_score(plan, *, execute, runner, cost, wall_clock_s, submission_check):
     """Record the harness fields. Unknown stays null, not zero.
 
     A scan rejection records score 0 and the reason. When a runner is
     available it still runs, and its score is stored as a separate
     annotation. The unit row is the caller's to write; this does not drop it.
     """
-    if public_signal == "pass":
-        compile_success = True
-    elif public_signal == "fail":
-        compile_success = False
-    else:
-        compile_success = None
     body = {
         "resolved": None,
         "pass_rate": None,
         "score": None,
-        "compile_success": compile_success,
+        "compile_success": None,
+        "official_pass_rate": None,
+        "official_eval_identity": None,
+        "official_error_code": None,
         "cost": cost,
         "wall_clock_s": wall_clock_s,
         "status": "not_executed",
@@ -1073,7 +1185,13 @@ def apply_pb_score(plan, *, execute, runner, public_signal, cost, wall_clock_s, 
                 result = runner(plan)
             except Exception:
                 result = None
-            body["official_score_annotation"] = _annotated_official_score(result, reason)
+            annotation = _annotated_official_score(result, reason)
+            body["official_score_annotation"] = annotation
+            body["compile_success"] = annotation["compile_success"]
+            body["official_pass_rate"] = annotation["pass_rate"]
+            if isinstance(result, dict):
+                body["official_eval_identity"] = result.get("official_eval_identity")
+                body["official_error_code"] = result.get("official_error_code") or result.get("reason")
         return body
     if not execute:
         return body
@@ -1086,13 +1204,15 @@ def apply_pb_score(plan, *, execute, runner, public_signal, cost, wall_clock_s, 
         body["status"] = "unavailable"
         body["reason"] = "pb_eval_unreadable"
         return body
+    body["official_eval_identity"] = result.get("official_eval_identity")
+    body["official_error_code"] = result.get("official_error_code") or result.get("reason")
     if isinstance(result.get("reason"), str):
         body["reason"] = result["reason"]
     if result.get("resolved") is True or result.get("resolved") is False:
         body["resolved"] = result["resolved"]
     rate = result.get("pass_rate")
     if not isinstance(rate, bool) and isinstance(rate, (int, float)):
-        body["pass_rate"] = float(rate)
+        body["official_pass_rate"] = body["pass_rate"] = float(rate)
     if result.get("compile_success") is True or result.get("compile_success") is False:
         body["compile_success"] = result["compile_success"]
     body["status"] = result.get("status") or "finished"
@@ -1400,8 +1520,12 @@ def run_arm(run_dir, *, arm, tasks=None, g0=False, models="all", request_cap=DEF
     selected = resolve_tasks(tasks, g0=g0)
     units = plan_units(arm, selected, request_cap=request_cap, g0=g0)
     run_dir = assert_fox_run_dir(run_dir)
-    dag = pb_dag(role_map=mapping, probe_script_owner=owner)
-    prompt = pb_prompt(role_map=mapping, probe_script_owner=owner)
+    build_checkpoints = pb_agent_protocol == PB_BUILD_PROTOCOL
+    if build_checkpoints and (arm == "A4" or mapping != DEFAULT_ROLE_MAP or owner != "p1"
+                              or request_cap != 40 or node_request_cap != 20):
+        raise PbStopped("build_checkpoint_requires_p1_implementer_p2_reviewer_and_20_20_budget")
+    dag = pb_dag(role_map=mapping, probe_script_owner=owner, build_checkpoints=build_checkpoints)
+    prompt = pb_prompt(role_map=mapping, probe_script_owner=owner, build_checkpoints=build_checkpoints)
     settings = {
         "arm": arm,
         "models": model_names,
@@ -1491,6 +1615,13 @@ def _run_unit(unit, run_dir, *, settings, specs, model_names, transport, limits,
     arm = settings["arm"]
     record = {
         "schema": UNIT_SCHEMA,
+        "public_compile_success": None,
+        "public_differential": None,
+        "official_compile_success": None,
+        "official_eval_identity": None,
+        "official_error_code": None,
+        "official_pass_rate": None,
+        "submission_accepted": None,
         "experiment": EXPERIMENT,
         "unit_id": unit.unit_id,
         "arm": arm,
@@ -1528,6 +1659,7 @@ def _run_unit(unit, run_dir, *, settings, specs, model_names, transport, limits,
         differential_enabled=settings["differential_signal"],
         signal_override=signal_override,
     )
+    services.pb_build_enabled = settings.get("pb_agent_protocol") == PB_BUILD_PROTOCOL
     attempt_id = uuid.uuid4().hex[:12]
     record["attempt_id"] = attempt_id
     services.calls = _JournaledCalls(
@@ -1597,20 +1729,34 @@ def _run_unit(unit, run_dir, *, settings, specs, model_names, transport, limits,
     except (PilotStopped, FoxStopped, PbStopped) as error:
         status, reason = "stopped", str(error)
     wall = time.monotonic() - started
-    signal = None
-    try:
-        signal = services.public_signal()
-    except Exception:
-        signal = "unknown"
-    submission, scan_failure = _scan_submission(
-        services.workspace.root, started=started, unit_seconds=limits["seconds"])
+    services.last_pb_signal = None
+    snapshot = None
+    if services.pb_build_enabled:
+        directory = Path(run_dir) / "checkpoints" / unit.unit_id / "submissions" / attempt_id
+        snapshot, submission, scan_failure = _capture_final_submission(
+            services.workspace.root, directory, started=started, unit_seconds=limits["seconds"])
+        if scan_failure is None and submission.get("ok") is True:
+            services.public_signal(sealed_snapshot=snapshot)
+        record["public_build"] = (services.last_pb_signal or {}).get("build")
+    else:
+        try:
+            services.public_signal()
+        except Exception:
+            pass
+        submission, scan_failure = _scan_submission(
+            services.workspace.root, started=started, unit_seconds=limits["seconds"])
     scan_failed = scan_failure is not None
     if scan_failed:
         submission = {"ok": None, "violations": [], "warnings": [], "unused_probes": []}
     usage = _usage_block(services.calls)
     plan = pb_eval_plan(
         unit.task_id, services.workspace.root, repo=settings.get("programbench_repo"),
-        unit_id=unit.unit_id, run_dir=run_dir)
+        unit_id=unit.unit_id, run_dir=run_dir, arm=arm, attempt_id=attempt_id)
+    if snapshot is not None:
+        plan.update(submission_dir=str(snapshot.root), submission_sha256=snapshot.sha256,
+                    submission_manifest=snapshot.manifest)
+        record["submission_sha256"] = snapshot.sha256
+        record["submission_manifest_path"] = str((directory / "manifest.json").relative_to(run_dir))
     if execute and scorer is None:
         scorer = official_pb_scorer
     if scan_failed:
@@ -1623,7 +1769,7 @@ def _run_unit(unit, run_dir, *, settings, specs, model_names, transport, limits,
     else:
         try:
             scored = apply_pb_score(
-                plan, execute=bool(execute), runner=scorer, public_signal=signal,
+                plan, execute=bool(execute), runner=scorer,
                 cost=usage["cost"], wall_clock_s=wall, submission_check=submission,
             )
         except Exception:
@@ -1662,6 +1808,14 @@ def _run_unit(unit, run_dir, *, settings, specs, model_names, transport, limits,
         pass_rate=scored["pass_rate"],
         score=scored.get("score"),
         compile_success=scored["compile_success"],
+        official_compile_success=scored["compile_success"],
+        official_pass_rate=scored.get("official_pass_rate"),
+        official_eval_identity=scored.get("official_eval_identity"),
+        official_error_code=scored.get("official_error_code"),
+        public_compile_success={"pass": True, "fail": False}.get(
+            (services.last_pb_signal or {}).get("compile")),
+        public_differential=(services.last_pb_signal or {}).get("differential"),
+        submission_accepted=submission.get("ok"),
         submission_ok=submission.get("ok"),
         submission_warnings=list(submission.get("warnings") or []),
         submission_unused_probes=list(submission.get("unused_probes") or []),
@@ -1704,7 +1858,10 @@ def run_g0(root, **kwargs):
     kwargs.setdefault("node_request_cap", M18_NODE_REQUEST_CAP)
     results = []
     for arm in G0_ARMS:
-        results.append(run_arm(root / arm, arm=arm, **kwargs))
+        settings = dict(kwargs)
+        if arm == "A4" and settings.get("pb_agent_protocol") == PB_BUILD_PROTOCOL:
+            settings.pop("pb_agent_protocol")
+        results.append(run_arm(root / arm, arm=arm, **settings))
     return {
         "experiment": EXPERIMENT,
         "arms": list(G0_ARMS),
@@ -1748,7 +1905,7 @@ def _add_common(parser, *, arm_required):
     parser.add_argument("--live", action="store_true")
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--pb-agent-protocol", default=None, choices=PB_AGENT_PROTOCOLS,
-                        help="M19 opt-in. Omit for the M18 protocol.")
+                        help="Select the two-node protocol. Omit to replay M18.")
 
 
 def _kwargs_from_args(args):

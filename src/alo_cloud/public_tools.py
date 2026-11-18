@@ -42,6 +42,8 @@ and end_line when the reply says the file was truncated.
 """
 TOOLS = ("list_files", "read_file", "write_file", "edit_file", "search", "command", "execute_code")
 
+PB_BUILD_TOOLS = (*TOOLS, "pb_build")
+
 ACTION_LANGUAGE = "public_tool"
 
 ACTION_INSTRUCTIONS = (
@@ -57,6 +59,7 @@ ACTION_INSTRUCTIONS = (
 )
 
 REQUIRED = {
+    "pb_build": set(),
     "list_files": set(),
     "read_file": {"path"},
     "write_file": {"path", "content"},
@@ -67,6 +70,7 @@ REQUIRED = {
 }
 
 OPTIONAL = {
+    "pb_build": set(),
     "list_files": {"path"},
     "read_file": {"start_line", "end_line"},
     "write_file": {"append"},
@@ -137,7 +141,7 @@ def infer_tool_name(arguments):
     return None
 
 
-def parse_action(text):
+def parse_action(text, *, allowed_tools=TOOLS):
     """One JSON action. Malformed messages do not consume a service tool call.
 
     Unknown argument names are removed and reported in ``warnings``. Service
@@ -150,7 +154,7 @@ def parse_action(text):
     if not isinstance(action, dict) or "tool" not in action or "arguments" not in action:
         raise ProtocolError("one tool and arguments required")
     name, arguments = action["tool"], action["arguments"]
-    if not isinstance(name, str) or name not in TOOLS:
+    if not isinstance(name, str) or name not in allowed_tools:
         raise ProtocolError("unknown public tool")
     arguments, warnings = _normalize_arguments(name, arguments)
     result = {"tool": name, "arguments": arguments}
@@ -215,7 +219,7 @@ def _attrs(text):
     return found
 
 
-def _action_from_parts(name, arguments):
+def _action_from_parts(name, arguments, allowed_tools):
     if name in {"tool", "public_tool"}:
         name = arguments.pop("tool", None) or arguments.pop("name", None)
     if not name:
@@ -225,7 +229,7 @@ def _action_from_parts(name, arguments):
         if isinstance(summary, str) and summary.strip():
             return {"final": summary.strip()}
         return None
-    if not isinstance(name, str) or name not in TOOLS:
+    if not isinstance(name, str) or name not in allowed_tools:
         return None
     normalized, warnings = _normalize_arguments(name, arguments)
     action = {"tool": name, "arguments": normalized}
@@ -247,7 +251,7 @@ def _load_arguments_blob(arguments):
     return arguments
 
 
-def _actions_from_function_bodies(text):
+def _actions_from_function_bodies(text, allowed_tools):
     opens = list(_FUNCTION_OPEN.finditer(text))
     actions = []
     if not opens:
@@ -264,7 +268,7 @@ def _actions_from_function_bodies(text):
                 parsed = json.loads(body.strip())
                 if isinstance(parsed, dict):
                     arguments = parsed
-            action = _action_from_parts(name, arguments if isinstance(arguments, dict) else {})
+            action = _action_from_parts(name, arguments if isinstance(arguments, dict) else {}, allowed_tools)
         except (ProtocolError, ValueError, TypeError, KeyError, json.JSONDecodeError):
             continue
         if action:
@@ -272,7 +276,7 @@ def _actions_from_function_bodies(text):
     return actions
 
 
-def _actions_from_tool_tags(text):
+def _actions_from_tool_tags(text, allowed_tools):
     opens = list(_TOOL_OPEN.finditer(text))
     actions = []
     for index, match in enumerate(opens):
@@ -290,7 +294,7 @@ def _actions_from_tool_tags(text):
                 arguments = parsed
             elif not saw_param:
                 arguments = {}
-            action = _action_from_parts(name, arguments if isinstance(arguments, dict) else {})
+            action = _action_from_parts(name, arguments if isinstance(arguments, dict) else {}, allowed_tools)
         except (ProtocolError, ValueError, TypeError, KeyError, json.JSONDecodeError):
             continue
         if action:
@@ -298,7 +302,7 @@ def _actions_from_tool_tags(text):
     return actions
 
 
-def _actions_from_dsml(text):
+def _actions_from_dsml(text, allowed_tools):
     if "invoke" not in text.lower() or "dsml" not in text.lower():
         return []
     actions = []
@@ -319,7 +323,7 @@ def _actions_from_dsml(text):
                 else:
                     arguments[key] = raw.strip()
             arguments = _load_arguments_blob(arguments)
-            action = _action_from_parts(name, arguments if isinstance(arguments, dict) else {})
+            action = _action_from_parts(name, arguments if isinstance(arguments, dict) else {}, allowed_tools)
         except (ProtocolError, ValueError, TypeError, KeyError, json.JSONDecodeError):
             continue
         if action:
@@ -385,7 +389,7 @@ def _json_objects(text):
     return found
 
 
-def _action_from_json_object(value):
+def _action_from_json_object(value, allowed_tools):
     if not isinstance(value, dict):
         return None
     if "final" in value and set(value) <= {"final"}:
@@ -397,21 +401,21 @@ def _action_from_json_object(value):
     if isinstance(arguments, dict) or name:
         if not isinstance(arguments, dict):
             arguments = {key: item for key, item in value.items() if key != "tool"}
-        return _action_from_parts(name, arguments)
+        return _action_from_parts(name, arguments, allowed_tools)
     inferred = infer_tool_name(value)
     if inferred:
-        return _action_from_parts(inferred, value)
+        return _action_from_parts(inferred, value, allowed_tools)
     return None
 
 
-def _actions_from_fences(text):
+def _actions_from_fences(text, allowed_tools):
     actions = []
     for language, body in _FENCE.findall(text):
         if language.lower() not in {"json", "public_tool", ""}:
             continue
         try:
             for value in _json_objects(body):
-                action = _action_from_json_object(value)
+                action = _action_from_json_object(value, allowed_tools)
                 if action:
                     actions.append(action)
         except (ProtocolError, ValueError, TypeError, KeyError):
@@ -419,11 +423,11 @@ def _actions_from_fences(text):
     return actions
 
 
-def _actions_from_prose_json(text):
+def _actions_from_prose_json(text, allowed_tools):
     actions = []
     try:
         for value in _json_objects(text):
-            action = _action_from_json_object(value)
+            action = _action_from_json_object(value, allowed_tools)
             if action:
                 actions.append(action)
     except (ProtocolError, ValueError, TypeError, KeyError):
@@ -431,7 +435,7 @@ def _actions_from_prose_json(text):
     return actions
 
 
-def coerce_actions(text):
+def coerce_actions(text, *, allowed_tools=TOOLS):
     """Parse every public action in one reply.
 
     Returns ``{"actions", "variant", "warnings"}`` or None when nothing in the
@@ -442,10 +446,10 @@ def coerce_actions(text):
     variant = None
     actions = []
     if "<｜" in text or "<|" in text and "dsml" in text.lower():
-        actions = _actions_from_dsml(text)
+        actions = _actions_from_dsml(text, allowed_tools)
         variant = "dsml"
     if not actions and "<function=" in text.lower():
-        actions = _actions_from_function_bodies(text)
+        actions = _actions_from_function_bodies(text, allowed_tools)
         if actions and any(name in text for name in ("<function=tool>", "<function=public_tool>",
                                                       "<function=tool ", "<function=public_tool ")):
             variant = "function_tool"
@@ -454,14 +458,14 @@ def coerce_actions(text):
         elif actions:
             variant = "tool_call"
     if not actions and "<tool=" in text.lower():
-        actions = _actions_from_tool_tags(text)
+        actions = _actions_from_tool_tags(text, allowed_tools)
         variant = "tool_tag"
     if not actions and "```" in text:
-        actions = _actions_from_fences(text)
+        actions = _actions_from_fences(text, allowed_tools)
         variant = "json_fence"
     if not actions and "{" in text:
         stripped = text.strip()
-        actions = _actions_from_prose_json(text)
+        actions = _actions_from_prose_json(text, allowed_tools)
         if actions:
             variant = "json" if stripped.startswith("{") and stripped.endswith("}") else "prose_json"
     if not actions:
@@ -545,7 +549,8 @@ def dispatch_action(services, action):
     if "timeout_s" in arguments and callable(clamp):
         arguments["timeout_s"], timeout_warnings = clamp(arguments["timeout_s"])
         warnings.extend(timeout_warnings)
-    if action["tool"] not in TOOLS:
+    allowed_tools = PB_BUILD_TOOLS if getattr(services, "pb_build_enabled", False) else TOOLS
+    if action["tool"] not in allowed_tools:
         raise ProtocolError("unknown public tool")
     role_tools = getattr(services, "role_tools", None)
     if role_tools is not None and action["tool"] not in set(role_tools):

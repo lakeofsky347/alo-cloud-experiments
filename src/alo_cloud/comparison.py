@@ -343,7 +343,15 @@ def pb_paired_report(rows):
         if "cost_cny" not in item and _pb_cost(row) is not None:
             item["cost_cny"] = _pb_cost(row)
         prepared.append(item)
-        by_arm.setdefault(arm, {})[task] = item
+        arm_tasks = by_arm.setdefault(arm, {})
+        if task in arm_tasks:
+            previous = arm_tasks[task]
+            raise ValueError(
+                f"duplicate_pb_arm_task: {arm}/{task} in "
+                f"{previous.get('run_dir')}/{previous.get('attempt_id')} and "
+                f"{item.get('run_dir')}/{item.get('attempt_id')}. "
+                "Report each lane, protocol and selected attempt separately.")
+        arm_tasks[task] = item
     base = comparison_report(prepared)
     per_task = {}
     for arm, tasks in by_arm.items():
@@ -356,7 +364,10 @@ def pb_paired_report(rows):
                 "resolved": _resolved(resolved_field),
                 "pass_rate": item.get("pass_rate") if _number(item.get("pass_rate")) else None,
                 "cost": _pb_cost(item),
-                "compile_success": item.get("compile_success") if item.get("compile_success") in {True, False} else None,
+                "compile_success": item.get("compile_success") if type(item.get("compile_success")) is bool else None,
+                "official_compile_success": item.get("official_compile_success"),
+                "official_pass_rate": item.get("official_pass_rate"),
+                "submission_accepted": item.get("submission_accepted", item.get("submission_ok")),
                 "first_assignment": _pb_first_assignment(item),
                 "wall_clock_s": item.get("wall_clock_s") if _number(item.get("wall_clock_s")) else None,
             }
@@ -397,6 +408,8 @@ def pb_paired_report(rows):
         costs = []
         scores = []
         compile_hits = compile_known = 0
+        official_pass = official_fail = accepted = rejected = accepted_builds = 0
+        legacy_units = 0
         cost_known = 0
         for item in tasks.values():
             cost = _pb_cost(item)
@@ -407,15 +420,36 @@ def pb_paired_report(rows):
             if score is not None:
                 scores.append(score)
             compile = item.get("compile_success")
-            if compile in {True, False}:
+            if type(compile) is bool:
                 compile_known += 1
                 if compile is True:
                     compile_hits += 1
+            official = item.get("official_compile_success")
+            admissible = item.get("submission_accepted", item.get("submission_ok"))
+            official_pass += official is True
+            official_fail += official is False
+            accepted += admissible is True
+            rejected += admissible is False
+            accepted_builds += admissible is True and official is True
+            legacy_units += "official_compile_success" not in item
+        total = len(tasks)
+        official_known = official_pass + official_fail
         arms[arm] = {
             "units": len(tasks),
             "cost_per_unit": (sum(costs) / cost_known) if cost_known else None,
             "compile_rate": (compile_hits / compile_known) if compile_known else None,
             "compile_known": compile_known,
+            "legacy_units_without_official_evidence": legacy_units,
+            "official_compile": {
+                "pass": official_pass, "fail": official_fail, "unknown": total - official_known,
+                "known": official_known, "total": total,
+                "rate_among_known": official_pass / official_known if official_known else None,
+                "coverage": official_known / total,
+            },
+            "submission_acceptance": {
+                "accepted": accepted, "rejected": rejected, "unknown": total - accepted - rejected,
+                "accepted_and_compiled": accepted_builds,
+            },
             "variance": {
                 "cost": _mean_sd(costs),
                 "score": _mean_sd(scores),

@@ -17,6 +17,7 @@ import subprocess
 import sys
 
 from .freeze import requested_benchmarks
+from .pb_submission import collected_snapshot_dir
 
 
 SWEBENCH_PACKAGE = "4.1.0"
@@ -147,9 +148,26 @@ def swebench_unit_commands(run_dir, predictions_path=None):
 
 def programbench_unit_commands(run_dir, repo):
     root = Path(run_dir) / "sealed" / "programbench"
-    if not root.is_dir():
-        return None
     commands = []
+    export_root = Path(run_dir) / "sealed" / "programbench-collected"
+    index = export_root.parent / "manifest.jsonl"
+    if export_root.is_dir() and index.is_file():
+        for row in _read_jsonl(index):
+            if row.get("track") != "ProgramBench" or not row.get("submission_sha256"):
+                continue
+            task = row["instance_id"]
+            attempt = collected_snapshot_dir(run_dir, row["arm"], row["unit_id"], row["attempt_id"], task)
+            archive = attempt / "submission.tar.gz"
+            if row["submission"] != archive.relative_to(run_dir).as_posix() or not archive.is_file():
+                raise ValueError("collected_submission_identity_mismatch")
+            commands.append({
+                "unit_id": row["unit_id"], "instance_id": task, "arm": row["arm"],
+                "attempt_id": row["attempt_id"], "submission_sha256": row["submission_sha256"],
+                "command": programbench_command(repo, attempt.parent) if repo else [],
+                "env_revision": PROGRAMBENCH_TESTS_REVISION,
+            })
+    if not root.is_dir():
+        return commands or None
     for unit_dir in sorted(path for path in root.iterdir() if path.is_dir()):
         tarballs = list(unit_dir.glob("*/submission.tar.gz"))
         if not tarballs:

@@ -15,6 +15,9 @@ from pathlib import Path
 import subprocess
 import tarfile
 
+from .pb_submission import collected_snapshot_dir, pack_snapshot
+from .programbench_prompt import PB_BUILD_PROTOCOL
+
 
 def _git(argv):
     completed = subprocess.run(argv, check=False, capture_output=True, text=True)
@@ -172,7 +175,23 @@ def collect_sealed(run_dir, *, git=_git):
                 entry["note"] = "empty_patch"
         elif track == "ProgramBench":
             dest = run_dir / "sealed" / "programbench" / unit_id / task_id / "submission.tar.gz"
-            if dest.is_file():
+            if "submission_manifest_path" in record:
+                attempt = record.get("attempt_id")
+                export = collected_snapshot_dir(run_dir, record.get("arm"), unit_id, attempt, task_id)
+                dest = export / "submission.tar.gz"
+                source_manifest = run_dir / "checkpoints" / unit_id / "submissions" / attempt / "manifest.json"
+                if source_manifest.relative_to(run_dir).as_posix() != record["submission_manifest_path"]:
+                    raise ValueError("submission_manifest_attempt_mismatch")
+                frozen = json.loads(source_manifest.read_text(encoding="utf-8"))
+                if frozen.get("submission_sha256") != record["submission_sha256"]:
+                    raise ValueError("submission_manifest_hash_mismatch")
+                count = pack_snapshot(source_manifest.parent / "files", dest, frozen["files"],
+                                      record["submission_sha256"])
+                entry.update(submission=str(dest.relative_to(run_dir)), files=count, attempt_id=attempt,
+                             submission_sha256=record["submission_sha256"])
+            elif record.get("pb_agent_protocol") == PB_BUILD_PROTOCOL and record.get("arm") != "A4":
+                entry["note"] = "submission_snapshot_unavailable"
+            elif dest.is_file():
                 entry["submission"] = str(dest.relative_to(run_dir))
                 entry["files"] = None
             else:
