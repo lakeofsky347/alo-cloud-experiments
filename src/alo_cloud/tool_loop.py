@@ -13,7 +13,8 @@ import math
 from .public_tools import (
     _unique_object, coerce_actions, dispatch_action, parse_action,
 )
-from .public_tools import TOOLS_PROMPT, WORK_ORDER
+from .public_tools import PB_BUILD_TOOLS, TOOLS, TOOLS_PROMPT, WORK_ORDER
+from .programbench_prompt import PB_BUILD_WORK_ORDER, PB_FIRST_BUILD_TURN, PB_REPAIR_TOOLS, PB_REPAIR_TURNS
 from .errors import ProtocolError
 
 
@@ -50,7 +51,7 @@ def _finite_float(text):
     return value
 
 
-def parse_response(text):
+def parse_response(text, *, allowed_tools=TOOLS):
     """Validate final separately, delegating every tool schema to parse_action."""
     if not isinstance(text, str) or len(text.encode()) > 1_048_576:
         raise ProtocolError("invalid or oversized public response")
@@ -62,7 +63,7 @@ def parse_response(text):
         if set(value) != {"final"} or not isinstance(value["final"], str) or not value["final"].strip():
             raise ProtocolError("final requires exactly one nonempty string summary")
         return value
-    return parse_action(text)
+    return parse_action(text, allowed_tools=allowed_tools)
 
 
 def _remaining_budget(services):
@@ -79,10 +80,10 @@ def _remaining_budget(services):
             and math.isfinite(value[key]) and value[key] >= 0}
 
 
-def _error_feedback(services, error, *, phase):
+def _error_feedback(services, error, *, phase, format_rule, examples):
     return {"public_tool_error": type(error).__name__, "detail": str(error)[:500],
             "protocol_version": TOOL_LOOP_VERSION, "error_phase": phase,
-            "required_response": FORMAT_RULE, "valid_examples": EXAMPLES,
+            "required_response": format_rule, "valid_examples": examples,
             "remaining_budget": _remaining_budget(services),
             "budget_rule": "The failed inference still consumes its original model/request budget. No budget reset or additional retry allowance.",
             "tool_dispatched": phase != "response_validation"}
@@ -166,7 +167,24 @@ def _node_notice(messages, node):
     return template.format(left=left, node=node["node"], cap=node["cap"])
 
 
-def _append(messages, value, services=None, node=None):
+def _action_receipt(action):
+    receipt = {"tool": action.get("tool", "final")}
+    if "path" in action.get("arguments", {}):
+        receipt["path"] = action["arguments"]["path"]
+    return receipt
+
+
+def _append(messages, value, services=None, node=None, *, checkpoint=True):
+    if checkpoint and node is not None and node.get("build_checkpoints"):
+        used, cap = node["used"], node["cap"]
+        if used in (PB_FIRST_BUILD_TURN, cap - PB_REPAIR_TURNS, cap):
+            value = dict(value) if isinstance(value, dict) else {"feedback": value}
+            if "build_checkpoint" not in value:
+                value["build_checkpoint"] = (value.get("result") if value.get("tool") == "pb_build"
+                                             else services.pb_build())
+            node["last_build"] = value["build_checkpoint"]
+            if used == cap - PB_REPAIR_TURNS:
+                value["repair_window"] = {"requests_left": PB_REPAIR_TURNS, "tools": PB_REPAIR_TOOLS}
     line, nudge = _budget_line(services, node) if services is not None else (
         (_node_line(node, None), None) if node is not None else (None, None))
     notice = _node_notice(messages, node) if node is not None else None
@@ -210,7 +228,8 @@ def _finish(status, summary, termination, services):
             "length_stops": _length_stops(services)}
 
 
-def persistent_tool_loop(services, prompt, messages, *, system="", max_turns=10, node_budget=None):
+def persistent_tool_loop(services, prompt, messages, *, system="", max_turns=10, node_budget=None,
+                         build_role=None):
     """Use at most max_turns model calls. A format error is feedback, not a tool call.
 
     An empty ``finish_reason=length`` turn, and an empty ``finish_reason=stop``
@@ -230,8 +249,19 @@ def persistent_tool_loop(services, prompt, messages, *, system="", max_turns=10,
     """
     if type(max_turns) is not int or max_turns < 1 or not isinstance(messages, list):
         raise ProtocolError("positive turn limit and checkpoint-owned transcript list required")
+    build_mode = build_role is not None
+    allowed_tools = PB_BUILD_TOOLS if build_mode else TOOLS
+    instructions = SYSTEM_INSTRUCTIONS
+    format_rule, examples = FORMAT_RULE, EXAMPLES
+    if build_mode:
+        role_order = (PB_BUILD_WORK_ORDER if build_role == "p1" else
+                      'Inspect the handoff snapshot. Use {"tool":"pb_build","arguments":{}} '
+                      "to verify its build. The source tree is read-only.")
+        format_rule = FORMAT_RULE.replace(WORK_ORDER, role_order)
+        examples = (*EXAMPLES[:-1], {"tool": "pb_build", "arguments": {}}, EXAMPLES[-1])
+        instructions = instructions.replace(WORK_ORDER, role_order)
     if not messages:
-        messages.append({"role": "system", "content": SYSTEM_INSTRUCTIONS + system})
+        messages.append({"role": "system", "content": instructions + system})
     messages.append({"role": "user", "content": prompt})
     node = None
     if node_budget is not None:
@@ -240,6 +270,13 @@ def persistent_tool_loop(services, prompt, messages, *, system="", max_turns=10,
         notice = _node_notice(messages, node)   # only when the node cap is <= notice_at
         if notice:
             messages[-1] = {"role": "user", "content": prompt + "\n\n" + notice}
+    if build_role == "p1":
+        if node is None:
+            raise ProtocolError("pb_build_checkpoint_requires_node_budget")
+        node["build_checkpoints"] = True
+    if build_role == "p2":
+        handoff = services.pb_build()
+        messages[-1]["content"] += "\nHandoff build: " + json.dumps(handoff, ensure_ascii=False)
     for turn in range(max_turns):
         reply = services.complete(messages)
         if node is not None:
@@ -272,55 +309,90 @@ def persistent_tool_loop(services, prompt, messages, *, system="", max_turns=10,
             _append(messages, {"public_tool_error": "empty_assistant_turn",
                 "detail": "The assistant message was empty.",
                 "protocol_version": TOOL_LOOP_VERSION, "error_phase": "response_validation",
-                "required_response": FORMAT_RULE, "automatic_retry": False}, services, node)
+                "required_response": format_rule, "automatic_retry": False}, services, node)
             continue
         action = None
-        extra = 0
+        extras = []
         transport = "rejected"
         try:
-            action = parse_response(text)
+            action = parse_response(text, allowed_tools=allowed_tools)
             transport = "strict"
         except (ValueError, TypeError, KeyError):
-            found = coerce_actions(text) if isinstance(text, str) else None
+            found = coerce_actions(text, allowed_tools=allowed_tools) if isinstance(text, str) else None
             if found and found.get("actions"):
                 action = found["actions"][0]
-                extra = len(found["actions"]) - 1
+                extras = found["actions"][1:]
                 transport = "coerced:" + str(found.get("variant") or "unknown")
         _note_transport(services, transport)
         if action is None:
             _append(messages, _error_feedback(services, ProtocolError("unparsed public action"),
-                                              phase="response_validation"), services, node)
+                                              phase="response_validation", format_rule=format_rule, examples=examples), services, node)
             continue
-        if set(action) <= {"final"} or (set(action) == {"final"}):
+        unexecuted = [_action_receipt(item) for item in extras] if build_mode else []
+        if set(action) == {"final"}:
+            if unexecuted:
+                _append(messages, {"unexecuted_actions": unexecuted, "written_files": [],
+                                   "instruction": "Send remaining changes before the final summary."},
+                        services, node)
+                continue
             if isinstance(action.get("final"), str) and action["final"].strip():
+                if build_role == "p1":
+                    handoff = services.pb_build()
+                    if handoff["status"] != "pass":
+                        _append(messages, {"build_checkpoint": handoff,
+                                           "instruction": "Repair the submission and verify it before handoff."},
+                                services, node)
+                        continue
+                    result = _finish("completed", action["final"].strip(), "final", services)
+                    result["handoff_build"] = handoff
+                    return result
                 return _finish("completed", action["final"].strip(), "final", services)
             _append(messages, _error_feedback(services, ProtocolError("final requires exactly one nonempty string summary"),
-                                              phase="response_validation"), services, node)
+                                              phase="response_validation", format_rule=format_rule, examples=examples), services, node)
             continue
         if "tool" not in action:
             _append(messages, _error_feedback(services, ProtocolError("one tool and arguments required"),
-                                              phase="response_validation"), services, node)
+                                              phase="response_validation", format_rule=format_rule, examples=examples), services, node)
+            continue
+        if (build_role == "p1" and turn >= max_turns - PB_REPAIR_TURNS
+                and action["tool"] not in PB_REPAIR_TOOLS):
+            _append(messages, {"public_tool_error": "reserved_repair_requests",
+                               "allowed_tools": PB_REPAIR_TOOLS,
+                               "unexecuted_actions": [_action_receipt(action), *unexecuted]},
+                    services, node)
             continue
         try:
             result = dispatch_action(services, action)
         except (ValueError, TypeError, KeyError) as error:
-            _append(messages, _error_feedback(services, error, phase="service_argument_or_operation_validation"), services, node)
+            feedback = _error_feedback(services, error, phase="service_argument_or_operation_validation",
+                                       format_rule=format_rule, examples=examples)
+            if build_mode:
+                feedback["unexecuted_actions"] = unexecuted
+                feedback["written_files"] = []
+            _append(messages, feedback, services, node)
             continue
         except BaseException as error:
             _append(messages, {"public_tool_interrupted": type(error).__name__, "tool": action["tool"],
                 "status": "unconfirmed", "automatic_retry": False,
                 "instruction": "Execution stopped. Do not assume this operation failed or repeat it without confirming its recorded side effects."},
-                services, node)
+                services, node, checkpoint=False)
             raise
         observation = {"tool": action["tool"], "result": result}
-        if extra:
-            observation["ignored_extra_actions"] = extra
-            observation["note"] = f"ignored {extra} extra actions"
+        if extras:
+            observation["ignored_extra_actions"] = len(extras)
+            observation["note"] = f"ignored {len(extras)} extra actions"
+            if build_mode:
+                observation["unexecuted_actions"] = unexecuted
+        if build_mode and action["tool"] in ("write_file", "edit_file"):
+            observation["written_files"] = [{"path": result["path"], "bytes": result["bytes"]}]
         try:
             json.dumps(observation, ensure_ascii=False, allow_nan=False)
         except (ValueError, TypeError) as error:
             _append(messages, {"public_tool_result_unserializable": type(error).__name__, "tool": action["tool"],
-                "status": "unconfirmed", "automatic_retry": False}, services, node)
+                "status": "unconfirmed", "automatic_retry": False}, services, node, checkpoint=False)
             raise
         _append(messages, observation, services, node)
-    return _finish("failed", "public tool turn cap reached without a valid final submission", "turn_cap", services)
+    result = _finish("failed", "public tool turn cap reached without a valid final submission", "turn_cap", services)
+    if build_role == "p1" and "last_build" in node:
+        result["handoff_build"] = node["last_build"]
+    return result

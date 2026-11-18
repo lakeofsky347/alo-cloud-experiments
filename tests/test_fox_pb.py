@@ -588,7 +588,7 @@ def test_execute_uses_the_official_evaluator(tmp_path, monkeypatch):
     (workspace / "compile.sh").write_text("#!/bin/sh\n", encoding="utf-8")
     plan = pb_eval_plan(
         "esubaalew__run.0fb9dec", workspace, repo=tmp_path / "ProgramBench",
-        unit_id="unit-1", run_dir=tmp_path / "eval-run")
+        unit_id="unit-1", run_dir=tmp_path / "eval-run", arm="A4", attempt_id="attempt-1")
     assert plan["source_commit"].startswith("895f659")
     assert plan["network"] == "none"
     assert plan["build_in_cleanroom"] == "chmod +x ./compile.sh && ./compile.sh"
@@ -620,7 +620,7 @@ def test_execute_uses_the_official_evaluator(tmp_path, monkeypatch):
     import inspect
     from alo_cloud.fox_pb import main as pb_main
     assert "official_pb_scorer" in inspect.getsource(pb_main)
-    assert (tmp_path / "eval-run" / "sealed" / "programbench" / "unit-1"
+    assert (tmp_path / "eval-run" / "sealed" / "programbench" / "A4" / "unit-1" / "attempt-1"
             / "esubaalew__run.0fb9dec" / "submission.tar.gz").is_file()
     report = report_runs([tmp_path / "score"]) if False else None
     del report

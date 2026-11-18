@@ -25,7 +25,7 @@ from .native_bridge import BoundModel, native_client
 from .contracts import G1_DEEPSEEK_FLASH_MODEL
 from .errors import PilotStopped
 from .public_tools import (
-    ACTION_INSTRUCTIONS, TOOLS, WORK_ORDER, PublicToolCodeExecutor, coerce_actions, dispatch_action,
+    ACTION_INSTRUCTIONS, PB_BUILD_TOOLS, TOOLS, WORK_ORDER, PublicToolCodeExecutor, coerce_actions, dispatch_action,
 )
 from .native_bridge import ROLE_INSTRUCTIONS, SHARED_INSTRUCTIONS, _terminated
 from .policy import ConstrainedThompsonPolicy, POLICY_VERSION, workspace_quality_credit
@@ -34,7 +34,11 @@ from .repro import REPRO_CRITERION_ID, REPRO_INSTRUCTION, cached_repro_v1
 from .review_isolation import role_is_review, snapshot_workspace, tree_digest
 from .sandbox import CRITERION_ID
 from .tool_loop import TOOL_LOOP_VERSION, persistent_tool_loop
-from .programbench_prompt import PB_AGENT_PROTOCOLS, PB_NODE_NOTICE_AT, PROGRAMBENCH_NODE_BUDGET_NOTICE
+from .pb_submission import capture_submission, submission_digest
+from .programbench_prompt import (
+    PB_AGENT_PROTOCOLS, PB_BUILD_PROTOCOL, PB_NODE_NOTICE_AT,
+    PROGRAMBENCH_NODE_BUDGET_NOTICE,
+)
 
 ROUTING_MODES = ("thompson", "fixed", "random")
 FIXED_ROUTE_MODEL = G1_DEEPSEEK_FLASH_MODEL
@@ -96,7 +100,7 @@ def _normalize_tool_name(name):
     return name.strip().lower().replace("-", "_").replace(" ", "_")
 
 
-def resolve_role_tool_contract(role):
+def resolve_role_tool_contract(role, *, available=TOOLS):
     """Map a role's declared tools onto public tools and say how it is applied.
 
     Returns ``declared`` (as written), ``mapped`` (tuple of public tools, or
@@ -118,7 +122,7 @@ def resolve_role_tool_contract(role):
     unknown = []
     for name in raw:
         key = _normalize_tool_name(name) if isinstance(name, str) else None
-        if key in TOOLS:
+        if key in available:
             tools = (key,)
         else:
             tools = ROLE_TOOL_ALIASES.get(key)
@@ -132,7 +136,7 @@ def resolve_role_tool_contract(role):
         return {"declared": declared, "mapped": None, "mode": ROLE_CONTRACT_UNRESTRICTED_UNKNOWN,
                 "unknown": unknown, "restricts": False}
     return {"declared": declared, "mapped": tuple(mapped), "mode": ROLE_CONTRACT_ENFORCED,
-            "unknown": [], "restricts": set(mapped) != set(TOOLS)}
+            "unknown": [], "restricts": set(mapped) != set(available)}
 
 
 def role_tool_contract(role):
@@ -767,21 +771,29 @@ class HeterogeneousALO:
                 turn_cap = _node_turn_cap(adapter, node_id, role_id)
                 if type(turn_cap) is not int or turn_cap < 1:
                     raise PilotStopped("node_request_cap_invalid")
-                worker_system = system + "\n" + WORK_ORDER
+                build_checkpoints = adapter.config.get("pb_agent_protocol") == PB_BUILD_PROTOCOL
+                worker_system = system if build_checkpoints else system + "\n" + WORK_ORDER
                 if adapter.config.get("criterion_id") == REPRO_CRITERION_ID:
                     worker_system += "\n" + REPRO_INSTRUCTION
                 node_budget = None
-                if (adapter.config.get("pb_agent_protocol") == "node-budget-v1"
+                if (adapter.config.get("pb_agent_protocol") in PB_AGENT_PROTOCOLS
                         and adapter.config.get("node_request_caps")
                         and node_id in (adapter.config.get("pb_node_budget_nodes") or ())):
                     node_budget = {"node": node_id, "notice": PROGRAMBENCH_NODE_BUDGET_NOTICE,
                                    "notice_at": PB_NODE_NOTICE_AT}
+                if build_checkpoints and node_budget is not None:
+                    node_budget["notice"] = (
+                        "Node budget notice: {left} requests remain. Finish source and compile.sh, "
+                        "then run pb_build and fix its first diagnostic.")
                 result = persistent_tool_loop(BoundModel(services, self.model), prompt, messages,
-                    system=worker_system, max_turns=turn_cap, node_budget=node_budget)
+                    system=worker_system, max_turns=turn_cap, node_budget=node_budget,
+                    build_role=node_id if build_checkpoints else None)
                 if node_budget is not None:
                     last["node_budget_notice_sent"] = bool(node_budget.get("sent"))
                     if "sent_at_left" in node_budget:
                         last["node_budget_notice_at_left"] = node_budget["sent_at_left"]
+                if "handoff_build" in result:
+                    last["handoff_build"] = result["handoff_build"]
                 last["termination"] = result.get("termination")
                 last.update(model=self.model, submission_status=result["status"],
                             tool_index_after=getattr(services, "tools", None))
@@ -910,6 +922,7 @@ class HeterogeneousALO:
                 "role_id": role.role_id,
                 "protocol_completed": protocol_completed,
                 "functional_pass": functional_pass,
+                **({"handoff_build": last["handoff_build"]} if "handoff_build" in last else {}),
                 "public_signal": signal,
             })
             measurements = adapter.state.get("repro_v1_measurements") or []
@@ -960,7 +973,9 @@ class HeterogeneousALO:
                     services._repro_v1_cache = None
                 except Exception:
                     pass
-                contract = resolve_role_tool_contract(subtask.role)
+                available = (PB_BUILD_TOOLS if adapter.config.get("pb_agent_protocol") == PB_BUILD_PROTOCOL
+                             else TOOLS)
+                contract = resolve_role_tool_contract(subtask.role, available=available)
                 tools = contract["mapped"]
                 adapter.state.setdefault("role_tool_contracts", []).append({
                     "node_id": subtask.id,
@@ -988,12 +1003,15 @@ class HeterogeneousALO:
                     try:
                         review_dir = tempfile.TemporaryDirectory(prefix="alo-review-")
                         snap = Path(review_dir.name) / "snapshot"
-                        snapshot_workspace(root, snap)
+                        if adapter.config.get("pb_agent_protocol") == PB_BUILD_PROTOCOL:
+                            before_digest = capture_submission(root, snap).sha256
+                        else:
+                            snapshot_workspace(root, snap)
+                            before_digest = tree_digest(root)
                         services.review_snapshot = snap
-                        before_digest = tree_digest(root)
                         last["review_isolation"] = "readonly_pre_review_snapshot"
                         last["pre_review_digest"] = before_digest
-                    except (OSError, PilotStopped):
+                    except (OSError, ValueError, PilotStopped):
                         if review_dir is not None:
                             review_dir.cleanup()
                         review_dir = None
@@ -1023,7 +1041,13 @@ class HeterogeneousALO:
                 mutated = False
                 if before_digest is not None:
                     root = getattr(getattr(services, "workspace", None), "root", None)
-                    after_digest = tree_digest(root) if root is not None else None
+                    if adapter.config.get("pb_agent_protocol") == PB_BUILD_PROTOCOL:
+                        try:
+                            after_digest = submission_digest(root)
+                        except (OSError, ValueError):
+                            after_digest = None
+                    else:
+                        after_digest = tree_digest(root) if root is not None else None
                     last["implementation_unchanged"] = after_digest == before_digest
                     mutated = after_digest != before_digest
                 try:
