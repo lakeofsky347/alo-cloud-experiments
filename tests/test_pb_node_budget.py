@@ -114,13 +114,13 @@ def _sender(bodies):
     return sender
 
 
-def _replay(run_dir, arm, monkeypatch, **extra):
+def _replay(run_dir, arm, monkeypatch, *, models=MODELS, **extra):
     monkeypatch.setattr(
         "urllib.request.urlopen",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("network")))
     bodies = []
     run_arm(run_dir, arm=arm, tasks="esubaalew__run", live=False, sender=_sender(bodies),
-            signal_override="unknown", models=MODELS, node_request_cap=20, **extra)
+            signal_override="unknown", models=models, node_request_cap=20, **extra)
     return bodies
 
 
@@ -146,6 +146,37 @@ def test_a4_requests_are_byte_identical_to_753e54a_with_and_without_the_flag(tmp
 def test_two_node_default_requests_are_byte_identical_to_753e54a(tmp_path, monkeypatch):
     off = _replay(tmp_path / "off", "A2", monkeypatch)
     assert _digest(off) == BASE_753E54A_A2_BODIES_SHA256
+
+
+@pytest.mark.parametrize("arm,expected_body_digest", [
+    ("A1", "d61859745ca4f467ebba5faa112f628a5be8098307ef7f7f566a1de00c3b1725"),
+    ("A2", "382b391280480d07ec07ffc4eaaca2420dc37416bbc26ec88fecfae352ecd2ce"),
+    ("A3", "fafff0d76814a4f9adac0a0cd87c5be6ff2110b7565abce40519b7f13e7581da"),
+    ("A4", BASE_753E54A_A4_BODIES_SHA256),
+    ("A5", "eeac0e9281b97e61c15425101a960cf9ab04ba67ca95fd222cfda1bbc9bdfb2b"),
+])
+def test_m19_requests_and_freeze_match_39efd61(tmp_path, monkeypatch, arm, expected_body_digest):
+    """Golden request bodies from 39efd61. A1/A3 consume a synthetic transfer profile."""
+    profile = tmp_path / "profile.json"
+    if arm in {"A1", "A3"}:
+        observation = {
+            "public_quality": 1.0, "quality_before": 0.0, "quality_after": 1.0,
+            "delta_quality": 1.0, "credited_quality": 1.0, "topics": ["coding", "implementation"],
+            "requests": 2, "tokens": 10, "seconds": 1.0, "cost_cny": 0.01,
+            "local_contract_status": "pass",
+        }
+        profile.write_text(json.dumps({"schema": "alo-cross-track-transfer-v1",
+                                       "profiles": {"fox/kimi-k3.1-pro": [observation]}}))
+    run_dir = tmp_path / arm
+    bodies = _replay(run_dir, arm, monkeypatch, models="all", pool_substitute="glm-flashx",
+                     pb_agent_protocol="node-budget-v1", differential_signal=True,
+                     unit_seconds=2400.0, read_timeout_s=600.0,
+                     swe_profile=profile if arm in {"A1", "A3"} else None)
+    assert len(bodies) == 40 and _digest(bodies) == expected_body_digest
+    manifest = json.loads((run_dir / "manifest.json").read_text())
+    expected_freeze, _ = decision_freeze(_m18(pb_agent_protocol="node-budget-v1"))
+    assert manifest["pb_freeze"] == expected_freeze
+    assert manifest["pb_freeze_sha256"] == M19_PB_DECISION_SHA256
 
 
 def test_flag_shows_p1_its_counter_and_reminds_it_in_its_own_turn_only(tmp_path, monkeypatch):
@@ -218,6 +249,12 @@ def test_decision_hash_changes_only_by_the_protocol_field():
     assert decision_freeze(_m18(pb_agent_protocol=None))[1] == before
 
 
+def test_build_checkpoint_has_a_distinct_pinned_freeze_under_m18_settings():
+    body, digest = decision_freeze(_m18(pb_agent_protocol="build-checkpoint-v1"))
+    assert body["pb_agent_protocol"]["version"] == "build-checkpoint-v1"
+    assert digest == "f61837c91d8085e367889a58edfcae0b95a61751491725d816198ffc9673c747"
+
+
 def test_adapter_config_gates_on_node_caps_and_leaves_a4_alone():
     common = dict(models=("fox/deepseek-flash", "fox/glm-5.3-flash"), request_cap=40, seed=3,
                   online_update=False, dag="d", prompt="p")
@@ -252,7 +289,7 @@ def test_run_arm_requires_a_node_cap_and_a_known_protocol(tmp_path):
     with pytest.raises(PbStopped, match="unknown_pb_agent_protocol"):
         run_arm(tmp_path / "b", arm="A2", tasks="esubaalew__run", node_request_cap=20,
                 pb_agent_protocol="node-budget-v2")
-    assert PB_AGENT_PROTOCOLS == ("node-budget-v1",)
+    assert "node-budget-v1" in PB_AGENT_PROTOCOLS
 
 
 def test_a_run_dir_never_mixes_protocols(tmp_path):

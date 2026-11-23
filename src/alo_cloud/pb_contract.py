@@ -10,13 +10,15 @@ filesystem side effects only.
 from __future__ import annotations
 
 import hashlib
+from fnmatch import fnmatchcase
+from functools import lru_cache
 from pathlib import Path, PurePosixPath
 import re
 import shlex
 import time
 
 from .errors import ProtocolError
-from .public_tools import TOOLS
+from .public_tools import PB_BUILD_TOOLS, TOOLS
 
 
 PB_NODE_ORDER = ("p1", "p2")
@@ -156,7 +158,7 @@ def _node_block(node_id, *, goal, topics, tools, deps):
     )
 
 
-def pb_prompt(*, role_map=None, probe_script_owner="p1"):
+def pb_prompt(*, role_map=None, probe_script_owner="p1", build_checkpoints=False):
     """Worker-facing rules. The fixed DAG is what actually runs."""
     mapping = normalize_role_map(role_map)
     owner = normalize_probe_owner(probe_script_owner)
@@ -177,12 +179,12 @@ def pb_prompt(*, role_map=None, probe_script_owner="p1"):
         "and may run the reference through its normal interface. "
         "The submission must not wrap, copy, embed, or call the reference binary. "
         "Use only these public tools: "
-        + ", ".join(TOOLS)
+        + ", ".join(PB_BUILD_TOOLS if build_checkpoints else TOOLS)
         + ". Do not invent tool names such as public_tools."
     )
 
 
-def pb_dag(*, role_map=None, probe_script_owner="p1"):
+def pb_dag(*, role_map=None, probe_script_owner="p1", build_checkpoints=False):
     """Fixed p1 -> p2 DAG. Topics follow the SWE role mapped onto each node."""
     mapping = normalize_role_map(role_map)
     owner = normalize_probe_owner(probe_script_owner)
@@ -203,6 +205,16 @@ def pb_dag(*, role_map=None, probe_script_owner="p1"):
         "the reference include objdump, strings, hexdump, ghidra, strace, and ltrace. "
         "Do not use the network."
     )
+    if build_checkpoints:
+        implement += (
+            " Write the source and compile.sh before the build check on request 8. "
+            "Use pb_build to inspect compiler errors. Your last four requests are for "
+            "reading and fixing submission files and checking the build."
+        )
+        validate = (
+            "Use pb_build on the handoff snapshot and report its diagnostics. "
+            "The source tree is read-only. Use the reference only through its public interface."
+        )
     blocks = ["subtasks:\n"]
     for node_id in PB_NODE_ORDER:
         swe = inverse[node_id]
@@ -219,11 +231,13 @@ def pb_dag(*, role_map=None, probe_script_owner="p1"):
             tools = _IMPLEMENT_TOOLS
         else:
             tools = _VALIDATE_TOOLS
+        if build_checkpoints:
+            tools = (*tools, "pb_build")
         deps = [] if node_id == "p1" else ["p1"]
         blocks.append(_node_block(node_id, goal=goal, topics=topics, tools=tools, deps=deps))
     text = "".join(blocks)
     for name in _tool_names(text):
-        if name not in TOOLS:
+        if name not in (PB_BUILD_TOOLS if build_checkpoints else TOOLS):
             raise ProtocolError("pb_role_contract_unknown_tool")
     return text
 
@@ -900,7 +914,27 @@ def _brace_expand(text):
     return [text[:start] + part + text[end:] for part in options], True
 
 
-def _glob_matches(root, pattern, base_dir):
+def _inventory_glob(root, base, pattern, allowed):
+    """Match candidate paths without walking private probe or cache directories."""
+    if allowed is None:
+        return base.glob(pattern)
+    prefix = base.relative_to(root).parts
+    glob = PurePosixPath(pattern).parts
+
+    @lru_cache(maxsize=2048)
+    def matches(parts, tokens):
+        if not tokens:
+            return not parts
+        if tokens[0] == "**":
+            return matches(parts, tokens[1:]) or (bool(parts) and matches(parts[1:], tokens))
+        return bool(parts) and fnmatchcase(parts[0], tokens[0]) and matches(parts[1:], tokens[1:])
+
+    return (root / name for name in allowed
+            if (parts := PurePosixPath(name).parts)[:len(prefix)] == prefix
+            and matches(parts[len(prefix):], glob))
+
+
+def _glob_matches(root, pattern, base_dir, allowed=None):
     """Files a relative glob names. ``False`` means the pattern did not resolve."""
     if not pattern or pattern.startswith("/") or ".." in PurePosixPath(pattern).parts:
         return [], False
@@ -915,7 +949,7 @@ def _glob_matches(root, pattern, base_dir):
         return [], False
     for base in bases:
         try:
-            matches = list(base.glob(pattern))
+            matches = list(_inventory_glob(root, base, pattern, allowed))
         except (OSError, ValueError):
             return [], False
         for path in matches:
@@ -933,7 +967,7 @@ def _glob_matches(root, pattern, base_dir):
     return found, True
 
 
-def _expand_build_token(root, token, base_dir):
+def _expand_build_token(root, token, base_dir, allowed=None):
     """Build inputs named by one shell token.
 
     The second value is False when the token might name inputs this scan
@@ -969,7 +1003,7 @@ def _expand_build_token(root, token, base_dir):
                 found.append(resolved)
                 resolved_any = True
             continue
-        matches, ok = _glob_matches(root, pattern, base_dir)
+        matches, ok = _glob_matches(root, pattern, base_dir, allowed)
         if not ok:
             continue
         found.extend(matches)
@@ -995,11 +1029,11 @@ def _python_modules(text):
     return names
 
 
-def _project_files(root, tool):
+def _project_files(root, tool, allowed=None):
     patterns = _PROJECT_GLOBS.get(tool) or ()
     found = []
     for pattern in patterns:
-        for path in root.glob(pattern):
+        for path in _inventory_glob(root, root, pattern, allowed):
             if not path.is_file() or path.is_symlink():
                 continue
             try:
@@ -1120,7 +1154,8 @@ class _BuildShell:
     construct this walker cannot follow sets ``complete`` false.
     """
 
-    def __init__(self, root, cwd):
+    def __init__(self, root, cwd, allowed=None):
+        self.allowed = allowed
         self.root = root
         self.cwd = cwd
         self.stack = []
@@ -1140,7 +1175,7 @@ class _BuildShell:
                     self.complete = False
                     index += 1
                     continue
-                child = _BuildShell(self.root, self.cwd)
+                child = _BuildShell(self.root, self.cwd, self.allowed)
                 child.stack = list(self.stack)
                 child.consume(tokens[index + 1:end])
                 self.files.extend(child.files)
@@ -1179,11 +1214,11 @@ class _BuildShell:
             return
         tool = _build_tool(argv)
         if tool:
-            for found in _project_files(self.root, tool):
+            for found in _project_files(self.root, tool, self.allowed):
                 if not is_excluded_probe(found):
                     self.files.append(found)
         for token in argv:
-            found, token_ok = _expand_build_token(self.root, token, self.cwd)
+            found, token_ok = _expand_build_token(self.root, token, self.cwd, self.allowed)
             if not token_ok:
                 self.complete = False
             self.files.extend(found)
@@ -1229,16 +1264,16 @@ def _is_shell_script(path, text):
     return False
 
 
-def _shell_build_inputs(text, root, start):
+def _shell_build_inputs(text, root, start, allowed=None):
     tokens = _shell_tokens(text)
     if tokens is None:
         return [], False
-    walker = _BuildShell(root, start)
+    walker = _BuildShell(root, start, allowed)
     walker.consume(tokens)
     return walker.files, walker.complete
 
 
-def submission_build_graph(root):
+def submission_build_graph(root, *, allowed_inputs=None, check=None, probe_candidates=()):
     """Files reachable from ``compile.sh``, and whether that list is complete.
 
     A behaviour probe that ``compile.sh`` never names, and that no file in
@@ -1256,7 +1291,12 @@ def submission_build_graph(root):
     seen = set()
     complete = True
     while pending:
+        if check is not None:
+            check()
         relative = pending.pop()
+        if allowed_inputs is not None and relative not in allowed_inputs:
+            complete = False
+            continue
         if relative in seen:
             continue
         seen.add(relative)
@@ -1268,6 +1308,11 @@ def submission_build_graph(root):
         except (OSError, UnicodeError):
             continue
         base_dir = path.parent
+        # A non-shell program can dispatch a script at run time. A named
+        # candidate in a reachable file is insufficient evidence for pruning.
+        for name in probe_candidates:
+            if Path(name).name in text and name not in seen:
+                pending.append(name)
         for include in _include_paths(text):
             found = _resolve_existing(root, include, base_dir)
             if found and found not in seen:
@@ -1288,7 +1333,7 @@ def submission_build_graph(root):
                 if found and found not in seen:
                     pending.append(found)
         if _is_shell_script(path, text):
-            found, shell_complete = _shell_build_inputs(text, root, base_dir)
+            found, shell_complete = _shell_build_inputs(text, root, base_dir, allowed_inputs)
             if not shell_complete:
                 complete = False
             for item in found:
@@ -1311,7 +1356,32 @@ def _invokes_reference(text, check=None):
         text, allow_reference_execution=False, check=check)
 
 
-def submission_reference_scan(root, *, reference_sha256=None, probe_paths=(), deadline=None, clock=None):
+def can_be_probe_script(path, prefix):
+    return (path.suffix.lower() in _SHELL_SUFFIXES | {".py", ".pl", ".rb", ".js", ".mjs"}
+            or prefix.startswith(b"#!"))
+
+
+def _uses_reserved_probe(path, text, check):
+    """Recognise explicit build inputs in the reserved, absent probe directory."""
+    if PROBE_DIR not in text:
+        return False
+    for include in _include_paths(text):
+        if is_excluded_probe(include):
+            return True
+    if path.suffix.lower() not in _SHELL_SUFFIXES and path.name not in {"compile.sh", "Makefile", "makefile"}:
+        return False
+    for line in text.splitlines():
+        if PROBE_DIR not in line or line.lstrip().startswith("#"):
+            continue
+        for argv in _simple_commands(line, check):
+            if argv and _basename(argv[0]) not in {"echo", "printf", "rm", "mkdir"}:
+                if any(is_excluded_probe(token) for token in argv):
+                    return True
+    return False
+
+
+def submission_reference_scan(root, *, reference_sha256=None, probe_paths=(), deadline=None, clock=None,
+                              snapshot_manifest=None):
     """Flag a submission that copies, embeds, wraps, or reads the reference.
 
     ``./executable`` itself is the reference and is not a submitted file.
@@ -1348,11 +1418,18 @@ def submission_reference_scan(root, *, reference_sha256=None, probe_paths=(), de
             "reference_sha256": digest,
             "reference_execute_only": mode_ok,
         }
-    build_graph, graph_complete = submission_build_graph(root)
-    for path in sorted(root.rglob("*")):
+    expected = {row["path"]: row for row in snapshot_manifest} if snapshot_manifest is not None else None
+    if expected is None:
+        build_graph, graph_complete = submission_build_graph(root)
+    else:
+        build_graph, graph_complete = submission_build_graph(root, allowed_inputs=expected, check=check)
+    paths = (root / name for name in expected) if expected is not None else sorted(root.rglob("*"))
+    for path in paths:
         if check is not None:
             check()
         if not path.is_file() or path.is_symlink():
+            if expected is not None:
+                raise ValueError("submission_manifest_file_mismatch")
             continue
         relative = path.relative_to(root).as_posix()
         if relative == REFERENCE_BASENAME or relative.startswith(".git/"):
@@ -1362,7 +1439,13 @@ def submission_reference_scan(root, *, reference_sha256=None, probe_paths=(), de
         except OSError:
             violations.append({"kind": "submission_unreadable", "path": relative})
             continue
-        if digest and hashlib.sha256(raw).hexdigest() == digest:
+        file_digest = hashlib.sha256(raw).hexdigest() if digest or expected is not None else None
+        if expected is not None:
+            row = expected[relative]
+            mode = 0o755 if path.stat().st_mode & 0o111 else 0o644
+            if file_digest != row["sha256"] or len(raw) != row["size"] or mode != row["mode"]:
+                raise ValueError("submission_manifest_file_mismatch")
+        if digest and file_digest == digest:
             violations.append({"kind": "embedded_reference_bytes", "path": relative})
             continue
         if not _looks_text(path) and b"\0" in raw[:8192]:
@@ -1378,10 +1461,14 @@ def submission_reference_scan(root, *, reference_sha256=None, probe_paths=(), de
         if hard:
             violations.append({"kind": hard[0], "path": relative})
             continue
+        if expected is not None and relative in build_graph and _uses_reserved_probe(path, text, check):
+            violations.append({"kind": "build_depends_on_private_probe", "path": relative})
+            continue
         if _invokes_reference(text, check):
             # An unresolved glob or variable means the file might still be a
             # build input. Do not warn it away or drop it from the archive.
-            if relative in build_graph or not graph_complete:
+            if (relative in build_graph or not graph_complete
+                    or (expected is not None and can_be_probe_script(path, raw))):
                 violations.append({"kind": "invokes_reference", "path": relative})
             else:
                 warnings.append({"kind": "unused_probe_invokes_reference", "path": relative})

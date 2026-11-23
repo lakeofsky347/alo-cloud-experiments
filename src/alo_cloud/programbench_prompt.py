@@ -38,7 +38,16 @@ Use python3 when you invoke Python; the image may not have a python command.
 # M19 node-budget-v1 (opt-in; never sent without --pb-agent-protocol).
 # Added once to the implementer node's first observation that shows
 # PB_NODE_NOTICE_AT or fewer of its own requests left (key node_budget_notice).
-PB_AGENT_PROTOCOLS = ("node-budget-v1",)
+PB_BUILD_PROTOCOL = "build-checkpoint-v1"
+PB_AGENT_PROTOCOLS = ("node-budget-v1", PB_BUILD_PROTOCOL)
+PB_FIRST_BUILD_TURN = 8
+PB_REPAIR_TURNS = 4
+PB_REPAIR_TOOLS = ("read_file", "edit_file", "write_file", "pb_build")
+PB_BUILD_WORK_ORDER = (
+    "Use the offline toolchain. Write source and compile.sh before deep exploration. "
+    'Run {"tool":"pb_build","arguments":{}} to build the current submission in a clean copy. '
+    "Each edit requires verification of the new snapshot. Check which paths were actually written."
+)
 PB_NODE_NOTICE_AT = 6
 PROGRAMBENCH_NODE_BUDGET_NOTICE = (
     "Node budget notice: {left} or fewer model requests remain for your node {node} "
